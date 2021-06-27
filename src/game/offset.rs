@@ -1,21 +1,4 @@
-use std::collections::HashMap;
-
-struct TokenSide {}
-
-#[derive(PartialEq, Eq)]
-enum CurrentSide {
-    Initial,
-    Flipped,
-}
-
-impl CurrentSide {
-    pub fn flip(&self) -> CurrentSide {
-        match self {
-            CurrentSide::Initial => CurrentSide::Flipped,
-            CurrentSide::Flipped => CurrentSide::Initial,
-        }
-    }
-}
+use crate::common::board;
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub enum HorizontalOffset {
@@ -38,6 +21,7 @@ impl HorizontalOffset {
     }
 }
 
+
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub enum VerticalOffset {
     FarTop,
@@ -59,10 +43,11 @@ impl VerticalOffset {
     }
 }
 
+
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub struct Coordinate {
-    x: HorizontalOffset,
-    y: VerticalOffset,
+    pub x: HorizontalOffset,
+    pub y: VerticalOffset,
 }
 
 impl Coordinate {
@@ -84,9 +69,7 @@ impl Coordinate {
             y: self.y.flipped(),
         }
     }
-}
 
-impl Coordinate {
     pub fn new(x: HorizontalOffset, y: VerticalOffset) -> Coordinate {
         if x == HorizontalOffset::Center && y == VerticalOffset::Center {
             panic!("Cannot create a coordinate of two Centers!");
@@ -95,6 +78,18 @@ impl Coordinate {
     }
     pub fn centered<C: Centerable>(c: C) -> Coordinate {
         c.center()
+    }
+}
+
+impl From<board::Coordinate> for Coordinate {
+    fn from(other: board::Coordinate) -> Self {
+        Coordinate::new(Indexable::from_index(other.x), Indexable::from_index(other.x))
+    }
+}
+
+impl From<Coordinate> for board::Coordinate {
+    fn from(other: Coordinate) -> board::Coordinate {
+        board::Coordinate { x: other.x.to_index(), y: other.y.to_index() }
     }
 }
 
@@ -120,18 +115,8 @@ impl Centerable for VerticalOffset {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub enum TokenAction {
-    Move,
-    Jump,
-    Slide,
-    Command,
-    JumpSlide,
-    Strike,
-    Dread,
-}
 
-trait Indexable {
+pub trait Indexable {
     fn to_index(&self) -> usize;
     fn from_index(i: usize) -> Self;
 }
@@ -178,80 +163,6 @@ impl Indexable for VerticalOffset {
             3 => VerticalOffset::Bottom,
             4 => VerticalOffset::FarBottom,
             x => panic!("Unsupported integer <{}>", x)
-        }
-    }
-}
-
-pub struct Side {
-    board: Vec<Vec<Option<TokenAction>>>,
-}
-
-impl Side {
-    const WIDTH: usize = 5;
-    const HEIGHT: usize = 5;
-
-    pub fn new(map: HashMap<Coordinate, TokenAction>) -> Side {
-        let mut columns = Vec::with_capacity(Side::WIDTH);
-        for x in 0..Side::WIDTH {
-            let x_offset = Indexable::from_index(x);
-            columns.push(Vec::with_capacity(Side::HEIGHT));
-            let mut row = &columns[x];
-            for y in 0..Side::HEIGHT {
-                let y_offset = Indexable::from_index(y);
-                row.push(if x_offset == HorizontalOffset::Center || y_offset == VerticalOffset::Center {
-                    None
-                } else {
-                    let c = Coordinate::new(x_offset, y_offset);
-                    map.get(&c).cloned()
-                });
-            }
-        }
-        Side { board: columns }
-    }
-    pub fn action(&self, c: Coordinate) -> Option<TokenAction> {
-        self.board[c.x.to_index()][c.y.to_index()]
-    }
-    pub fn actions(&self) -> Vec<(Coordinate, TokenAction)> {
-        let mut result = Vec::new();
-        for (x, v) in self.board.iter().enumerate() {
-            let x_offset = Indexable::from_index(x);
-            for (y, e) in v.iter().enumerate() {
-                let y_offset = Indexable::from_index(y);
-                if x_offset == HorizontalOffset::Center || y_offset == VerticalOffset::Center {
-                    continue;
-                }
-                let c = Coordinate::new(x_offset, y_offset);
-                match e {
-                    None => (),
-                    Some(a) => result.push((c, a.clone())),
-                }
-            }
-        }
-        result
-    }
-}
-
-pub struct GameToken {
-    pub side_a: Side,
-    pub side_b: Side,
-    pub current_side: CurrentSide,
-}
-
-impl GameToken {
-    pub fn new(side_a: Side, side_b: Side) -> GameToken {
-        GameToken {
-            side_a,
-            side_b,
-            current_side: CurrentSide::Initial,
-        }
-    }
-    pub fn flip(&mut self) -> () {
-        self.current_side = self.current_side.flip()
-    }
-    pub fn get_current_side(&self) -> &Side {
-        match self.current_side {
-            CurrentSide::Initial => &self.side_a,
-            CurrentSide::Flipped => &self.side_b,
         }
     }
 }
