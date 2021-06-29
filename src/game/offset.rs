@@ -81,15 +81,15 @@ impl Coordinate {
     }
 }
 
-impl From<board::Coordinate> for Coordinate {
-    fn from(other: board::Coordinate) -> Self {
+impl From<board::Coordinates> for Coordinate {
+    fn from(other: board::Coordinates) -> Self {
         Coordinate::new(Indexable::from_index(other.x), Indexable::from_index(other.x))
     }
 }
 
-impl From<Coordinate> for board::Coordinate {
-    fn from(other: Coordinate) -> board::Coordinate {
-        board::Coordinate { x: other.x.to_index(), y: other.y.to_index() }
+impl From<Coordinate> for board::Coordinates {
+    fn from(other: Coordinate) -> board::Coordinates {
+        board::Coordinates { x: other.x.to_index(), y: other.y.to_index() }
     }
 }
 

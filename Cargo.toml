@@ -6,8 +6,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-native-windows-gui = "1.0.11"
 derive_more = "0.99.0"
+fstrings = "*"
+pancurses = "*"
 rand = "0.8.4"
-
-

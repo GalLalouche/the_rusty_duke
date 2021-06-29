@@ -40,6 +40,7 @@ pub struct TokenSide {
 impl TokenSide {
     const SIDE: usize = 5;
 
+    // TODO verify stuff here, such as Move can't L shaped, sliders have to be adjacent, etc.
     pub fn new(map: HashMap<Coordinate, TokenAction>) -> TokenSide {
         let mut res = TokenSide { board: Board::square(TokenSide::SIDE) };
         for (k, v) in map {
@@ -81,6 +82,46 @@ impl GameToken {
         }
     }
 }
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum Owner {
+    Player1,
+    Player2,
+}
+
+impl Owner {
+    fn same_team(&self, other: &Self) -> bool {
+        self == other
+    }
+    fn difference_team(&self, other: &Self) -> bool {
+        self != other
+    }
+}
+
+pub struct OwnedToken {
+    pub token: GameToken,
+    pub owner: Owner,
+}
+
+pub trait Ownership {
+    fn same_team(&self, other: &Self) -> bool;
+    fn different_team(&self, other: &Self) -> bool {
+        !self.same_team(other)
+    }
+}
+
+impl Ownership for &Owner {
+    fn same_team(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl Ownership for OwnedToken {
+    fn same_team(&self, other: &Self) -> bool {
+        self.owner == other.owner
+    }
+}
+
 
 #[derive(Clone)]
 pub struct TokenBag {
