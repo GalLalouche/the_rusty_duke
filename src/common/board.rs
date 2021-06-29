@@ -47,7 +47,7 @@ impl Coordinates {
                 (self.x + 1..dst.x).map(|x| Coordinates { x, y: self.y }).collect()
             } else {
                 (dst.x + 1..self.x).rev().map(|x| Coordinates { x, y: self.y }).collect()
-            };
+            };G
         }
         // TODO reverse diagonal
         if ((int_self.x - int_dst.x) == (int_self.y - int_dst.y) {
