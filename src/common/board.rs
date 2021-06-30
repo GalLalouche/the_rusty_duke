@@ -27,6 +27,7 @@ struct IntCoordinates {
     pub y: i16,
 }
 
+// TODO move this to its own module
 impl Coordinates {
     /// Panics if src isn't on a linear (horizontal, vertical, or bishop-like diagonal to dst, 
     /// or if src == dst.
@@ -47,23 +48,30 @@ impl Coordinates {
                 (self.x + 1..dst.x).map(|x| Coordinates { x, y: self.y }).collect()
             } else {
                 (dst.x + 1..self.x).rev().map(|x| Coordinates { x, y: self.y }).collect()
-            };G
+            };
         }
-        // TODO reverse diagonal
-        if ((int_self.x - int_dst.x) == (int_self.y - int_dst.y) {
-            return if self.x < dst.x {
+        if (int_self.x - int_dst.x).abs() == (int_self.y - int_dst.y).abs() {
+            // TODO replace this with switch case
+            return if int_self.x < int_dst.x && int_self.y < int_dst.y {
                 (1..(int_self.x - int_dst.x).abs() as usize)
                     .map(|i| Coordinates { x: self.x + i, y: self.y + i })
                     .collect()
-            } else {
-                println!("{:?}", (1..(int_self.x - int_dst.x).abs() as usize).rev().collect::<Vec<_>>());
-
+            } else if int_self.x > int_dst.x && int_self.y > int_dst.y { // Reverse diagonal
                 (1..(int_self.x - int_dst.x).abs() as usize)
                     .rev()
                     .map(|i| Coordinates { x: dst.x + i, y: dst.y + i })
                     .collect()
+            } else if int_self.x < int_dst.x && int_self.y > int_dst.y {
+                (1..(int_self.x - int_dst.x).abs() as usize)
+                    .map(|i| Coordinates { x: self.x + i, y: self.y - i })
+                    .collect()
+            } else {
+                (1..(int_self.x - int_dst.x).abs() as usize)
+                    .rev()
+                    .map(|i| Coordinates { x: dst.x - i, y: dst.y - i })
+                    .collect()
             };
-        };
+        }
         panic!("{} isn't linear to {}", self, dst);
     }
 }
@@ -194,7 +202,7 @@ mod test {
     }
 
     #[test]
-    fn linear_path_to_main_diagonal_positive() {
+    fn linear_path_to_main_diagonal_positive_x() {
         assert_eq!(
             vec![
                 Coordinates { x: 4, y: 3 },
@@ -206,7 +214,7 @@ mod test {
     }
 
     #[test]
-    fn linear_path_to_main_diagonal_negative() {
+    fn linear_path_to_main_diagonal_negative_x() {
         assert_eq!(
             vec![
                 Coordinates { x: 6, y: 5 },
