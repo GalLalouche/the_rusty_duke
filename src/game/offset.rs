@@ -71,13 +71,22 @@ impl Coordinate {
     }
 
     pub fn new(x: HorizontalOffset, y: VerticalOffset) -> Coordinate {
-        if x == HorizontalOffset::Center && y == VerticalOffset::Center {
-            panic!("Cannot create a coordinate of two Centers!");
-        }
+        assert!(
+            x != HorizontalOffset::Center || y != VerticalOffset::Center,
+            "Cannot create a coordinate of two Centers");
         Coordinate { x, y }
     }
     pub fn centered<C: Centerable>(c: C) -> Coordinate {
         c.center()
+    }
+    pub fn near_center(&self) -> bool {
+        self.x.distance_from_center() <= 1 && self.y.distance_from_center() <= 1
+    }
+    pub fn is_linear_from_center(&self) -> bool {
+        self.x.is_centered() ||
+            self.y.is_centered() ||
+            // Covers the linear diagonals
+            self.x.distance_from_center() == self.y.distance_from_center()
     }
 }
 
@@ -95,6 +104,10 @@ impl From<Coordinate> for board::Coordinates {
 
 pub trait Centerable {
     fn center(&self) -> Coordinate;
+    fn distance_from_center(&self) -> usize;
+    fn is_centered(&self) -> bool {
+        self.distance_from_center() == 0
+    }
 }
 
 impl Centerable for HorizontalOffset {
@@ -104,6 +117,16 @@ impl Centerable for HorizontalOffset {
             y: VerticalOffset::Center,
         }
     }
+
+    fn distance_from_center(&self) -> usize {
+        match self {
+            HorizontalOffset::FarLeft => 2,
+            HorizontalOffset::Left => 1,
+            HorizontalOffset::Center => 0,
+            HorizontalOffset::Right => 1,
+            HorizontalOffset::FarRight => 2,
+        }
+    }
 }
 
 impl Centerable for VerticalOffset {
@@ -111,6 +134,16 @@ impl Centerable for VerticalOffset {
         Coordinate {
             x: HorizontalOffset::Center,
             y: self.clone(),
+        }
+    }
+
+    fn distance_from_center(&self) -> usize {
+        match self {
+            VerticalOffset::FarTop => 2,
+            VerticalOffset::Top => 1,
+            VerticalOffset::Center => 0,
+            VerticalOffset::Bottom => 1,
+            VerticalOffset::FarBottom => 2,
         }
     }
 }

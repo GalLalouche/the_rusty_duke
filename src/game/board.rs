@@ -1,8 +1,9 @@
+use std::convert::TryFrom;
+
 use crate::common::board::{Board, Coordinates};
-use crate::game::token::{TokenAction, OwnedToken, Ownership};
 use crate::game::offset;
 use crate::game::offset::{HorizontalOffset, VerticalOffset};
-use std::convert::TryFrom;
+use crate::game::token::{OwnedToken, Ownership, TokenAction};
 
 pub struct GameBoard {
     board: Board<OwnedToken>,
@@ -20,9 +21,7 @@ impl GameBoard {
         GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
     }
     pub fn place(&mut self, c: Coordinates, t: OwnedToken) -> () {
-        if self.board.is_occupied(c) {
-            panic!("Cannot insert token into occupied space {}", c)
-        }
+        assert!(self.board.is_empty(c), "Cannot insert token into occupied space {}", c);
         self.board.put(c, t);
     }
 
@@ -56,8 +55,7 @@ impl GameBoard {
     }
 
     fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
-        // TODO exists
-        src.linear_path_to(dst).iter().filter(|c| self.board.is_occupied(**c)).next().is_some()
+        src.linear_path_to(dst).iter().all(|c| self.board.is_empty(*c))
     }
     fn can_apply(&self, src_token: &OwnedToken, src: Coordinates, c: offset::Coordinate, a: &TokenAction) -> Option<Coordinates> {
         self.to_absolute_coordinate(src, c)
@@ -70,7 +68,6 @@ impl GameBoard {
                     TokenAction::Command => unimplemented!(),
                     TokenAction::JumpSlide => unimplemented!(),
                     TokenAction::Strike => unimplemented!(),
-                    TokenAction::Dread => unimplemented!(),
                 }
             })
     }

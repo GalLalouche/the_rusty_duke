@@ -4,6 +4,7 @@ use rand::Rng;
 
 use crate::common::board::Board;
 use crate::game::offset::Coordinate;
+use crate::assert_not;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CurrentSide {
@@ -29,7 +30,6 @@ pub enum TokenAction {
     Command,
     JumpSlide,
     Strike,
-    Dread,
 }
 
 #[derive(Clone)]
@@ -40,8 +40,22 @@ pub struct TokenSide {
 impl TokenSide {
     const SIDE: usize = 5;
 
-    // TODO verify stuff here, such as Move can't L shaped, sliders have to be adjacent, etc.
-    pub fn new(map: HashMap<Coordinate, TokenAction>) -> TokenSide {
+    pub(in crate::game) fn new(map: HashMap<Coordinate, TokenAction>) -> TokenSide {
+        for (c, a) in &map {
+            match a {
+                TokenAction::Jump =>
+                    assert_not!(c.near_center(), "Jumps near the center should be moves"),
+                TokenAction::Slide =>
+                    assert!(c.near_center(), "Slides should be near the center"),
+                TokenAction::JumpSlide =>
+                    assert!(c.near_center(), "Jump slides should be near the center (?)"),
+                TokenAction::Move =>
+                    assert!(c.is_linear_from_center(), "Moves can't be L shaped"),
+                // All combinations are valid.
+                TokenAction::Strike => {}
+                TokenAction::Command => {}
+            }
+        }
         let mut res = TokenSide { board: Board::square(TokenSide::SIDE) };
         for (k, v) in map {
             let result = res.board.put(k.into(), v);
@@ -49,6 +63,7 @@ impl TokenSide {
         }
         res
     }
+
     pub fn actions(&self) -> Vec<(Coordinate, &TokenAction)> {
         self.board.active_coordinates()
             .iter()
@@ -98,6 +113,7 @@ impl Owner {
     }
 }
 
+#[derive(Clone)]
 pub struct OwnedToken {
     pub token: GameToken,
     pub owner: Owner,
@@ -148,6 +164,7 @@ impl TokenBag {
     }
 }
 
+#[derive(Clone)]
 pub struct DiscardBag {
     bag: Vec<GameToken>,
 }
@@ -158,7 +175,7 @@ impl DiscardBag {
     }
 
     pub fn add(&mut self, t: GameToken) -> () {
-        &self.bag.push(t);
+        self.bag.push(t);
     }
 
     pub fn existing(&self) -> &Vec<GameToken> {
