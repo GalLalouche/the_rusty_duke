@@ -1,7 +1,15 @@
 use fstrings::*;
 
-use crate::common::board::Coordinates;
 use crate::common::utils::Distance;
+
+use derive_more::Display;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Display)]
+#[display(fmt = "Coordinate({}, {})", x, y)]
+pub struct Coordinates {
+    pub x: usize,
+    pub y: usize,
+}
 
 // TODO move this to its own module
 impl Coordinates {

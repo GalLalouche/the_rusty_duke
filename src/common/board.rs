@@ -2,15 +2,7 @@ extern crate derive_more;
 
 
 use std::mem;
-
-use derive_more::Display;
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Display)]
-#[display(fmt = "Coordinate({}, {})", x, y)]
-pub struct Coordinates {
-    pub x: usize,
-    pub y: usize,
-}
+use crate::common::coordinates::Coordinates;
 
 #[derive(Clone)]
 pub struct Board<A> {
@@ -37,23 +29,23 @@ impl<A> Board<A> {
         }
     }
     fn verify_bounds(&self, c: Coordinates) -> () {
-        assert!(self.is_out_of_bounds(c), "Coordinate {} is out of bounds", c)
+        assert!(self.is_in_bounds(c), "Coordinate {} is out of bounds", c)
     }
     fn place(&mut self, c: Coordinates, a: Option<A>) -> Option<A> {
         self.verify_bounds(c);
-        let column = self.board.get_mut(c.x).unwrap();
-        mem::replace(&mut column[c.y], a)
+        let column = self.board.get_mut(c.y).unwrap();
+        mem::replace(&mut column[c.x], a)
     }
     pub fn put(&mut self, c: Coordinates, a: A) -> Option<A> {
         self.place(c, Some(a))
     }
     pub fn get(&self, c: Coordinates) -> Option<&A> {
         self.verify_bounds(c);
-        self.board[c.x][c.y].as_ref()
+        self.board[c.y][c.x].as_ref()
     }
     pub fn get_mut(&mut self, c: Coordinates) -> Option<&mut A> {
         self.verify_bounds(c);
-        self.board.get_mut(c.x).and_then(|b| b.get_mut(c.y)).unwrap().as_mut()
+        self.board.get_mut(c.y).and_then(|b| b.get_mut(c.x)).unwrap().as_mut()
     }
     pub fn remove(&mut self, c: Coordinates) -> Option<A> {
         self.place(c, None)
@@ -71,9 +63,10 @@ impl<A> Board<A> {
         self.get(c).is_none()
     }
 
-    pub fn as_matrix(&self) -> &Vec<Vec<Option<A>>> {
+    pub fn rows(&self) -> &Vec<Vec<Option<A>>> {
         &self.board
     }
+
     pub fn coordinates(&self) -> Vec<Coordinates> {
         (0..self.width)
             .flat_map(move |x| (0..self.height).map(move |y| Coordinates { x, y }))
@@ -82,7 +75,53 @@ impl<A> Board<A> {
     pub fn active_coordinates(&self) -> Vec<(Coordinates, &A)> {
         self.coordinates()
             .iter()
-            .filter_map(|c| self.get(*c).map(|e| (c.clone(), e)))
+            .filter_map(|c| self.get(*c).map(|e| (*c, e)))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{assert_some, assert_none};
+
+    #[test]
+    fn get_indexing() {
+        let mut board = Board::square(2);
+        board.put(Coordinates { x: 1, y: 0 }, 1);
+        assert_some!(
+            1,
+            board.get(Coordinates{x: 1, y: 0}).cloned()
+        );
+        assert_none!(
+            board.get(Coordinates{x: 0, y: 1})
+        );
+    }
+
+    #[test]
+    fn get_mut_indexing() {
+        let mut board = Board::square(2);
+        board.put(Coordinates { x: 1, y: 0 }, 1);
+        let mut c = board.get_mut(Coordinates { x: 1, y: 0 }).unwrap();
+        *c += 1;
+        assert_some!(
+            2,
+            board.get(Coordinates { x: 1, y: 0 }).cloned()
+        );
+        assert_none!(
+            board.get_mut(Coordinates{x: 0, y: 1})
+        );
+    }
+
+    #[test]
+    fn rows_returns_the_rows_no_columns() {
+        let mut board = Board::square(2);
+        board.put(Coordinates { x: 0, y: 0 }, 0);
+        board.put(Coordinates { x: 1, y: 0 }, 1);
+        board.put(Coordinates { x: 1, y: 1 }, 3);
+        assert_eq!(
+            &vec![vec![Some(0), Some(1)], vec![None, Some(3)]],
+            board.rows(),
+        )
     }
 }

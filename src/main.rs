@@ -1,10 +1,10 @@
 #[macro_use(f)]
 extern crate fstrings;
 
+
 use std::ops::Deref;
 use std::sync::Arc;
 
-use pancurses::{endwin, initscr};
 
 
 // use nwg::NativeUi;
@@ -209,9 +209,9 @@ mod view;
 // }
 
 fn main() {
-    let window = initscr();
-    window.printw("Hello Rust");
-    window.refresh();
-    window.getch();
-    endwin();
+    // let window = initscr();
+    // window.printw("Hello Rust");
+    // window.refresh();
+    // window.getch();
+    // endwin();
 }

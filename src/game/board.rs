@@ -1,6 +1,7 @@
 use std::convert::TryFrom;
 
-use crate::common::board::{Board, Coordinates};
+use crate::common::board::Board;
+use crate::common::coordinates::Coordinates;
 use crate::game::offset;
 use crate::game::offset::{HorizontalOffset, VerticalOffset};
 use crate::game::token::{OwnedToken, Ownership, TokenAction};
@@ -25,8 +26,8 @@ impl GameBoard {
         self.board.put(c, t);
     }
 
-    pub fn coordinates(&self) -> &Vec<Vec<Option<OwnedToken>>> {
-        self.board.as_matrix()
+    pub fn rows(&self) -> &Vec<Vec<Option<OwnedToken>>> {
+        self.board.rows()
     }
 
     pub fn get(&self, c: Coordinates) -> Option<&OwnedToken> {

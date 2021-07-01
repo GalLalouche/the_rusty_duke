@@ -1,4 +1,5 @@
 use crate::common::board;
+use crate::common::coordinates;
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub enum HorizontalOffset {
@@ -90,15 +91,15 @@ impl Coordinate {
     }
 }
 
-impl From<board::Coordinates> for Coordinate {
-    fn from(other: board::Coordinates) -> Self {
+impl From<coordinates::Coordinates> for Coordinate {
+    fn from(other: coordinates::Coordinates) -> Self {
         Coordinate::new(Indexable::from_index(other.x), Indexable::from_index(other.x))
     }
 }
 
-impl From<Coordinate> for board::Coordinates {
-    fn from(other: Coordinate) -> board::Coordinates {
-        board::Coordinates { x: other.x.to_index(), y: other.y.to_index() }
+impl From<Coordinate> for coordinates::Coordinates {
+    fn from(other: Coordinate) -> coordinates::Coordinates {
+        coordinates::Coordinates { x: other.x.to_index(), y: other.y.to_index() }
     }
 }
 

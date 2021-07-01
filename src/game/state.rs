@@ -1,6 +1,6 @@
-use crate::common::board::Coordinates;
+use crate::common::coordinates::Coordinates;
 use crate::game::board::GameBoard;
-use crate::game::token::{DiscardBag, TokenBag, TokenAction};
+use crate::game::token::{DiscardBag, TokenBag, TokenAction, OwnedToken};
 use crate::game::offset;
 use crate::game::units;
 use crate::game::units::footman;
@@ -25,12 +25,12 @@ pub enum DukeInitialLocation {
 }
 
 pub struct GameState {
-    board: GameBoard,
-    current_player_turn: CurrentTurn,
-    player_1_bag: TokenBag,
-    player_1_discard: DiscardBag,
-    player_2_bag: TokenBag,
-    player_2_discard: DiscardBag,
+    pub board: GameBoard,
+    pub current_player_turn: CurrentTurn,
+    pub player_1_bag: TokenBag,
+    pub player_1_discard: DiscardBag,
+    pub player_2_bag: TokenBag,
+    pub player_2_discard: DiscardBag,
 }
 
 impl GameState {
@@ -82,6 +82,10 @@ impl GameState {
         //     player_2_bag: base_bag.clone(),
         //     player_2_discard: DiscardBag::empty(),
         // }
+    }
+
+    pub fn rows(&self) -> &Vec<Vec<Option<OwnedToken>>> {
+        self.board.rows()
     }
 
 }
