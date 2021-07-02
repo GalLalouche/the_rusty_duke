@@ -77,14 +77,16 @@ pub struct GameToken {
     pub side_a: TokenSide,
     pub side_b: TokenSide,
     pub current_side: CurrentSide,
+    single_char_token: char,
 }
 
 impl GameToken {
-    pub fn new(side_a: TokenSide, side_b: TokenSide) -> GameToken {
+    pub fn new(side_a: TokenSide, side_b: TokenSide, single_char_token: char) -> GameToken {
         GameToken {
             side_a,
             side_b,
             current_side: CurrentSide::Initial,
+            single_char_token,
         }
     }
     pub fn flip(&mut self) -> () {
@@ -94,6 +96,12 @@ impl GameToken {
         match self.current_side {
             CurrentSide::Initial => &self.side_a,
             CurrentSide::Flipped => &self.side_b,
+        }
+    }
+    pub fn single_char_token(&self) -> char {
+        match self.current_side {
+            CurrentSide::Initial => self.single_char_token,
+            CurrentSide::Flipped => self.single_char_token.to_ascii_uppercase(),
         }
     }
 }
@@ -117,6 +125,12 @@ impl Owner {
 pub struct OwnedToken {
     pub token: GameToken,
     pub owner: Owner,
+}
+
+impl OwnedToken {
+    pub fn single_char_token(&self) -> char {
+        self.token.single_char_token()
+    }
 }
 
 pub trait Ownership {

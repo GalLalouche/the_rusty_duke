@@ -20,6 +20,7 @@ pub fn duke() -> GameToken {
     GameToken::new(
         sliders(HorizontalOffset::Left),
         sliders(VerticalOffset::Top),
+        'd',
     )
 }
 
@@ -41,5 +42,6 @@ pub fn footman() -> GameToken {
             Coordinate { x: HorizontalOffset::Right, y: VerticalOffset::Bottom },
             Coordinate::centered(VerticalOffset::FarTop),
         ])),
+        'f',
     )
 }

@@ -3,7 +3,12 @@ use crate::game::token::{TokenBag, DiscardBag, OwnedToken};
 
 pub fn print(gs: &GameState) -> String {
     fn to_row(row: &Vec<Option<OwnedToken>>) -> String {
-        let s = row.iter().map(|o| o.map(|t| t.single_char_token()).or_else(' ')).collect();
+        let s = row.iter()
+            // TODO map_or_else should be a thing
+            .map(|o| o.map(|t| t.single_char_token()).unwrap_or(' ').to_string())
+            .map(|s| vec![s])
+            .collect::<Vec<_>>()
+            .join("|")
         unimplemented!()
     }
     let rows = || {
