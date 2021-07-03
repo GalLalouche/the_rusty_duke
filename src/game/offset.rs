@@ -104,7 +104,7 @@ impl From<Offsets> for coordinates::Coordinates {
 
 pub trait Centerable {
     fn center(&self) -> Offsets;
-    fn distance_from_center(&self) -> usize;
+    fn distance_from_center(&self) -> u16;
     fn is_centered(&self) -> bool {
         self.distance_from_center() == 0
     }
@@ -118,7 +118,7 @@ impl Centerable for HorizontalOffset {
         }
     }
 
-    fn distance_from_center(&self) -> usize {
+    fn distance_from_center(&self) -> u16 {
         match self {
             HorizontalOffset::FarLeft => 2,
             HorizontalOffset::Left => 1,
@@ -137,7 +137,7 @@ impl Centerable for VerticalOffset {
         }
     }
 
-    fn distance_from_center(&self) -> usize {
+    fn distance_from_center(&self) -> u16 {
         match self {
             VerticalOffset::FarTop => 2,
             VerticalOffset::Top => 1,
@@ -150,12 +150,12 @@ impl Centerable for VerticalOffset {
 
 
 pub trait Indexable {
-    fn to_index(&self) -> usize;
-    fn from_index(i: usize) -> Self;
+    fn to_index(&self) -> u16;
+    fn from_index(i: u16) -> Self;
 }
 
 impl Indexable for HorizontalOffset {
-    fn to_index(&self) -> usize {
+    fn to_index(&self) -> u16 {
         match self {
             HorizontalOffset::FarLeft => 0,
             HorizontalOffset::Left => 1,
@@ -165,7 +165,7 @@ impl Indexable for HorizontalOffset {
         }
     }
 
-    fn from_index(i: usize) -> Self {
+    fn from_index(i: u16) -> Self {
         match i {
             0 => HorizontalOffset::FarLeft,
             1 => HorizontalOffset::Left,
@@ -178,7 +178,7 @@ impl Indexable for HorizontalOffset {
 }
 
 impl Indexable for VerticalOffset {
-    fn to_index(&self) -> usize {
+    fn to_index(&self) -> u16 {
         match self {
             VerticalOffset::FarTop => 0,
             VerticalOffset::Top => 1,
@@ -188,7 +188,7 @@ impl Indexable for VerticalOffset {
         }
     }
 
-    fn from_index(i: usize) -> Self {
+    fn from_index(i: u16) -> Self {
         match i {
             0 => VerticalOffset::FarTop,
             1 => VerticalOffset::Top,

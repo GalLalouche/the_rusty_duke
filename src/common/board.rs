@@ -5,15 +5,15 @@ use crate::common::coordinates::Coordinates;
 #[derive(Debug, Clone)]
 pub struct Board<A> {
     board: Vec<Vec<Option<A>>>,
-    pub width: usize,
-    pub height: usize,
+    pub width: u16,
+    pub height: u16,
 }
 
 impl<A> Board<A> {
-    pub fn square(side: usize) -> Board<A> {
-        let mut board = Vec::with_capacity(side);
+    pub fn square(side: u16) -> Board<A> {
+        let mut board = Vec::with_capacity(side.into());
         for _ in 0..side {
-            let mut col = Vec::with_capacity(side);
+            let mut col = Vec::with_capacity(side.into());
             for _ in 0..side {
                 col.push(None);
             }
@@ -31,19 +31,19 @@ impl<A> Board<A> {
     }
     fn place(&mut self, c: Coordinates, a: Option<A>) -> Option<A> {
         self.verify_bounds(c);
-        let column = self.board.get_mut(c.y).unwrap();
-        mem::replace(&mut column[c.x], a)
+        let column = self.board.get_mut(usize::from(c.y)).unwrap();
+        mem::replace(&mut column[usize::from(c.x)], a)
     }
     pub fn put(&mut self, c: Coordinates, a: A) -> Option<A> {
         self.place(c, Some(a))
     }
     pub fn get(&self, c: Coordinates) -> Option<&A> {
         self.verify_bounds(c);
-        self.board[c.y][c.x].as_ref()
+        self.board[usize::from(c.y)][usize::from(c.x)].as_ref()
     }
     pub fn get_mut(&mut self, c: Coordinates) -> Option<&mut A> {
         self.verify_bounds(c);
-        self.board.get_mut(c.y).and_then(|b| b.get_mut(c.x)).unwrap().as_mut()
+        self.board.get_mut(usize::from(c.y)).and_then(|b| b.get_mut(usize::from(c.x))).unwrap().as_mut()
     }
     pub fn remove(&mut self, c: Coordinates) -> Option<A> {
         self.place(c, None)
@@ -69,6 +69,10 @@ impl<A> Board<A> {
         (0..self.width)
             .flat_map(move |x| (0..self.height).map(move |y| Coordinates { x, y }))
             .collect()
+    }
+
+    pub fn all_coordinated_values(&self) -> Vec<(Coordinates, Option<&A>)> {
+        self.coordinates() .iter().map(|c| (*c, self.get(*c))).collect()
     }
     pub fn active_coordinates(&self) -> Vec<(Coordinates, &A)> {
         self.coordinates()

@@ -4,8 +4,8 @@ use crate::common::utils::Distance;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Coordinates {
-    pub x: usize,
-    pub y: usize,
+    pub x: u16,
+    pub y: u16,
 }
 
 impl Coordinates {

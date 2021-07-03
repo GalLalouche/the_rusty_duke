@@ -11,11 +11,11 @@ pub struct GameBoard {
 }
 
 impl GameBoard {
-    const BOARD_SIZE: usize = 6;
-    pub fn height(&self) -> usize {
+    const BOARD_SIZE: u16 = 6;
+    pub fn height(&self) -> u16 {
         self.board.height
     }
-    pub fn width(&self) -> usize {
+    pub fn width(&self) -> u16 {
         self.board.width
     }
     pub fn empty() -> GameBoard {
@@ -50,7 +50,7 @@ impl GameBoard {
             VerticalOffset::Bottom => 1,
             VerticalOffset::FarBottom => 2,
         };
-        usize::try_from(x).and_then(|x| usize::try_from(y).map(|y| Coordinates { x, y }))
+        u16::try_from(x).and_then(|x| u16::try_from(y).map(|y| Coordinates { x, y }))
             .ok()
             .filter(|e| self.board.is_in_bounds(*e))
     }

@@ -37,7 +37,7 @@ pub struct TokenSide {
 }
 
 impl TokenSide {
-    const SIDE: usize = 5;
+    pub const SIDE: u16 = 5;
 
     pub(in crate::game) fn new(map: HashMap<Offsets, TokenAction>) -> TokenSide {
         for (c, a) in &map {
