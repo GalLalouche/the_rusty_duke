@@ -1,4 +1,5 @@
 use crate::common::coordinates;
+use crate::common::coordinates::Coordinates;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum HorizontalOffset {
@@ -51,6 +52,9 @@ pub struct Offsets {
 }
 
 impl Offsets {
+    pub fn center_coordinates() -> Coordinates {
+        Coordinates { x: HorizontalOffset::Center.to_index(), y: VerticalOffset::Center.to_index() }
+    }
     pub fn horizontal_flipped(&self) -> Offsets {
         Offsets {
             x: self.x.flipped(),

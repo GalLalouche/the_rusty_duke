@@ -69,6 +69,10 @@ impl TokenSide {
             .map(|e| (e.0.into(), e.1))
             .collect()
     }
+
+    pub fn get_board(&self) -> &Board<TokenAction> {
+        &self.board
+    }
 }
 
 #[derive(Clone)]

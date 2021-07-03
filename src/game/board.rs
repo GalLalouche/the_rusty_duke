@@ -18,6 +18,9 @@ impl GameBoard {
     pub fn width(&self) -> u16 {
         self.board.width
     }
+    pub fn get_board(&self) -> &Board<OwnedToken> {
+        &self.board
+    }
     pub fn empty() -> GameBoard {
         GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
     }
