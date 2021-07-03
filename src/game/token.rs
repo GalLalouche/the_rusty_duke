@@ -76,16 +76,16 @@ pub struct GameToken {
     pub side_a: TokenSide,
     pub side_b: TokenSide,
     pub current_side: CurrentSide,
-    single_char_token: char,
+    pub name: String,
 }
 
 impl GameToken {
-    pub fn new(side_a: TokenSide, side_b: TokenSide, single_char_token: char) -> GameToken {
+    pub fn new(side_a: TokenSide, side_b: TokenSide, name: String) -> GameToken {
         GameToken {
             side_a,
             side_b,
             current_side: CurrentSide::Initial,
-            single_char_token,
+            name,
         }
     }
     pub fn flip(&mut self) -> () {
@@ -98,9 +98,10 @@ impl GameToken {
         }
     }
     pub fn single_char_token(&self) -> char {
+        let c = self.name.chars().next().unwrap();
         match self.current_side {
-            CurrentSide::Initial => self.single_char_token,
-            CurrentSide::Flipped => self.single_char_token.to_ascii_uppercase(),
+            CurrentSide::Initial => c.to_ascii_lowercase(),
+            CurrentSide::Flipped => c.to_ascii_uppercase(),
         }
     }
 }

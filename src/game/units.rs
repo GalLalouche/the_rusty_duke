@@ -21,7 +21,7 @@ pub fn duke(owner: Owner) -> OwnedToken {
         token: GameToken::new(
             sliders(HorizontalOffset::Left),
             sliders(VerticalOffset::Top),
-            'd',
+            "Duke".to_owned(),
         ),
         owner,
     }
@@ -49,7 +49,7 @@ pub fn footman(owner: Owner) -> OwnedToken {
                 Offsets { x: HorizontalOffset::Right, y: VerticalOffset::Bottom },
                 Offsets::centered(VerticalOffset::FarTop),
             ])),
-            'f',
+            "Footman".to_owned(),
         ),
         owner,
     }
