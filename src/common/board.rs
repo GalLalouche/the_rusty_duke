@@ -2,7 +2,7 @@ use std::mem;
 
 use crate::common::coordinates::Coordinates;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Board<A> {
     board: Vec<Vec<Option<A>>>,
     pub width: usize,
@@ -27,7 +27,7 @@ impl<A> Board<A> {
         }
     }
     fn verify_bounds(&self, c: Coordinates) -> () {
-        assert!(self.is_in_bounds(c), "Coordinate {} is out of bounds", c)
+        assert!(self.is_in_bounds(c), "Coordinate {:?} is out of bounds", c)
     }
     fn place(&mut self, c: Coordinates, a: Option<A>) -> Option<A> {
         self.verify_bounds(c);

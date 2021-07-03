@@ -1,6 +1,6 @@
 use crate::common::coordinates;
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum HorizontalOffset {
     FarLeft,
     Left,
@@ -22,7 +22,7 @@ impl HorizontalOffset {
 }
 
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum VerticalOffset {
     FarTop,
     Top,
@@ -44,39 +44,39 @@ impl VerticalOffset {
 }
 
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
-pub struct Coordinate {
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub struct Offsets {
     pub x: HorizontalOffset,
     pub y: VerticalOffset,
 }
 
-impl Coordinate {
-    pub fn horizontal_flipped(&self) -> Coordinate {
-        Coordinate {
+impl Offsets {
+    pub fn horizontal_flipped(&self) -> Offsets {
+        Offsets {
             x: self.x.flipped(),
             y: self.y,
         }
     }
-    pub fn vertical_flipped(&self) -> Coordinate {
-        Coordinate {
+    pub fn vertical_flipped(&self) -> Offsets {
+        Offsets {
             x: self.x,
             y: self.y.flipped(),
         }
     }
-    pub fn flipped(&self) -> Coordinate {
-        Coordinate {
+    pub fn flipped(&self) -> Offsets {
+        Offsets {
             x: self.x.flipped(),
             y: self.y.flipped(),
         }
     }
 
-    pub fn new(x: HorizontalOffset, y: VerticalOffset) -> Coordinate {
+    pub fn new(x: HorizontalOffset, y: VerticalOffset) -> Offsets {
         assert!(
             x != HorizontalOffset::Center || y != VerticalOffset::Center,
             "Cannot create a coordinate of two Centers");
-        Coordinate { x, y }
+        Offsets { x, y }
     }
-    pub fn centered<C: Centerable>(c: C) -> Coordinate {
+    pub fn centered<C: Centerable>(c: C) -> Offsets {
         c.center()
     }
     pub fn near_center(&self) -> bool {
@@ -90,20 +90,20 @@ impl Coordinate {
     }
 }
 
-impl From<coordinates::Coordinates> for Coordinate {
+impl From<coordinates::Coordinates> for Offsets {
     fn from(other: coordinates::Coordinates) -> Self {
-        Coordinate::new(Indexable::from_index(other.x), Indexable::from_index(other.x))
+        Offsets::new(Indexable::from_index(other.x), Indexable::from_index(other.y))
     }
 }
 
-impl From<Coordinate> for coordinates::Coordinates {
-    fn from(other: Coordinate) -> coordinates::Coordinates {
+impl From<Offsets> for coordinates::Coordinates {
+    fn from(other: Offsets) -> coordinates::Coordinates {
         coordinates::Coordinates { x: other.x.to_index(), y: other.y.to_index() }
     }
 }
 
 pub trait Centerable {
-    fn center(&self) -> Coordinate;
+    fn center(&self) -> Offsets;
     fn distance_from_center(&self) -> usize;
     fn is_centered(&self) -> bool {
         self.distance_from_center() == 0
@@ -111,8 +111,8 @@ pub trait Centerable {
 }
 
 impl Centerable for HorizontalOffset {
-    fn center(&self) -> Coordinate {
-        Coordinate {
+    fn center(&self) -> Offsets {
+        Offsets {
             x: self.clone(),
             y: VerticalOffset::Center,
         }
@@ -130,8 +130,8 @@ impl Centerable for HorizontalOffset {
 }
 
 impl Centerable for VerticalOffset {
-    fn center(&self) -> Coordinate {
-        Coordinate {
+    fn center(&self) -> Offsets {
+        Offsets {
             x: HorizontalOffset::Center,
             y: self.clone(),
         }
@@ -197,5 +197,27 @@ impl Indexable for VerticalOffset {
             4 => VerticalOffset::FarBottom,
             x => panic!("Unsupported integer <{}>", x)
         }
+    }
+}
+
+mod test {
+    use super::*;
+
+    #[test]
+    fn coordinate_to_offsets() {
+        let c = coordinates::Coordinates { x: 0, y: 2 };
+        assert_eq!(
+            Offsets::new(HorizontalOffset::FarLeft, VerticalOffset::Center),
+            c.into(),
+        )
+    }
+
+    #[test]
+    fn offsets_to_coordinates() {
+        let os = Offsets::new(HorizontalOffset::FarLeft, VerticalOffset::Center);
+        assert_eq!(
+            coordinates::Coordinates { x: 0, y: 2 },
+            os.into(),
+        )
     }
 }

@@ -22,7 +22,7 @@ impl GameBoard {
         GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
     }
     pub fn place(&mut self, c: Coordinates, t: OwnedToken) -> () {
-        assert!(self.board.is_empty(c), "Cannot insert token into occupied space {}", c);
+        assert!(self.board.is_empty(c), "Cannot insert token into occupied space {:?}", c);
         self.board.put(c, t);
     }
 
@@ -35,7 +35,7 @@ impl GameBoard {
     }
 
     fn to_absolute_coordinate(
-        &self, src: Coordinates, offset: offset::Coordinate) -> Option<Coordinates> {
+        &self, src: Coordinates, offset: offset::Offsets) -> Option<Coordinates> {
         let x: i32 = (src.x as i32) + match offset.x {
             HorizontalOffset::FarLeft => -2,
             HorizontalOffset::Left => -1,
@@ -58,7 +58,7 @@ impl GameBoard {
     fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
         src.linear_path_to(dst).iter().all(|c| self.board.is_empty(*c))
     }
-    fn can_apply(&self, src_token: &OwnedToken, src: Coordinates, c: offset::Coordinate, a: &TokenAction) -> Option<Coordinates> {
+    fn can_apply(&self, src_token: &OwnedToken, src: Coordinates, c: offset::Offsets, a: &TokenAction) -> Option<Coordinates> {
         self.to_absolute_coordinate(src, c)
             .filter(|dst| {
                 let can_move_to = self.board.get(*dst).map_or(false, |c| src_token.different_team(c));

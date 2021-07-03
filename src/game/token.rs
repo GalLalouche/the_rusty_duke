@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::assert_not;
 use crate::common::board::Board;
-use crate::game::offset::Coordinate;
+use crate::game::offset::Offsets;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CurrentSide {
@@ -21,7 +21,7 @@ impl CurrentSide {
 }
 
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TokenAction {
     Move,
     Jump,
@@ -31,7 +31,7 @@ pub enum TokenAction {
     Strike,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TokenSide {
     board: Board<TokenAction>,
 }
@@ -39,7 +39,7 @@ pub struct TokenSide {
 impl TokenSide {
     const SIDE: usize = 5;
 
-    pub(in crate::game) fn new(map: HashMap<Coordinate, TokenAction>) -> TokenSide {
+    pub(in crate::game) fn new(map: HashMap<Offsets, TokenAction>) -> TokenSide {
         for (c, a) in &map {
             match a {
                 TokenAction::Jump =>
@@ -63,7 +63,7 @@ impl TokenSide {
         res
     }
 
-    pub fn actions(&self) -> Vec<(Coordinate, &TokenAction)> {
+    pub fn actions(&self) -> Vec<(Offsets, &TokenAction)> {
         self.board.active_coordinates()
             .iter()
             .map(|e| (e.0.into(), e.1))
