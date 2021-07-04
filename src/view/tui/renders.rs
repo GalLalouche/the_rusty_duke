@@ -19,7 +19,7 @@ fn to_char(c: Coordinates, t: Option<&TokenAction>) -> char {
                 (HorizontalOffset::Right, VerticalOffset::Center) => '>',
                 (HorizontalOffset::Center, VerticalOffset::Top) => '^',
                 (HorizontalOffset::Center, VerticalOffset::Bottom) => '▾',
-                _ => panic!("Unexpected offset {:?} For slide", c),
+                _ => panic!("Unexpected slide offset {:?}", c),
             }
         }
         Some(TokenAction::Command) => '?',
@@ -50,7 +50,6 @@ fn render_token(o: Option<&OwnedToken>, area: Rect, buf: &mut Buffer) -> () {
                 to_char(c, t).to_string(), Style::default(),
             );
         }
-        // TODO: This hardcoded 2,2 should be coming from somewhere else
         let center = Offsets::center_coordinates();
         buf.set_string(
             inside_border.x + center.x,

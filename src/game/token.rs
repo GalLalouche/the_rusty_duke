@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::assert_not;
 use crate::common::board::Board;
 use crate::game::offset::Offsets;
+use crate::view::dumb_printer::print_board;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CurrentSide {
@@ -84,12 +85,12 @@ pub struct GameToken {
 }
 
 impl GameToken {
-    pub fn new(side_a: TokenSide, side_b: TokenSide, name: String) -> GameToken {
+    pub fn new(side_a: TokenSide, side_b: TokenSide, name: &str) -> GameToken {
         GameToken {
             side_a,
             side_b,
             current_side: CurrentSide::Initial,
-            name,
+            name: name.to_owned(),
         }
     }
     pub fn flip(&mut self) -> () {

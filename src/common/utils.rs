@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! assert_not {
-    ($b: expr) => {assert!($b)};
-    ($b: expr, $msg: expr) => {assert!($b, $msg)};
+    ($b: expr) => {assert!(!$b)};
+    ($b: expr, $msg: expr) => {assert!(!$b, $msg)};
 }
 
 pub trait Distance {
