@@ -1,139 +1,226 @@
-use std::collections::HashMap;
+use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalOffset};
+use crate::game::tile::{Tile, OwnedTile, Owner, TileAction, TileSide};
 
-use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::token::{GameToken, OwnedToken, Owner, TokenAction, TokenSide};
-
-macro_rules! hashmap {
-    ($($key: expr => $val: expr), *) => {{
-         let mut map = ::std::collections::HashMap::new();
-         $(map.insert($key, $val);)*
-         map
-    }}
-}
-
-// TODO: all tiles are left/right symmetric (which makes sense, since they are used by both players.
-// This should be reflected somehow.
-pub fn duke(owner: Owner) -> OwnedToken {
-    fn sliders<A: Centerable>(o: A) -> TokenSide {
-        let c = Offsets::centered(o);
-        TokenSide::new(
-            hashmap![c => TokenAction::Slide, c.flipped() => TokenAction::Slide])
-    }
-    OwnedToken {
-        token: GameToken::new(
-            sliders(HorizontalOffset::Left),
-            sliders(VerticalOffset::Top),
+pub fn duke(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&HorizontalSymmetricOffset::Near, TileAction::Slide)
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Slide),
+                (&VerticalOffset::Bottom, TileAction::Slide),
+            ]),
             "Duke",
         ),
         owner,
     }
 }
 
-fn near_moves(a: TokenAction) -> HashMap<Offsets, TokenAction> {
-    vec![
-        Offsets::centered(VerticalOffset::Top),
-        Offsets::centered(VerticalOffset::Bottom),
-        Offsets::centered(HorizontalOffset::Left),
-        Offsets::centered(HorizontalOffset::Right),
-    ].iter().map(|o| (*o, a)).collect()
+pub fn bowman(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Move),
+                (&VerticalOffset::FarBottom, TileAction::Jump),
+                (&HorizontalSymmetricOffset::Near, TileAction::Move),
+                (&HorizontalSymmetricOffset::Far, TileAction::Jump),
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Move),
+                (&VerticalOffset::FarTop, TileAction::Strike),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Strike),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+            ]),
+            "Bowman",
+        ),
+        owner,
+    }
 }
 
-// pub fn bowman(owner: Owner) -> OwnedToken {
-//     OwnedToken {
-//         token: GameToken::new(
-//             TokenSide::new(hashmap![
-//                 Offsets::centered(HorizontalOffset::Left) => TokenAction::Move,
-//                 Offsets::centered(HorizontalOffset::Right) => TokenAction::Move,
-//                 Offsets::centered(VerticalOffset::Top) => TokenAction::Move,
-//
-//                 Offsets::centered(HorizontalOffset::FarLeft) => TokenAction::Jump,
-//                 Offsets::centered(HorizontalOffset::FarRight) => TokenAction::Jump,
-//                 Offsets::centered(VerticalOffset::FarBottom) => TokenAction::Jump,
-//             ]),
-//             TokenSide::new(hashmap![
-//                 Offsets::centered(VerticalOffset::Top) => TokenAction::Move,
-//                 Offsets::centered(VerticalOffset::FarTop) => TokenAction::Strike,
-//
-//                 Offsets::new(HorizontalOffset::Left, VerticalOffset::Top) => TokenAction::Strike,
-//                 Offsets::new(HorizontalOffset::Right, VerticalOffset::Top) => TokenAction::Strike,
-//                 Offsets::new(HorizontalOffset::FarRight) => TokenAction::Jump,
-//                 Offsets::new(VerticalOffset::FarBottom) => TokenAction::Jump,
-//             ]),
-//             ])),
-//             "Bowman",
-//         ),
-//         owner,
-//     }
-// }
-
-pub fn footman(owner: Owner) -> OwnedToken {
-    fn moves(cs: Vec<Offsets>) -> HashMap<Offsets, TokenAction> {
-        cs.iter().cloned().map(|e| (e, TokenAction::Move)).collect()
-    }
-    OwnedToken {
-        token: GameToken::new(
-            TokenSide::new(near_moves(TokenAction::Move)),
-            TokenSide::new(moves(vec![
-                Offsets::new(HorizontalOffset::Left, VerticalOffset::Top),
-                Offsets::new(HorizontalOffset::Right, VerticalOffset::Top),
-                Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom),
-                Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom),
-                Offsets::centered(VerticalOffset::FarTop),
-            ])),
+pub fn footman(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&FourWaySymmetric::NearLinear, TileAction::Move)
+            ]),
+            TileSide::new(vec![
+                (&FourWaySymmetric::NearDiagonal, TileAction::Move),
+                (&VerticalOffset::FarTop, TileAction::Move),
+            ]),
             "Footman",
         ),
         owner,
     }
 }
 
-pub fn champion(owner: Owner) -> OwnedToken {
-    fn far_moves(a: TokenAction) -> HashMap<Offsets, TokenAction> {
-        vec![
-            Offsets::centered(VerticalOffset::FarTop),
-            Offsets::centered(VerticalOffset::FarBottom),
-            Offsets::centered(HorizontalOffset::FarLeft),
-            Offsets::centered(HorizontalOffset::FarRight),
-        ].iter().map(|o| (*o, a)).collect()
+pub fn dragoon(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&HorizontalSymmetricOffset::Near, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::Strike),
+                (&VerticalOffset::FarTop, TileAction::Strike),
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Move),
+                (&VerticalOffset::FarTop, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Slide),
+            ]),
+            "Dragoon",
+        ),
+        owner,
     }
-    fn chained(near_action: TokenAction, far_action: TokenAction) -> TokenSide {
-        TokenSide::new(near_moves(near_action).into_iter().chain(far_moves(far_action)).collect())
+}
+
+pub fn assassin(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarBottom), TileAction::JumpSlide),
+                (&VerticalOffset::FarTop, TileAction::JumpSlide),
+            ]),
+            TileSide::new(vec![
+                (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::JumpSlide),
+                (&VerticalOffset::FarBottom, TileAction::JumpSlide),
+            ]),
+            "Assassin",
+        ),
+        owner,
     }
-    OwnedToken {
-        token: GameToken::new(
-            chained(TokenAction::Move, TokenAction::Jump),
-            chained(TokenAction::Strike, TokenAction::Jump),
+}
+
+pub fn champion(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&FourWaySymmetric::NearLinear, TileAction::Move),
+                (&FourWaySymmetric::FarLinear, TileAction::Jump),
+            ]),
+            TileSide::new(vec![
+                (&FourWaySymmetric::NearLinear, TileAction::Strike),
+                (&FourWaySymmetric::FarLinear, TileAction::Jump),
+            ]),
             "Champion",
         ),
         owner,
     }
 }
 
-pub fn wizard(owner: Owner) -> OwnedToken {
-    OwnedToken {
-        token: GameToken::new(
-            TokenSide::new(
-                vec![
-                    Offsets::new(HorizontalOffset::Left, VerticalOffset::Top),
-                    Offsets::new(HorizontalOffset::Left, VerticalOffset::Center),
-                    Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom),
-                    Offsets::new(HorizontalOffset::Center, VerticalOffset::Top),
-                    Offsets::new(HorizontalOffset::Center, VerticalOffset::Bottom),
-                    Offsets::new(HorizontalOffset::Right, VerticalOffset::Top),
-                    Offsets::new(HorizontalOffset::Right, VerticalOffset::Center),
-                    Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom),
-                ].iter().map(|o| (*o, TokenAction::Move)).collect()
-            ),
-            TokenSide::new(
-                vec![
-                    Offsets::new(HorizontalOffset::FarLeft, VerticalOffset::FarTop),
-                    Offsets::new(HorizontalOffset::FarLeft, VerticalOffset::Center),
-                    Offsets::new(HorizontalOffset::FarLeft, VerticalOffset::FarBottom),
-                    Offsets::new(HorizontalOffset::Center, VerticalOffset::FarBottom),
-                    Offsets::new(HorizontalOffset::FarRight, VerticalOffset::FarTop),
-                    Offsets::new(HorizontalOffset::FarRight, VerticalOffset::Center),
-                    Offsets::new(HorizontalOffset::FarRight, VerticalOffset::FarBottom),
-                ].iter().map(|o| (*o, TokenAction::Jump)).collect()
-            ),
+pub fn general(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Move),
+                (&VerticalOffset::Bottom, TileAction::Move),
+                (&HorizontalSymmetricOffset::Far, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Move),
+                (&HorizontalSymmetricOffset::Near, TileAction::Move),
+                (&HorizontalSymmetricOffset::Far, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+                (&HorizontalSymmetricOffset::Near, TileAction::Command),
+                (&VerticalOffset::Bottom, TileAction::Command),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Command),
+            ]),
+            "General",
+        ),
+        owner,
+    }
+}
+
+pub fn marshall(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::Jump),
+                (&HorizontalSymmetricOffset::Near, TileAction::Slide),
+                (&VerticalOffset::FarBottom, TileAction::Jump),
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Move),
+                (&HorizontalSymmetricOffset::Near, TileAction::Move),
+                (&HorizontalSymmetricOffset::Far, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Move),
+                (&VerticalOffset::Top, TileAction::Command),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Command),
+            ]),
+            "Marshall",
+        ),
+        owner,
+    }
+}
+
+pub fn priest(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&FourWaySymmetric::NearDiagonal, TileAction::Slide),
+            ]),
+            TileSide::new(vec![
+                (&FourWaySymmetric::NearDiagonal, TileAction::Move),
+                (&FourWaySymmetric::FarDiagonal, TileAction::Jump),
+            ]),
+            "Priest",
+        ),
+        owner,
+    }
+}
+
+pub fn knight(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&HorizontalSymmetricOffset::Near, TileAction::Move),
+                (&VerticalOffset::Bottom, TileAction::Move),
+                (&VerticalOffset::FarBottom, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Slide),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+                (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarBottom), TileAction::Move),
+            ]),
+            "Knight",
+        ),
+        owner,
+    }
+}
+
+pub fn pikeman(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Move),
+                (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::Move),
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Top, TileAction::Move),
+                (&VerticalOffset::Bottom, TileAction::Move),
+                (&VerticalOffset::FarBottom, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Strike),
+            ]),
+            "Pikeman",
+        ),
+        owner,
+    }
+}
+
+pub fn wizard(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&FourWaySymmetric::NearLinear, TileAction::Move),
+                (&FourWaySymmetric::NearDiagonal, TileAction::Move),
+            ]),
+            TileSide::new(vec![
+                (&FourWaySymmetric::FarLinear, TileAction::Jump),
+                (&FourWaySymmetric::FarDiagonal, TileAction::Jump),
+            ]),
             "Wizard",
         ),
         owner,
@@ -142,23 +229,39 @@ pub fn wizard(owner: Owner) -> OwnedToken {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use paste::paste;
 
+    use super::*;
+
     macro_rules! no_panics {
-        ($($ctor: ident),+) => {
+        ($($ctor: ident),+ $(,)?) => {
             $(paste! {
                 #[test]
                 fn [<$ctor _side_a_active_does_not_panic>]() {
-                    $ctor(Owner::Player1).token.side_a.actions();
+                    $ctor(Owner::Player1).tile.side_a.actions();
                 }
                 #[test]
                 fn [<$ctor _side_b_active_does_not_panic>]() {
-                    $ctor(Owner::Player1).token.side_b.actions();
+                    $ctor(Owner::Player1).tile.side_b.actions();
                 }
             })+
         }
     }
 
-    no_panics!(duke, footman, champion, wizard);
+    no_panics!(
+        duke,
+        bowman,
+        dragoon,
+        assassin,
+        champion,
+        footman,
+
+        general,
+        marshall,
+        priest,
+        // TODO: Longbownman
+        knight,
+        pikeman,
+        wizard,
+    );
 }

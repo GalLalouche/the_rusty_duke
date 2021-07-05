@@ -1,10 +1,11 @@
+use std::borrow::Borrow;
+use std::collections::{HashMap, HashSet};
+
 use rand::Rng;
-use std::collections::HashMap;
 
 use crate::assert_not;
 use crate::common::board::Board;
-use crate::game::offset::Offsets;
-use crate::view::dumb_printer::print_board;
+use crate::game::offset::{Offsetable, Offsets};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CurrentSide {
@@ -23,7 +24,7 @@ impl CurrentSide {
 
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum TokenAction {
+pub enum TileAction {
     Move,
     Jump,
     Slide,
@@ -33,60 +34,94 @@ pub enum TokenAction {
 }
 
 #[derive(Debug, Clone)]
-pub struct TokenSide {
-    board: Board<TokenAction>,
+pub struct TileSide {
+    board: Board<TileAction>,
 }
 
-impl TokenSide {
+impl TileSide {
     pub const SIDE: u16 = 5;
 
-    pub(in crate::game) fn new(map: HashMap<Offsets, TokenAction>) -> TokenSide {
-        for (c, a) in &map {
-            match a {
-                TokenAction::Jump =>
-                    assert_not!(c.near_center(), "Jumps near the center should be moves"),
-                TokenAction::Slide =>
-                    assert!(c.near_center(), "Slides should be near the center"),
-                TokenAction::JumpSlide =>
-                    assert!(c.near_center(), "Jump slides should be near the center (?)"),
-                TokenAction::Move =>
-                    assert!(c.is_linear_from_center(), "Moves can't be L shaped"),
-                // All combinations are valid.
-                TokenAction::Strike => {}
-                TokenAction::Command => {}
-            }
-        }
-        let mut res = TokenSide { board: Board::square(TokenSide::SIDE) };
-        for (k, v) in map {
-            let result = res.board.put(k.into(), v);
+    pub(in crate::game) fn new(
+        vec: Vec<(&dyn Offsetable, TileAction)>) -> TileSide {
+        let map: HashMap<Offsets, TileAction> = vec
+            .iter()
+            .flat_map(|(tso, ta)|
+                tso
+                    .offsets()
+                    .iter()
+                    .map(|o| (*o, *ta))
+                    .collect::<Vec<_>>()
+            ).collect();
+        TileSide::verify_actions(&map);
+        TileSide::verify_no_illegal_repeats(&map);
+        let mut res = TileSide { board: Board::square(TileSide::SIDE) };
+        for (k, v) in map.borrow() {
+            let result = res.board.put((*k).into(), *v);
             assert!(result.is_none());
         }
         res
     }
 
-    pub fn actions(&self) -> Vec<(Offsets, &TokenAction)> {
+    fn verify_actions(map: &HashMap<Offsets, TileAction>) -> () {
+        for (c, a) in map.borrow() {
+            match a {
+                TileAction::Jump =>
+                    assert_not!(c.near_center(), "Jumps near the center should be moves"),
+                TileAction::Slide =>
+                    assert!(c.near_center(), "Slides should be near the center"),
+                TileAction::JumpSlide =>
+                    assert_not!(c.near_center(), "Jump slides not should be near the center"),
+                TileAction::Move =>
+                    assert!(c.is_linear_from_center(), "Moves can't be L shaped"),
+                // All combinations are valid.
+                TileAction::Strike => {}
+                TileAction::Command => {}
+            }
+        }
+    }
+
+    fn verify_no_illegal_repeats(map: &HashMap<Offsets, TileAction>) -> () {
+        let mut commands = HashSet::new();
+        let mut non_command_actions = HashSet::new();
+        let mut unit_icon = 0; // TODO: unused for now
+
+        for (c, a) in map.borrow() {
+            match a {
+                TileAction::Command => {
+                    assert!(!commands.contains(c), "Command already exists for {:?}", c);
+                    commands.insert(c);
+                }
+                _ => {
+                    assert_not!(commands.contains(c), "Non-Command already exists for {:?}", c);
+                    non_command_actions.insert(c);
+                }
+            }
+        }
+    }
+
+    pub fn actions(&self) -> Vec<(Offsets, &TileAction)> {
         self.board.active_coordinates()
             .iter()
             .map(|e| (e.0.into(), e.1))
             .collect()
     }
 
-    pub fn get_board(&self) -> &Board<TokenAction> {
+    pub fn get_board(&self) -> &Board<TileAction> {
         &self.board
     }
 }
 
 #[derive(Clone)]
-pub struct GameToken {
-    pub side_a: TokenSide,
-    pub side_b: TokenSide,
+pub struct Tile {
+    pub side_a: TileSide,
+    pub side_b: TileSide,
     pub current_side: CurrentSide,
     pub name: String,
 }
 
-impl GameToken {
-    pub fn new(side_a: TokenSide, side_b: TokenSide, name: &str) -> GameToken {
-        GameToken {
+impl Tile {
+    pub fn new(side_a: TileSide, side_b: TileSide, name: &str) -> Tile {
+        Tile {
             side_a,
             side_b,
             current_side: CurrentSide::Initial,
@@ -96,7 +131,7 @@ impl GameToken {
     pub fn flip(&mut self) -> () {
         self.current_side = self.current_side.flip()
     }
-    pub fn get_current_side(&self) -> &TokenSide {
+    pub fn get_current_side(&self) -> &TileSide {
         match self.current_side {
             CurrentSide::Initial => &self.side_a,
             CurrentSide::Flipped => &self.side_b,
@@ -117,24 +152,15 @@ pub enum Owner {
     Player2,
 }
 
-impl Owner {
-    fn same_team(&self, other: &Self) -> bool {
-        self == other
-    }
-    fn difference_team(&self, other: &Self) -> bool {
-        self != other
-    }
-}
-
 #[derive(Clone)]
-pub struct OwnedToken {
-    pub token: GameToken,
+pub struct OwnedTile {
+    pub tile: Tile,
     pub owner: Owner,
 }
 
-impl OwnedToken {
+impl OwnedTile {
     pub fn single_char_token(&self) -> char {
-        self.token.single_char_token()
+        self.tile.single_char_token()
     }
 }
 
@@ -151,7 +177,7 @@ impl Ownership for &Owner {
     }
 }
 
-impl Ownership for OwnedToken {
+impl Ownership for OwnedTile {
     fn same_team(&self, other: &Self) -> bool {
         self.owner == other.owner
     }
@@ -159,16 +185,16 @@ impl Ownership for OwnedToken {
 
 
 #[derive(Clone)]
-pub struct TokenBag {
-    bag: Vec<GameToken>,
+pub struct TileBag {
+    bag: Vec<Tile>,
 }
 
-impl TokenBag {
-    pub fn new(bag: Vec<GameToken>) -> TokenBag {
-        TokenBag { bag }
+impl TileBag {
+    pub fn new(bag: Vec<Tile>) -> TileBag {
+        TileBag { bag }
     }
 
-    pub fn pull(&mut self) -> Option<GameToken> {
+    pub fn pull(&mut self) -> Option<Tile> {
         if self.bag.is_empty() {
             None
         } else {
@@ -178,14 +204,14 @@ impl TokenBag {
         }
     }
 
-    pub fn remaining(&self) -> &Vec<GameToken> {
+    pub fn remaining(&self) -> &Vec<Tile> {
         &self.bag
     }
 }
 
 #[derive(Clone)]
 pub struct DiscardBag {
-    bag: Vec<GameToken>,
+    bag: Vec<Tile>,
 }
 
 impl DiscardBag {
@@ -193,11 +219,11 @@ impl DiscardBag {
         DiscardBag { bag: Vec::new() }
     }
 
-    pub fn add(&mut self, t: GameToken) -> () {
+    pub fn add(&mut self, t: Tile) -> () {
         self.bag.push(t);
     }
 
-    pub fn existing(&self) -> &Vec<GameToken> {
+    pub fn existing(&self) -> &Vec<Tile> {
         &self.bag
     }
 }

@@ -1,9 +1,9 @@
 use crate::common::utils::{MkString, Vectors};
 use crate::game::state::GameState;
-use crate::game::token::{OwnedToken};
+use crate::game::tile::{OwnedTile};
 
 pub fn print_board(gs: &GameState) -> String {
-    fn to_row(row: &Vec<Option<OwnedToken>>) -> String {
+    fn to_row(row: &Vec<Option<OwnedTile>>) -> String {
         row.iter()
             .map(|o| o.as_ref().map_or(' ', |t| t.single_char_token()).to_string())
             .collect::<Vec<String>>()

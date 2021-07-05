@@ -13,8 +13,8 @@ use crate::common::coordinates::Coordinates;
 use crate::game::board::GameBoard;
 use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::state::{DukeInitialLocation, FootmenSetup, GameState};
-use crate::game::token::{CurrentSide, OwnedToken, TokenAction, TokenBag};
-use crate::game::token::Owner::Player1;
+use crate::game::tile::{CurrentSide, OwnedTile, TileAction, TileBag};
+use crate::game::tile::Owner::Player1;
 use crate::game::units;
 
 mod common;
@@ -63,8 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    println!("{:?}", units::duke(Player1).token.get_current_side().actions());
-    println!("{:?}", units::footman(Player1).token.get_current_side().actions());
+    println!("{:?}", units::duke(Player1).tile.get_current_side().actions());
+    println!("{:?}", units::footman(Player1).tile.get_current_side().actions());
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .split(size);
 
             let gs = GameState::new(
-                &TokenBag::new(Vec::new()),
+                &TileBag::new(Vec::new()),
                 (DukeInitialLocation::Left, FootmenSetup::Right),
                 (DukeInitialLocation::Right, FootmenSetup::Right),
             );

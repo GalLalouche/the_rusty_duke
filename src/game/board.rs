@@ -4,10 +4,10 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::game::offset;
 use crate::game::offset::{HorizontalOffset, VerticalOffset};
-use crate::game::token::{OwnedToken, Ownership, TokenAction};
+use crate::game::tile::{OwnedTile, Ownership, TileAction};
 
 pub struct GameBoard {
-    board: Board<OwnedToken>,
+    board: Board<OwnedTile>,
 }
 
 impl GameBoard {
@@ -18,22 +18,22 @@ impl GameBoard {
     pub fn width(&self) -> u16 {
         self.board.width
     }
-    pub fn get_board(&self) -> &Board<OwnedToken> {
+    pub fn get_board(&self) -> &Board<OwnedTile> {
         &self.board
     }
     pub fn empty() -> GameBoard {
         GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
     }
-    pub fn place(&mut self, c: Coordinates, t: OwnedToken) -> () {
+    pub fn place(&mut self, c: Coordinates, t: OwnedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert token into occupied space {:?}", c);
         self.board.put(c, t);
     }
 
-    pub fn rows(&self) -> &Vec<Vec<Option<OwnedToken>>> {
+    pub fn rows(&self) -> &Vec<Vec<Option<OwnedTile>>> {
         self.board.rows()
     }
 
-    pub fn get(&self, c: Coordinates) -> Option<&OwnedToken> {
+    pub fn get(&self, c: Coordinates) -> Option<&OwnedTile> {
         self.board.get(c)
     }
 
@@ -61,17 +61,17 @@ impl GameBoard {
     fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
         src.linear_path_to(dst).iter().all(|c| self.board.is_empty(*c))
     }
-    fn can_apply(&self, src_token: &OwnedToken, src: Coordinates, c: offset::Offsets, a: &TokenAction) -> Option<Coordinates> {
+    fn can_apply(&self, src_token: &OwnedTile, src: Coordinates, c: offset::Offsets, a: &TileAction) -> Option<Coordinates> {
         self.to_absolute_coordinate(src, c)
             .filter(|dst| {
                 let can_move_to = self.board.get(*dst).map_or(false, |c| src_token.different_team(c));
                 match a {
-                    TokenAction::Move => self.unobstructed(src, *dst) && can_move_to,
-                    TokenAction::Jump => can_move_to,
-                    TokenAction::Slide => unimplemented!(),
-                    TokenAction::Command => unimplemented!(),
-                    TokenAction::JumpSlide => unimplemented!(),
-                    TokenAction::Strike => unimplemented!(),
+                    TileAction::Move => self.unobstructed(src, *dst) && can_move_to,
+                    TileAction::Jump => can_move_to,
+                    TileAction::Slide => unimplemented!(),
+                    TileAction::Command => unimplemented!(),
+                    TileAction::JumpSlide => unimplemented!(),
+                    TileAction::Strike => unimplemented!(),
                 }
             })
     }

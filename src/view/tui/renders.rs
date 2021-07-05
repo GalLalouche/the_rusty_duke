@@ -6,13 +6,13 @@ use tui::widgets::{Block, Borders, BorderType, Widget};
 use crate::common::coordinates::Coordinates;
 use crate::game::board::GameBoard;
 use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::token::{CurrentSide, OwnedToken, TokenAction, TokenSide};
+use crate::game::tile::{CurrentSide, OwnedTile, TileAction, TileSide};
 
-fn to_char(c: Coordinates, t: Option<&TokenAction>) -> char {
+fn to_char(c: Coordinates, t: Option<&TileAction>) -> char {
     match t {
-        Some(TokenAction::Move) => '●',
-        Some(TokenAction::Jump) => '○',
-        Some(TokenAction::Slide) => {
+        Some(TileAction::Move) => '●',
+        Some(TileAction::Jump) => '○',
+        Some(TileAction::Slide) => {
             let o = Offsets::from(c);
             match (o.x, o.y) {
                 (HorizontalOffset::Left, VerticalOffset::Center) => '<',
@@ -22,27 +22,27 @@ fn to_char(c: Coordinates, t: Option<&TokenAction>) -> char {
                 _ => panic!("Unexpected slide offset {:?}", c),
             }
         }
-        Some(TokenAction::Command) => '?',
-        Some(TokenAction::JumpSlide) => '⃤',
-        Some(TokenAction::Strike) => '☆',
+        Some(TileAction::Command) => '?',
+        Some(TileAction::JumpSlide) => '⃤',
+        Some(TileAction::Strike) => '☆',
         None => '-'
     }
 }
 
 // Can't be a proper impl because there's no way to impl that for an Option :\
-fn render_token(o: Option<&OwnedToken>, area: Rect, buf: &mut Buffer) -> () {
+fn render_token(o: Option<&OwnedTile>, area: Rect, buf: &mut Buffer) -> () {
     let b = Block::default()
         .borders(Borders::ALL)
         ;
     let with_title_maybe = if let Some(ow) = o {
-        b.title(ow.token.name.to_owned())
+        b.title(ow.tile.name.to_owned())
     } else {
         b
     };
     let inside_border = with_title_maybe.inner(area);
     with_title_maybe.render(area, buf);
     if let Some(ow) = o {
-        for (c, t) in ow.token.get_current_side().get_board().all_coordinated_values() {
+        for (c, t) in ow.tile.get_current_side().get_board().all_coordinated_values() {
             let normalized_c: Coordinates = c.into();
             buf.set_string(
                 inside_border.x + normalized_c.x as u16,
@@ -54,7 +54,7 @@ fn render_token(o: Option<&OwnedToken>, area: Rect, buf: &mut Buffer) -> () {
         buf.set_string(
             inside_border.x + center.x,
             inside_border.y + center.y,
-            match ow.token.current_side {
+            match ow.tile.current_side {
                 CurrentSide::Initial => "♙",
                 CurrentSide::Flipped => "♟︎",
             },
@@ -70,8 +70,8 @@ impl Widget for GameBoard {
             .border_type(BorderType::Double)
             .borders(Borders::ALL)
             ;
-        let width = TokenSide::SIDE + 2;
-        let height = TokenSide::SIDE + 2;
+        let width = TileSide::SIDE + 2;
+        let height = TileSide::SIDE + 2;
         let game_board_area = Rect {
             x: area.x,
             y: area.y,

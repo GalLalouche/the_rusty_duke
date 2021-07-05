@@ -1,5 +1,14 @@
+use std::hash::Hash;
+
 use crate::common::coordinates;
 use crate::common::coordinates::Coordinates;
+use crate::game::offset::HorizontalOffset::{FarLeft, FarRight, Left, Right};
+use crate::game::offset::VerticalOffset::{Bottom, FarBottom, FarTop, Top};
+use HorizontalSymmetricOffset::{Far, Near};
+
+pub trait Offsetable {
+    fn offsets(&self) -> Vec<Offsets>;
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum HorizontalOffset {
@@ -13,11 +22,68 @@ pub enum HorizontalOffset {
 impl HorizontalOffset {
     pub fn flipped(&self) -> HorizontalOffset {
         match self {
-            HorizontalOffset::FarLeft => HorizontalOffset::FarRight,
-            HorizontalOffset::Left => HorizontalOffset::Right,
+            HorizontalOffset::FarLeft => FarRight,
+            HorizontalOffset::Left => Right,
             HorizontalOffset::Center => HorizontalOffset::Center,
-            HorizontalOffset::Right => HorizontalOffset::Left,
-            HorizontalOffset::FarRight => HorizontalOffset::FarLeft,
+            HorizontalOffset::Right => Left,
+            HorizontalOffset::FarRight => FarLeft,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub enum HorizontalSymmetricOffset {
+    Far,
+    Near,
+    Center,
+}
+
+impl Offsetable for HorizontalSymmetricOffset {
+    fn offsets(&self) -> Vec<Offsets> {
+        assert_ne!(*self, HorizontalSymmetricOffset::Center);
+        (*self, VerticalOffset::Center).offsets()
+    }
+}
+
+impl Offsetable for (HorizontalSymmetricOffset, VerticalOffset) {
+    fn offsets(&self) -> Vec<Offsets> {
+        (match self.0 {
+            HorizontalSymmetricOffset::Far => vec![FarLeft, FarRight],
+            HorizontalSymmetricOffset::Near => vec![Left, Right],
+            HorizontalSymmetricOffset::Center => vec![HorizontalOffset::Center],
+        }).iter().map(|ho| Offsets::new(*ho, self.1)).collect()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub enum FourWaySymmetric {
+    NearLinear,
+    FarLinear,
+    NearDiagonal,
+    FarDiagonal,
+}
+
+impl Offsetable for FourWaySymmetric {
+    fn offsets(&self) -> Vec<Offsets> {
+        match self {
+            FourWaySymmetric::NearLinear =>
+                vec![Left.center(), Right.center()],
+            FourWaySymmetric::FarLinear =>
+                vec![FarLeft.center(), FarRight.center()],
+            FourWaySymmetric::NearDiagonal =>
+                vec![
+                    Offsets::new(Left, Top),
+                    Offsets::new(Right, Top),
+                    Offsets::new(Left, Bottom),
+                    Offsets::new(Right, Bottom),
+                ],
+            FourWaySymmetric::FarDiagonal =>
+                vec![
+                    Offsets::new(FarLeft, FarTop),
+                    Offsets::new(FarRight, FarTop),
+                    Offsets::new(FarLeft, FarBottom),
+                    Offsets::new(FarRight, FarBottom),
+                ],
         }
     }
 }
@@ -32,14 +98,24 @@ pub enum VerticalOffset {
     FarBottom,
 }
 
+impl Offsetable for VerticalOffset {
+    fn offsets(&self) -> Vec<Offsets> {
+        vec![Offsets::new(HorizontalOffset::Center, *self)]
+    }
+}
+
 impl VerticalOffset {
+    pub fn symmetric_centered(&self) -> (HorizontalSymmetricOffset, VerticalOffset) {
+        assert_ne!(*self, VerticalOffset::Center);
+        (HorizontalSymmetricOffset::Center, *self)
+    }
     pub fn flipped(&self) -> VerticalOffset {
         match self {
-            VerticalOffset::FarTop => VerticalOffset::FarBottom,
-            VerticalOffset::Top => VerticalOffset::Bottom,
+            VerticalOffset::FarTop => FarBottom,
+            VerticalOffset::Top => Bottom,
             VerticalOffset::Center => VerticalOffset::Center,
-            VerticalOffset::Bottom => VerticalOffset::Top,
-            VerticalOffset::FarBottom => VerticalOffset::FarTop,
+            VerticalOffset::Bottom => Top,
+            VerticalOffset::FarBottom => FarTop,
         }
     }
 }
@@ -143,11 +219,11 @@ impl Centerable for VerticalOffset {
 
     fn distance_from_center(&self) -> u16 {
         match self {
-            VerticalOffset::FarTop => 2,
-            VerticalOffset::Top => 1,
+            FarTop => 2,
+            Top => 1,
             VerticalOffset::Center => 0,
-            VerticalOffset::Bottom => 1,
-            VerticalOffset::FarBottom => 2,
+            Bottom => 1,
+            FarBottom => 2,
         }
     }
 }
@@ -171,11 +247,11 @@ impl Indexable for HorizontalOffset {
 
     fn from_index(i: u16) -> Self {
         match i {
-            0 => HorizontalOffset::FarLeft,
-            1 => HorizontalOffset::Left,
+            0 => FarLeft,
+            1 => Left,
             2 => HorizontalOffset::Center,
-            3 => HorizontalOffset::Right,
-            4 => HorizontalOffset::FarRight,
+            3 => Right,
+            4 => FarRight,
             x => panic!("Unsupported integer <{}>", x)
         }
     }
@@ -194,11 +270,11 @@ impl Indexable for VerticalOffset {
 
     fn from_index(i: u16) -> Self {
         match i {
-            0 => VerticalOffset::FarTop,
-            1 => VerticalOffset::Top,
+            0 => FarTop,
+            1 => Top,
             2 => VerticalOffset::Center,
-            3 => VerticalOffset::Bottom,
-            4 => VerticalOffset::FarBottom,
+            3 => Bottom,
+            4 => FarBottom,
             x => panic!("Unsupported integer <{}>", x)
         }
     }
@@ -211,14 +287,14 @@ mod test {
     fn coordinate_to_offsets() {
         let c = coordinates::Coordinates { x: 0, y: 2 };
         assert_eq!(
-            Offsets::new(HorizontalOffset::FarLeft, VerticalOffset::Center),
+            Offsets::new(FarLeft, VerticalOffset::Center),
             c.into(),
         )
     }
 
     #[test]
     fn offsets_to_coordinates() {
-        let os = Offsets::new(HorizontalOffset::FarLeft, VerticalOffset::Center);
+        let os = Offsets::new(FarLeft, VerticalOffset::Center);
         assert_eq!(
             coordinates::Coordinates { x: 0, y: 2 },
             os.into(),
