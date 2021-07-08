@@ -171,3 +171,16 @@ mod test {
         );
     }
 }
+
+pub trait Containing<A: Eq> {
+    fn contains(&self, a: &A) -> bool;
+}
+
+impl <A: Eq> Containing<A> for Option<A> {
+    fn contains(&self, a: &A) -> bool {
+        match self {
+            None => false,
+            Some(s) => s == a,
+        }
+    }
+}

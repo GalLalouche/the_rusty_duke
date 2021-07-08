@@ -5,9 +5,10 @@ use rand::Rng;
 
 use crate::assert_not;
 use crate::common::board::Board;
-use crate::game::offset::{Offsetable, Offsets, Centerable};
+use crate::common::coordinates::Coordinates;
+use crate::game::offset::{Centerable, Indexable, Offsetable, Offsets, VerticalOffset};
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CurrentSide {
     Initial,
     Flipped,
@@ -105,12 +106,15 @@ impl TileSide {
                     assert!(!commands.contains(c), "Command already exists for {:?}", c);
                     commands.insert(c);
                 }
+                TileAction::Unit =>
+                    unit_icon+= 1,
                 _ => {
                     assert_not!(commands.contains(c), "Non-Command already exists for {:?}", c);
                     non_command_actions.insert(c);
                 }
             }
         }
+        assert_eq!(unit_icon, 1, "Unit action should have been 1, was {}", unit_icon);
     }
 
     pub fn actions(&self) -> Vec<(Offsets, &TileAction)> {
@@ -123,9 +127,19 @@ impl TileSide {
     pub fn get_board(&self) -> &Board<TileAction> {
         &self.board
     }
+
+    pub fn center_offset(&self) -> VerticalOffset {
+        let center_horizontal_offset = TileSide::SIDE / 2;
+        for y in 0..5 {
+            if self.board.get(Coordinates{x: center_horizontal_offset, y}) == Some(&TileAction::Unit) {
+                return VerticalOffset::from_index(y);
+            };
+        }
+        panic!("No Unit action found in the center columns;\n{:?}", self);
+    }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Tile {
     pub side_a: TileSide,
     pub side_b: TileSide,
@@ -198,7 +212,7 @@ impl Ownership for OwnedTile {
 }
 
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TileBag {
     bag: Vec<Tile>,
 }
@@ -223,7 +237,7 @@ impl TileBag {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct DiscardBag {
     bag: Vec<Tile>,
 }
