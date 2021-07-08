@@ -1,4 +1,4 @@
-use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalOffset};
+use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalOffset, Offsets};
 use crate::game::tile::{Tile, OwnedTile, Owner, TileAction, TileSide};
 
 pub fn duke(owner: Owner) -> OwnedTile {
@@ -171,6 +171,27 @@ pub fn priest(owner: Owner) -> OwnedTile {
     }
 }
 
+pub fn longbowman(owner: Owner) -> OwnedTile {
+    OwnedTile {
+        tile: Tile::new(
+            TileSide::new(vec![
+                (&VerticalOffset::Bottom, TileAction::Unit),
+                (&VerticalOffset::Center, TileAction::Move),
+                (&VerticalOffset::FarBottom, TileAction::Move),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+            ]),
+            TileSide::new(vec![
+                (&VerticalOffset::Bottom, TileAction::Unit),
+                (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarBottom), TileAction::Move),
+                (&VerticalOffset::Top, TileAction::Strike),
+                (&VerticalOffset::FarTop, TileAction::Strike),
+            ]),
+            "Longbowman",
+        ),
+        owner,
+    }
+}
+
 pub fn knight(owner: Owner) -> OwnedTile {
     OwnedTile {
         tile: Tile::new(
@@ -259,7 +280,7 @@ mod test {
         general,
         marshall,
         priest,
-        // TODO: Longbownman
+        longbowman,
         knight,
         pikeman,
         wizard,

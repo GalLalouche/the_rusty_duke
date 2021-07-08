@@ -5,7 +5,7 @@ use rand::Rng;
 
 use crate::assert_not;
 use crate::common::board::Board;
-use crate::game::offset::{Offsetable, Offsets};
+use crate::game::offset::{Offsetable, Offsets, Centerable};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CurrentSide {
@@ -25,6 +25,7 @@ impl CurrentSide {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TileAction {
+    Unit,
     Move,
     Jump,
     Slide,
@@ -43,7 +44,7 @@ impl TileSide {
 
     pub(in crate::game) fn new(
         vec: Vec<(&dyn Offsetable, TileAction)>) -> TileSide {
-        let map: HashMap<Offsets, TileAction> = vec
+        let mut map: HashMap<Offsets, TileAction> = vec
             .iter()
             .flat_map(|(tso, ta)|
                 tso
@@ -52,8 +53,11 @@ impl TileSide {
                     .map(|o| (*o, *ta))
                     .collect::<Vec<_>>()
             ).collect();
-        TileSide::verify_actions(&map);
+        if map.iter().all(|(_, v)| *v != TileAction::Unit) {
+            map.insert(Offsets::center(), TileAction::Unit);
+        }
         TileSide::verify_no_illegal_repeats(&map);
+        TileSide::verify_actions(&map);
         let mut res = TileSide { board: Board::square(TileSide::SIDE) };
         for (k, v) in map.borrow() {
             let result = res.board.put((*k).into(), *v);
@@ -63,16 +67,26 @@ impl TileSide {
     }
 
     fn verify_actions(map: &HashMap<Offsets, TileAction>) -> () {
+        let center =
+            map.iter().find(|(_, a)| **a == TileAction::Unit).expect("No Unit action found").0;
+        let is_near_center = |o: &Offsets| {
+            o.is_near(center)
+        };
+        let is_linear_from_center = |o: &Offsets| {
+            o.is_linear_from(center)
+        };
         for (c, a) in map.borrow() {
             match a {
+                TileAction::Unit =>
+                    assert!(c.x.is_centered(), "The tile should always be horizontally centered"),
                 TileAction::Jump =>
-                    assert_not!(c.near_center(), "Jumps near the center should be moves"),
+                    assert_not!(is_near_center(c), "Jumps near the center should be moves"),
                 TileAction::Slide =>
-                    assert!(c.near_center(), "Slides should be near the center"),
+                    assert!(is_near_center(c), "Slides should be near the center"),
                 TileAction::JumpSlide =>
-                    assert_not!(c.near_center(), "Jump slides not should be near the center"),
+                    assert_not!(is_near_center(c), "Jump slides not should be near the center"),
                 TileAction::Move =>
-                    assert!(c.is_linear_from_center(), "Moves can't be L shaped"),
+                    assert!(is_linear_from_center(c), "Moves can't be L shaped"),
                 // All combinations are valid.
                 TileAction::Strike => {}
                 TileAction::Command => {}

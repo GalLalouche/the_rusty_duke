@@ -8,7 +8,7 @@ use crate::game::board::GameBoard;
 use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::tile::{CurrentSide, OwnedTile, TileAction, TileSide};
 
-fn to_char(c: Coordinates, t: Option<&TileAction>) -> char {
+fn to_char(c: Coordinates, t: Option<&TileAction>, side: CurrentSide) -> char {
     match t {
         Some(TileAction::Move) => '●',
         Some(TileAction::Jump) => '○',
@@ -25,7 +25,11 @@ fn to_char(c: Coordinates, t: Option<&TileAction>) -> char {
         Some(TileAction::Command) => '?',
         Some(TileAction::JumpSlide) => '⃤',
         Some(TileAction::Strike) => '☆',
-        None => '-'
+        Some(TileAction::Unit) => match side {
+            CurrentSide::Initial => '♙',
+            CurrentSide::Flipped => '♟',
+        },
+        None => '-',
     }
 }
 
@@ -47,19 +51,9 @@ fn render_token(o: Option<&OwnedTile>, area: Rect, buf: &mut Buffer) -> () {
             buf.set_string(
                 inside_border.x + normalized_c.x as u16,
                 inside_border.y + normalized_c.y as u16,
-                to_char(c, t).to_string(), Style::default(),
+                to_char(c, t, ow.tile.current_side).to_string(), Style::default(),
             );
         }
-        let center = Offsets::center_coordinates();
-        buf.set_string(
-            inside_border.x + center.x,
-            inside_border.y + center.y,
-            match ow.tile.current_side {
-                CurrentSide::Initial => "♙",
-                CurrentSide::Flipped => "♟︎",
-            },
-            Style::default(),
-        );
     }
 }
 

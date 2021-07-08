@@ -1,10 +1,9 @@
+use std::convert::TryFrom;
 use std::hash::Hash;
 
 use crate::common::coordinates;
-use crate::common::coordinates::Coordinates;
 use crate::game::offset::HorizontalOffset::{FarLeft, FarRight, Left, Right};
 use crate::game::offset::VerticalOffset::{Bottom, FarBottom, FarTop, Top};
-use HorizontalSymmetricOffset::{Far, Near};
 
 pub trait Offsetable {
     fn offsets(&self) -> Vec<Offsets>;
@@ -128,8 +127,8 @@ pub struct Offsets {
 }
 
 impl Offsets {
-    pub fn center_coordinates() -> Coordinates {
-        Coordinates { x: HorizontalOffset::Center.to_index(), y: VerticalOffset::Center.to_index() }
+    pub fn center() -> Offsets {
+        Offsets::new(HorizontalOffset::Center, VerticalOffset::Center)
     }
     pub fn horizontal_flipped(&self) -> Offsets {
         Offsets {
@@ -151,22 +150,16 @@ impl Offsets {
     }
 
     pub fn new(x: HorizontalOffset, y: VerticalOffset) -> Offsets {
-        assert!(
-            x != HorizontalOffset::Center || y != VerticalOffset::Center,
-            "Cannot create a coordinate of two Centers");
         Offsets { x, y }
     }
-    pub fn centered<C: Centerable>(c: C) -> Offsets {
-        c.center()
+    pub fn is_near(&self, other: &Self) -> bool {
+        self.x.distance_from(&other.x) <= 1 && self.y.distance_from(&other.y) <= 1
     }
-    pub fn near_center(&self) -> bool {
-        self.x.distance_from_center() <= 1 && self.y.distance_from_center() <= 1
-    }
-    pub fn is_linear_from_center(&self) -> bool {
-        self.x.is_centered() ||
+    pub fn is_linear_from(&self, other: &Self) -> bool {
+        self.x == other.x || self.y == other.y ||
             self.y.is_centered() ||
             // Covers the linear diagonals
-            self.x.distance_from_center() == self.y.distance_from_center()
+            self.x.distance_from(&other.x) == self.y.distance_from(&other.y)
     }
 }
 
@@ -232,6 +225,10 @@ impl Centerable for VerticalOffset {
 pub trait Indexable {
     fn to_index(&self) -> u16;
     fn from_index(i: u16) -> Self;
+
+    fn distance_from(&self, other: &Self) -> u16 {
+        u16::try_from((i32::from(self.to_index()) - i32::from(other.to_index())).abs()).unwrap()
+    }
 }
 
 impl Indexable for HorizontalOffset {

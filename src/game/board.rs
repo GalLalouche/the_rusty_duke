@@ -68,6 +68,7 @@ impl GameBoard {
                 match a {
                     TileAction::Move => self.unobstructed(src, *dst) && can_move_to,
                     TileAction::Jump => can_move_to,
+                    TileAction::Unit => unimplemented!(),
                     TileAction::Slide => unimplemented!(),
                     TileAction::Command => unimplemented!(),
                     TileAction::JumpSlide => unimplemented!(),
