@@ -1,32 +1,26 @@
 extern crate fstrings;
 
 use std::{io, thread};
+use std::borrow::Borrow;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use tui::buffer::Buffer;
-use tui::layout::Rect;
-use tui::style::Style;
-use tui::widgets::{Block, Borders, BorderType, Widget};
+use view::state::MoveView;
 
-use crate::common::coordinates::Coordinates;
-use crate::game::board::GameBoard;
-use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::state::{DukeInitialLocation, FootmenSetup, GameState};
-use crate::game::tile::{CurrentSide, OwnedTile, TileAction, TileBag};
-use crate::game::tile::Owner::Player1;
+use crate::game::board::{DukeInitialLocation, FootmenSetup};
+use crate::game::state::GameState;
+use crate::game::tile::TileBag;
 use crate::game::units;
+use crate::view::state::ViewState;
 
 mod common;
 mod game;
 mod view;
 
-
 enum Event<I> {
     Input(I),
     Tick,
 }
-
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use tui::Terminal;
@@ -39,6 +33,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         event::{self, Event as CEvent, KeyCode},
         terminal::{disable_raw_mode, enable_raw_mode},
     };
+
+    let gs = GameState::new(
+        &TileBag::new(vec!(units::footman(), units::footman(), units::pikeman(), units::pikeman())),
+        (DukeInitialLocation::Left, FootmenSetup::Right),
+        (DukeInitialLocation::Right, FootmenSetup::Right),
+    );
+    let mut vs = ViewState::new(gs);
+    // stupid_sync_ai::next_move(gs.borrow_mut());
 
     enable_raw_mode().expect("can run in raw mode");
 
@@ -63,13 +65,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    println!("{:?}", units::duke(Player1).tile.get_current_side().actions());
-    println!("{:?}", units::footman(Player1).tile.get_current_side().actions());
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     loop {
+        // TODO some kind of logging mechanism
+        // TODO some kind of info/warning mechanism (e.g., cannot unplace tile)
         terminal.draw(|rect| {
             let size = rect.size();
             let chunks = Layout::default()
@@ -86,20 +88,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .split(size);
 
-            let gs = GameState::new(
-                &TileBag::new(Vec::new()),
-                (DukeInitialLocation::Left, FootmenSetup::Right),
-                (DukeInitialLocation::Right, FootmenSetup::Right),
-            );
-
-            rect.render_widget(gs.board, chunks[0]);
-        });
-
+            rect.render_widget(vs.borrow(), chunks[0]);
+        })?;
+        macro_rules! place {
+            ($e: expr, $terminal: ident, $vs: ident) => {
+                if $vs.can_move_placement($e) {
+                    $vs.move_placement($e);
+                } else if $vs.can_move_view_position(&$e) {
+                    $vs.move_view_position($e);
+                }
+            }
+        }
         match rx.recv()? {
             Event::Input(event) => match event.code {
+                KeyCode::Char('h') => place!(MoveView::Left, terminal, vs),
+                KeyCode::Char('j') => place!(MoveView::Down, terminal, vs),
+                KeyCode::Char('k') => place!(MoveView::Up, terminal, vs),
+                KeyCode::Char('l') => place!(MoveView::Right, terminal, vs),
+                KeyCode::Char('p') => {
+                    // disable_raw_mode()?;
+                    // terminal.show_cursor()?;
+                    vs.pull_token_from_bag();
+                }
+                KeyCode::Char('u') => {
+                    unimplemented!("Undo is not supported");
+                }
+                KeyCode::Enter => {
+                    if vs.is_moving() {
+                        vs.move_selected();
+                    } else if vs.is_placing() {
+                        vs.place();
+                    } else if vs.can_select_for_movement() {
+                        vs.select_for_movement();
+                    }
+                }
+                KeyCode::Esc => {
+                    if (vs.can_unselect()) {
+                        vs.unselect();
+                    }
+                }
                 KeyCode::Char('q') => {
-                    disable_raw_mode()?;
-                    terminal.show_cursor()?;
                     break;
                 }
                 _ => {}

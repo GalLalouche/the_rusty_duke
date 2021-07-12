@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 use std::hash::Hash;
 
-use crate::common::coordinates;
+use crate::common::coordinates::Coordinates;
 use crate::game::offset::HorizontalOffset::{FarLeft, FarRight, Left, Right};
 use crate::game::offset::VerticalOffset::{Bottom, FarBottom, FarTop, Top};
 
@@ -56,8 +56,8 @@ impl Offsetable for (HorizontalSymmetricOffset, VerticalOffset) {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum FourWaySymmetric {
-    NearLinear,
-    FarLinear,
+    NearStraight,
+    FarStraight,
     NearDiagonal,
     FarDiagonal,
 }
@@ -65,10 +65,10 @@ pub enum FourWaySymmetric {
 impl Offsetable for FourWaySymmetric {
     fn offsets(&self) -> Vec<Offsets> {
         match self {
-            FourWaySymmetric::NearLinear =>
-                vec![Left.center(), Right.center()],
-            FourWaySymmetric::FarLinear =>
-                vec![FarLeft.center(), FarRight.center()],
+            FourWaySymmetric::NearStraight =>
+                vec![Left.center(), Right.center(), Top.center(), Bottom.center()],
+            FourWaySymmetric::FarStraight =>
+                vec![FarLeft.center(), FarRight.center(), FarTop.center(), FarBottom.center()],
             FourWaySymmetric::NearDiagonal =>
                 vec![
                     Offsets::new(Left, Top),
@@ -163,15 +163,15 @@ impl Offsets {
     }
 }
 
-impl From<coordinates::Coordinates> for Offsets {
-    fn from(other: coordinates::Coordinates) -> Self {
+impl From<&Coordinates> for Offsets {
+    fn from(other: &Coordinates) -> Self {
         Offsets::new(Indexable::from_index(other.x), Indexable::from_index(other.y))
     }
 }
 
-impl From<Offsets> for coordinates::Coordinates {
-    fn from(other: Offsets) -> coordinates::Coordinates {
-        coordinates::Coordinates { x: other.x.to_index(), y: other.y.to_index() }
+impl From<&Offsets> for Coordinates {
+    fn from(other: &Offsets) -> Coordinates {
+        Coordinates { x: other.x.to_index(), y: other.y.to_index() }
     }
 }
 
@@ -278,14 +278,16 @@ impl Indexable for VerticalOffset {
 }
 
 mod test {
+    use std::borrow::Borrow;
+
     use super::*;
 
     #[test]
     fn coordinate_to_offsets() {
-        let c = coordinates::Coordinates { x: 0, y: 2 };
+        let c = Coordinates { x: 0, y: 2 };
         assert_eq!(
             Offsets::new(FarLeft, VerticalOffset::Center),
-            c.into(),
+            c.borrow().into(),
         )
     }
 
@@ -293,8 +295,8 @@ mod test {
     fn offsets_to_coordinates() {
         let os = Offsets::new(FarLeft, VerticalOffset::Center);
         assert_eq!(
-            coordinates::Coordinates { x: 0, y: 2 },
-            os.into(),
+            Coordinates { x: 0, y: 2 },
+            os.borrow().into(),
         )
     }
 }

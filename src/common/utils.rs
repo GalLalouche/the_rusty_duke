@@ -28,14 +28,6 @@ impl Distance for u16 {
     }
 }
 
-fn diff_or_zero(x: usize, other: usize) -> usize {
-    if x < other {
-        x - other
-    } else {
-        0
-    }
-}
-
 pub trait MkString {
     fn mk_string_full(&self, start: &str, separator: &str, end: &str) -> String;
     fn mk_string(&self, sep: &str) -> String {
@@ -112,7 +104,7 @@ mod test {
     }
 
     #[test]
-    fn intercalateon_vectors_of_size_2() {
+    fn intercalate_on_vectors_of_size_2() {
         let mut v = vec![1, 2];
         v.intercalate(4);
         assert_eq!(
@@ -122,7 +114,7 @@ mod test {
     }
 
     #[test]
-    fn intercalateon_vectors_of_size_5() {
+    fn intercalate_on_vectors_of_size_5() {
         let mut v = vec![1, 2, 3, 4, 5];
         v.intercalate(10);
         assert_eq!(
@@ -172,15 +164,27 @@ mod test {
     }
 }
 
-pub trait Containing<A: Eq> {
-    fn contains(&self, a: &A) -> bool;
+pub trait Folding<A> {
+    // contains would have been a better name, but I'm too tired of the "unstable" compilation errors.
+    fn has(&self, a: &A) -> bool where A: Eq;
+    fn for_all<P>(&self, p: P) -> bool where P: Fn(&A) -> bool;
+    fn exists<P>(&self, p: P) -> bool where P: Fn(&A) -> bool {
+        !self.for_all(|e| !p(e))
+    }
 }
 
-impl <A: Eq> Containing<A> for Option<A> {
-    fn contains(&self, a: &A) -> bool {
+impl<A> Folding<A> for Option<A> {
+    fn has(&self, a: &A) -> bool where A: Eq {
         match self {
             None => false,
             Some(s) => s == a,
+        }
+    }
+
+    fn for_all<P>(&self, p: P) -> bool where P: Fn(&A) -> bool {
+        match self {
+            None => true,
+            Some(s) => p(s),
         }
     }
 }
