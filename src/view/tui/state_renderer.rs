@@ -8,7 +8,7 @@ use crate::view::tui::board_renderer::{MovingConfig, render_board};
 
 impl Widget for &ViewState {
     fn render(self, area: Rect, buf: &mut Buffer) -> () {
-        match &self.get_view_position() {
+        match self.get_view_position() {
             ViewPosition::BoardPosition { p, moving } => {
                 let moving_config =
                     if let Some(m) = moving {
@@ -16,7 +16,7 @@ impl Widget for &ViewState {
                             focus: *m,
                             legal_options: self
                                 .get_game_state()
-                                .get_legal_moves(m)
+                                .get_legal_moves(*m)
                                 .iter()
                                 .map(|e| e.0)
                                 .collect(),
@@ -29,11 +29,11 @@ impl Widget for &ViewState {
             ViewPosition::Placing(relative_duke_offset, tile) => {
                 let duke_coordinate = self.get_game_state().current_duke_coordinate();
                 let placement =
-                    self.relative_to_absolute_panicing(&duke_coordinate, &relative_duke_offset);
+                    self.relative_to_absolute_panicing(duke_coordinate, *relative_duke_offset);
                 // Not the most efficient, but safer for now.
                 let mut temp_board = self.get_game_state().board.clone();
                 temp_board.place(
-                    &placement,
+                    placement,
                     PlacedTile::new(self.get_game_state().current_player_turn, tile.clone()),
                 );
                 render_board(

@@ -11,7 +11,7 @@ pub struct Coordinates {
 impl Coordinates {
     /// Panics if src isn't on a linear (horizontal, vertical, or bishop-like diagonal to dst,
     /// or if src == dst.
-    pub fn linear_path_to(&self, dst: &Coordinates) -> Vec<Coordinates> {
+    pub fn linear_path_to(self, dst: Coordinates) -> Vec<Coordinates> {
         assert_ne!(self, dst, "{}", f!("Can't take linear path from {dst:?} to itself"));
         // TODO use macros to avoid this ugly ass duplication
         if self.x == dst.x {
@@ -56,7 +56,7 @@ impl Coordinates {
         panic!("{:?} isn't linear to {:?}", self, dst);
     }
 
-    pub fn is_linear_to(&self, dst: &Coordinates) -> bool {
+    pub fn is_linear_to(self, dst: Coordinates) -> bool {
         self.x == dst.x ||
             self.y == dst.y ||
             self.x.distance_to(dst.x) == self.y.distance_to(dst.y)
@@ -74,7 +74,7 @@ mod test {
                 Coordinates { x: 1, y: 3 },
                 Coordinates { x: 2, y: 3 },
             ],
-            Coordinates { x: 0, y: 3 }.linear_path_to(&Coordinates { x: 3, y: 3 })
+            Coordinates { x: 0, y: 3 }.linear_path_to(Coordinates { x: 3, y: 3 })
         )
     }
 
@@ -85,7 +85,7 @@ mod test {
                 Coordinates { x: 2, y: 3 },
                 Coordinates { x: 1, y: 3 },
             ],
-            Coordinates { x: 3, y: 3 }.linear_path_to(&Coordinates { x: 0, y: 3 })
+            Coordinates { x: 3, y: 3 }.linear_path_to(Coordinates { x: 0, y: 3 })
         )
     }
 
@@ -96,7 +96,7 @@ mod test {
                 Coordinates { x: 3, y: 1 },
                 Coordinates { x: 3, y: 2 },
             ],
-            Coordinates { x: 3, y: 0 }.linear_path_to(&Coordinates { x: 3, y: 3 })
+            Coordinates { x: 3, y: 0 }.linear_path_to(Coordinates { x: 3, y: 3 })
         )
     }
 
@@ -107,7 +107,7 @@ mod test {
                 Coordinates { x: 3, y: 2 },
                 Coordinates { x: 3, y: 1 },
             ],
-            Coordinates { x: 3, y: 3 }.linear_path_to(&Coordinates { x: 3, y: 0 })
+            Coordinates { x: 3, y: 3 }.linear_path_to(Coordinates { x: 3, y: 0 })
         )
     }
 
@@ -119,7 +119,7 @@ mod test {
                 Coordinates { x: 5, y: 4 },
                 Coordinates { x: 6, y: 5 },
             ],
-            Coordinates { x: 3, y: 2 }.linear_path_to(&Coordinates { x: 7, y: 6 })
+            Coordinates { x: 3, y: 2 }.linear_path_to(Coordinates { x: 7, y: 6 })
         )
     }
 
@@ -131,7 +131,7 @@ mod test {
                 Coordinates { x: 5, y: 4 },
                 Coordinates { x: 4, y: 3 },
             ],
-            Coordinates { x: 7, y: 6 }.linear_path_to(&Coordinates { x: 3, y: 2 })
+            Coordinates { x: 7, y: 6 }.linear_path_to(Coordinates { x: 3, y: 2 })
         )
     }
 
@@ -143,7 +143,7 @@ mod test {
                 Coordinates { x: 5, y: 4 },
                 Coordinates { x: 6, y: 3 },
             ],
-            Coordinates { x: 3, y: 6 }.linear_path_to(&Coordinates { x: 7, y: 2 })
+            Coordinates { x: 3, y: 6 }.linear_path_to(Coordinates { x: 7, y: 2 })
         )
     }
 
@@ -155,7 +155,7 @@ mod test {
                 Coordinates { x: 5, y: 4 },
                 Coordinates { x: 4, y: 5 },
             ],
-            Coordinates { x: 7, y: 2 }.linear_path_to(&Coordinates { x: 3, y: 6 })
+            Coordinates { x: 7, y: 2 }.linear_path_to(Coordinates { x: 3, y: 6 })
         )
     }
 }

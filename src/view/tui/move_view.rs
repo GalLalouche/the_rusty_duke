@@ -1,12 +1,19 @@
 use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::game::board::DukeOffset;
-use crate::view::state::MoveView;
+
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum MoveView {
+    Up,
+    Down,
+    Left,
+    Right,
+}
 
 impl MoveView {
     // For two adjacent coordinates, returns the direction src has to go to reach dst.
     // Return None if not adjacent.
-    pub fn relative_direction(src: &Coordinates, dst: &Coordinates) -> Option<MoveView> {
+    pub fn relative_direction(src: Coordinates, dst: Coordinates) -> Option<MoveView> {
         match ((src.x as i32) - (dst.x as i32), (src.y as i32) - (dst.y as i32)) {
             (-1, 0) => Some(MoveView::Right),
             (1, 0) => Some(MoveView::Left),
@@ -16,18 +23,18 @@ impl MoveView {
         }
     }
 
-    pub fn mv<A>(&self, c: &Coordinates, b: &Board<A>) -> Option<Coordinates> {
+    pub fn mv<A>(&self, c: Coordinates, b: &Board<A>) -> Option<Coordinates> {
         (match self {
             MoveView::Up => if c.y > 0 { Some(Coordinates { x: c.x, y: c.y - 1 }) } else { None },
             MoveView::Down => if c.y < b.height - 1 { Some(Coordinates { x: c.x, y: c.y + 1 }) } else { None },
             MoveView::Left => if c.x > 0 { Some(Coordinates { x: c.x - 1, y: c.y }) } else { None },
             MoveView::Right => if c.x < b.width - 1 { Some(Coordinates { x: c.x + 1, y: c.y }) } else { None },
-        }).filter(|e| b.is_in_bounds(e))
+        }).filter(|e| b.is_in_bounds(*e))
     }
 }
 
-impl From<&MoveView> for DukeOffset {
-    fn from(mv: &MoveView) -> Self {
+impl From<MoveView> for DukeOffset {
+    fn from(mv: MoveView) -> Self {
         match mv {
             MoveView::Up => DukeOffset::Top,
             MoveView::Down => DukeOffset::Bottom,
@@ -48,24 +55,24 @@ mod move_view_tests {
     fn relative_direction_some() {
         assert_some!(
             MoveView::Right,
-            MoveView::relative_direction(&Coordinates{x: 0, y: 1}, &Coordinates{x: 1, y:1}),
+            MoveView::relative_direction(Coordinates{x: 0, y: 1}, Coordinates{x: 1, y:1}),
         );
         assert_some!(
             MoveView::Left,
-            MoveView::relative_direction(&Coordinates{x: 1, y: 1}, &Coordinates{x: 0, y:1}),
+            MoveView::relative_direction(Coordinates{x: 1, y: 1}, Coordinates{x: 0, y:1}),
         );
         assert_some!(
             MoveView::Up,
-            MoveView::relative_direction(&Coordinates{x: 0, y: 1}, &Coordinates{x: 0, y:0}),
+            MoveView::relative_direction(Coordinates{x: 0, y: 1}, Coordinates{x: 0, y:0}),
         );
         assert_some!(
             MoveView::Down,
-            MoveView::relative_direction(&Coordinates{x: 0, y: 0}, &Coordinates{x: 0, y:1}),
+            MoveView::relative_direction(Coordinates{x: 0, y: 0}, Coordinates{x: 0, y:1}),
         );
     }
 
     #[test]
     fn relative_none() {
-        assert_none!(MoveView::relative_direction(&Coordinates{x: 0, y: 0}, &Coordinates{x: 1, y:1}))
+        assert_none!(MoveView::relative_direction(Coordinates{x: 0, y: 0}, Coordinates{x: 1, y:1}))
     }
 }

@@ -1,5 +1,3 @@
-use std::borrow::Borrow;
-
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
 use crate::game::board::{DukeInitialLocation, FootmenSetup, GameBoard, GameMove};
@@ -54,7 +52,7 @@ impl GameState {
         };
         if bag.is_empty() {
             CanPullNewTileResult::EmptyBag
-        } else if self.board.can_place_new_tile_near_duke(&self.current_player_turn) {
+        } else if self.board.can_place_new_tile_near_duke(self.current_player_turn) {
             CanPullNewTileResult::OK
         } else {
             CanPullNewTileResult::NoSpaceNearDuke
@@ -78,17 +76,17 @@ impl GameState {
     pub fn can_make_a_move(&mut self, game_move: &GameMove) -> bool {
         match game_move {
             GameMove::PlaceNewTile(_, _) => self.is_waiting_for_tile_placement,
-            GameMove::ApplyNonCommandTileAction { src, dst } => self.board.can_move(src, dst),
+            GameMove::ApplyNonCommandTileAction { src, dst } => self.board.can_move(*src, *dst),
             GameMove::CommandAnotherTile { .. } => unimplemented!(),
         }
     }
-    pub fn make_a_move(&mut self, game_move: &GameMove) -> () {
+    pub fn make_a_move(&mut self, game_move: GameMove) -> () {
         if let GameMove::PlaceNewTile(_, _) = game_move {
             assert!(self.is_waiting_for_tile_placement, "Invalid state for placing a new tile");
         } else {
             assert_not!(self.is_waiting_for_tile_placement, "Waiting for a new tile placement");
         }
-        self.board.make_a_move(&game_move, &self.current_player_turn);
+        self.board.make_a_move(game_move, self.current_player_turn);
         self.current_player_turn = self.current_player_turn.next_player();
         if self.is_waiting_for_tile_placement {
             self.is_waiting_for_tile_placement = false;
@@ -96,19 +94,19 @@ impl GameState {
     }
 
     pub fn get_tiles_for_current_owner(&self) -> Vec<(Coordinates, &PlacedTile)> {
-        self.board.get_tiles_for(&self.current_player_turn)
+        self.board.get_tiles_for(self.current_player_turn)
     }
 
-    pub fn get_legal_moves(&self, src: &Coordinates) -> Vec<(Coordinates, TileAction)> {
-        assert!(self.board.get(src).unwrap().owner.borrow().same_team(&&self.current_player_turn));
+    pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
+        assert!(self.board.get(src).unwrap().owner.same_team(self.current_player_turn));
         self.board.get_legal_moves(src)
     }
 
     pub fn current_duke_coordinate(&self) -> Coordinates {
-        self.board.duke_coordinates(&self.current_player_turn)
+        self.board.duke_coordinates(self.current_player_turn)
     }
 
     pub fn empty_spaces_near_current_duke(&self) -> Vec<Coordinates> {
-        self.board.empty_spaces_near_current_duke(&self.current_player_turn)
+        self.board.empty_spaces_near_current_duke(self.current_player_turn)
     }
 }

@@ -5,7 +5,7 @@ use std::borrow::Borrow;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use view::state::MoveView;
+use crate::view::tui::move_view::MoveView;
 
 use crate::game::board::{DukeInitialLocation, FootmenSetup};
 use crate::game::state::GameState;
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ($e: expr, $terminal: ident, $vs: ident) => {
                 if $vs.can_move_placement($e) {
                     $vs.move_placement($e);
-                } else if $vs.can_move_view_position(&$e) {
+                } else if $vs.can_move_view_position($e) {
                     $vs.move_view_position($e);
                 }
             }
@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 KeyCode::Esc => {
-                    if (vs.can_unselect()) {
+                    if vs.can_unselect() {
                         vs.unselect();
                     }
                 }

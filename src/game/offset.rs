@@ -153,24 +153,24 @@ impl Offsets {
         Offsets { x, y }
     }
     pub fn is_near(&self, other: &Self) -> bool {
-        self.x.distance_from(&other.x) <= 1 && self.y.distance_from(&other.y) <= 1
+        self.x.distance_from(other.x) <= 1 && self.y.distance_from(other.y) <= 1
     }
     pub fn is_linear_from(&self, other: &Self) -> bool {
         self.x == other.x || self.y == other.y ||
             self.y.is_centered() ||
             // Covers the linear diagonals
-            self.x.distance_from(&other.x) == self.y.distance_from(&other.y)
+            self.x.distance_from(other.x) == self.y.distance_from(other.y)
     }
 }
 
-impl From<&Coordinates> for Offsets {
-    fn from(other: &Coordinates) -> Self {
+impl From<Coordinates> for Offsets {
+    fn from(other: Coordinates) -> Self {
         Offsets::new(Indexable::from_index(other.x), Indexable::from_index(other.y))
     }
 }
 
-impl From<&Offsets> for Coordinates {
-    fn from(other: &Offsets) -> Coordinates {
+impl From<Offsets> for Coordinates {
+    fn from(other: Offsets) -> Coordinates {
         Coordinates { x: other.x.to_index(), y: other.y.to_index() }
     }
 }
@@ -222,11 +222,11 @@ impl Centerable for VerticalOffset {
 }
 
 
-pub trait Indexable {
+pub trait Indexable: Sized {
     fn to_index(&self) -> u16;
     fn from_index(i: u16) -> Self;
 
-    fn distance_from(&self, other: &Self) -> u16 {
+    fn distance_from(&self, other: Self) -> u16 {
         u16::try_from((i32::from(self.to_index()) - i32::from(other.to_index())).abs()).unwrap()
     }
 }
@@ -278,8 +278,6 @@ impl Indexable for VerticalOffset {
 }
 
 mod test {
-    use std::borrow::Borrow;
-
     use super::*;
 
     #[test]
@@ -287,7 +285,7 @@ mod test {
         let c = Coordinates { x: 0, y: 2 };
         assert_eq!(
             Offsets::new(FarLeft, VerticalOffset::Center),
-            c.borrow().into(),
+            c.into(),
         )
     }
 
@@ -296,7 +294,7 @@ mod test {
         let os = Offsets::new(FarLeft, VerticalOffset::Center);
         assert_eq!(
             Coordinates { x: 0, y: 2 },
-            os.borrow().into(),
+            os.into(),
         )
     }
 }

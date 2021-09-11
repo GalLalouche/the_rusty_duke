@@ -51,8 +51,8 @@ impl TileSide {
         TileSide::verify_no_illegal_repeats(&map);
         TileSide::verify_actions(&map);
         let mut res = TileSide { board: Board::square(TileSide::SIDE) };
-        for (k, v) in map.borrow() {
-            let result = res.board.put(&k.into(), *v);
+        for (k, v) in map {
+            let result = res.board.put(k.into(), v);
             assert!(result.is_none());
         }
         res
@@ -68,7 +68,7 @@ impl TileSide {
         let is_linear_from_center = |o: &Offsets| {
             o.is_linear_from(center)
         };
-        for (c, a) in map.borrow() {
+        for (c, a) in map {
             match a {
                 TileAction::Unit =>
                     assert!(c.x.is_centered(), "The tile should always be horizontally centered"),
@@ -134,7 +134,7 @@ impl TileSide {
     pub fn actions(&self) -> Vec<(Offsets, TileAction)> {
         self.board.active_coordinates()
             .iter()
-            .map(|e| (e.0.borrow().into(), e.1.clone()))
+            .map(|e| (e.0.into(), e.1.clone()))
             .collect()
     }
 
@@ -145,7 +145,7 @@ impl TileSide {
     pub fn center_offset(&self) -> VerticalOffset {
         let center_horizontal_offset = TileSide::SIDE / 2;
         for y in 0..5 {
-            if self.board.get(&Coordinates { x: center_horizontal_offset, y }) == Some(&TileAction::Unit) {
+            if self.board.get(Coordinates { x: center_horizontal_offset, y }) == Some(&TileAction::Unit) {
                 return VerticalOffset::from_index(y);
             };
         }
@@ -153,23 +153,23 @@ impl TileSide {
     }
 
     fn has_horizontal_slide(&self) -> bool {
-        let left_offset = &Offsets::new(HorizontalOffset::Left, self.center_offset());
-        let right_offset = &Offsets::new(HorizontalOffset::Right, self.center_offset());
-        assert_eq!(self.board.get(&left_offset.into()), self.board.get(&right_offset.into()));
-        self.board.get(&left_offset.into()).has(&&TileAction::Slide)
+        let left_offset = Offsets::new(HorizontalOffset::Left, self.center_offset());
+        let right_offset = Offsets::new(HorizontalOffset::Right, self.center_offset());
+        assert_eq!(self.board.get(left_offset.into()), self.board.get(right_offset.into()));
+        self.board.get(left_offset.into()).has(&&TileAction::Slide)
     }
 
     /// Panics if dst is out of bounds.
     // TODO: Should this really panic?
     // TODO: Handle jump slides
-    pub fn get_action_from_coordinates(&self, src: &Coordinates, dst: &Coordinates) -> Option<&TileAction> {
+    pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<&TileAction> {
         let x_diff = i32::from(dst.x) - i32::from(src.x);
         let y_base = i32::from(self.center_offset().to_index() - 2);
         let y_diff = y_base + i32::from(dst.y) - i32::from(src.y);
         let x_offset =
             if y_diff == 0 && self.has_horizontal_slide() {
-                assert!(self.board.get(&HorizontalOffset::FarLeft.center().borrow().into()).is_none());
-                assert!(self.board.get(&HorizontalOffset::FarRight.center().borrow().into()).is_none());
+                assert!(self.board.get(HorizontalOffset::FarLeft.center().into()).is_none());
+                assert!(self.board.get(HorizontalOffset::FarRight.center().into()).is_none());
                 if x_diff > 0 { HorizontalOffset::Right } else { HorizontalOffset::Left }
             } else {
                 match x_diff {
@@ -184,9 +184,9 @@ impl TileSide {
         // TODO extract this out to a helper function as well
         let get_vertical_slide =
             (if y_diff > 0 {
-                self.board.get(&VerticalOffset::Bottom.center().borrow().into())
+                self.board.get(VerticalOffset::Bottom.center().into())
             } else if y_diff < 0 {
-                self.board.get(&VerticalOffset::Top.center().borrow().into())
+                self.board.get(VerticalOffset::Top.center().into())
             } else {
                 None
             }).filter(|a| *a == &TileAction::Slide);
@@ -202,7 +202,7 @@ impl TileSide {
                 2 => VerticalOffset::FarBottom,
                 _ => panic!("Out of bounds"),
             });
-        self.board.get(&Offsets::new(x_offset, y_offset).borrow().into())
+        self.board.get(Offsets::new(x_offset, y_offset).into())
     }
 
     pub fn flip_vertical(self) -> TileSide {
@@ -244,7 +244,7 @@ pub enum Owner {
 }
 
 impl Owner {
-    pub fn next_player(&self) -> Owner {
+    pub fn next_player(self) -> Owner {
         match self {
             Owner::TopPlayer => Owner::BottomPlayer,
             Owner::BottomPlayer => Owner::TopPlayer,
@@ -293,26 +293,26 @@ impl PlacedTile {
             CurrentSide::Flipped => c.to_ascii_uppercase(),
         }
     }
-    pub fn get_action_from_coordinates(&self, src: &Coordinates, dst: &Coordinates) -> Option<&TileAction> {
+    pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<&TileAction> {
         self.get_current_side().get_action_from_coordinates(src, dst)
     }
 }
 
-pub trait Ownership {
-    fn same_team(&self, other: &Self) -> bool;
-    fn different_team(&self, other: &Self) -> bool {
+pub trait Ownership: Sized {
+    fn same_team(self, other: Self) -> bool;
+    fn different_team(self, other: Self) -> bool {
         !self.same_team(other)
     }
 }
 
-impl Ownership for &Owner {
-    fn same_team(&self, other: &Self) -> bool {
+impl Ownership for Owner {
+    fn same_team(self, other: Self) -> bool {
         self == other
     }
 }
 
-impl Ownership for PlacedTile {
-    fn same_team(&self, other: &Self) -> bool {
+impl Ownership for &PlacedTile {
+    fn same_team(self, other: Self) -> bool {
         self.owner == other.owner
     }
 }
@@ -380,7 +380,7 @@ mod test {
         let tile = TileSide::new(vec![
             (&FourWaySymmetric::NearStraight, TileAction::Move)
         ]);
-        tile.get_action_from_coordinates(&Coordinates { x: 0, y: 0 }, &Coordinates { x: 0, y: 3 });
+        tile.get_action_from_coordinates(Coordinates { x: 0, y: 0 }, Coordinates { x: 0, y: 3 });
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod test {
         let tile = TileSide::new(vec![
             (&FourWaySymmetric::NearStraight, TileAction::Move)
         ]);
-        assert_none!(tile.get_action_from_coordinates(&Coordinates{x: 2, y:4}, &Coordinates{x: 3, y:5}))
+        assert_none!(tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, Coordinates{x: 3, y:5}))
     }
 
     #[test]
@@ -398,7 +398,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Jump,
-            tile.get_action_from_coordinates(&Coordinates{x: 2, y:4}, &Coordinates{x: 4, y:3}),
+            tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, Coordinates{x: 4, y:3}),
         )
     }
 
@@ -410,7 +410,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Strike,
-            tile.get_action_from_coordinates(&Coordinates{x: 2, y:4}, &Coordinates{x: 2, y:1}),
+            tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, Coordinates{x: 2, y:1}),
         )
     }
 
@@ -421,7 +421,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Slide,
-            tile.get_action_from_coordinates(&Coordinates{x: 0, y:2}, &Coordinates{x: 1, y:2}),
+            tile.get_action_from_coordinates(Coordinates{x: 0, y:2}, Coordinates{x: 1, y:2}),
         )
     }
 
@@ -432,7 +432,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Slide,
-            tile.get_action_from_coordinates(&Coordinates{x: 0, y:2}, &Coordinates{x: 2, y:2}),
+            tile.get_action_from_coordinates(Coordinates{x: 0, y:2}, Coordinates{x: 2, y:2}),
         )
     }
 
@@ -443,7 +443,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Slide,
-            tile.get_action_from_coordinates(&Coordinates{x: 0, y:2}, &Coordinates{x: 5, y:2}),
+            tile.get_action_from_coordinates(Coordinates{x: 0, y:2}, Coordinates{x: 5, y:2}),
         )
     }
 
@@ -454,7 +454,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Slide,
-            tile.get_action_from_coordinates(&Coordinates{x: 0, y:5}, &Coordinates{x: 0, y:0}),
+            tile.get_action_from_coordinates(Coordinates{x: 0, y:5}, Coordinates{x: 0, y:0}),
         )
     }
 
@@ -465,7 +465,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Slide,
-            tile.get_action_from_coordinates(&Coordinates{x: 0, y:5}, &Coordinates{x: 0, y:3}),
+            tile.get_action_from_coordinates(Coordinates{x: 0, y:5}, Coordinates{x: 0, y:3}),
         )
     }
 
@@ -476,7 +476,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Slide,
-            tile.get_action_from_coordinates(&Coordinates{x: 0, y:0}, &Coordinates{x: 0, y:5}),
+            tile.get_action_from_coordinates(Coordinates{x: 0, y:0}, Coordinates{x: 0, y:5}),
         )
     }
 
@@ -487,7 +487,7 @@ mod test {
         ]);
         assert_some!(
             &TileAction::Slide,
-            tile.get_action_from_coordinates(&Coordinates{x: 0, y:3}, &Coordinates{x: 0, y:5}),
+            tile.get_action_from_coordinates(Coordinates{x: 0, y:3}, Coordinates{x: 0, y:5}),
         )
     }
 }

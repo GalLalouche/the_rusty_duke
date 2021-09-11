@@ -45,7 +45,7 @@ enum AppliedPubAction { Movement, Strike, Invalid }
 
 impl GameBoard {
     const BOARD_SIZE: u16 = 6;
-    fn absolute_duke_offset(&self, offset: &DukeOffset, c: &Coordinates) -> Option<Coordinates> {
+    fn absolute_duke_offset(&self, offset: DukeOffset, c: Coordinates) -> Option<Coordinates> {
         fn or_none<P>(b: bool, c: P) -> Option<Coordinates> where P: Fn() -> Coordinates {
             if b { Some(c()) } else { None }
         }
@@ -69,7 +69,7 @@ impl GameBoard {
                 DukeInitialLocation::Right => 2,
             };
             result.place(
-                &Coordinates { y: 0, x: duke_1_x },
+                Coordinates { y: 0, x: duke_1_x },
                 units::place_tile(Owner::TopPlayer, units::duke),
             );
             let (f1_1, f1_2) = match player_1_setup.1 {
@@ -80,8 +80,8 @@ impl GameBoard {
                 FootmenSetup::Right =>
                     (Coordinates { x: duke_1_x - 1, y: 0 }, Coordinates { x: duke_1_x, y: 1 }),
             };
-            result.place(&f1_1, units::place_tile(Owner::TopPlayer, units::footman));
-            result.place(&f1_2, units::place_tile(Owner::TopPlayer, units::footman));
+            result.place(f1_1, units::place_tile(Owner::TopPlayer, units::footman));
+            result.place(f1_2, units::place_tile(Owner::TopPlayer, units::footman));
         }
         { // Second player
             let last_row = result.height() - 1;
@@ -90,7 +90,7 @@ impl GameBoard {
                 DukeInitialLocation::Right => 3,
             };
             result.place(
-                &Coordinates { y: last_row, x: duke_2_x }, units::place_tile(Owner::BottomPlayer, units::duke));
+                Coordinates { y: last_row, x: duke_2_x }, units::place_tile(Owner::BottomPlayer, units::duke));
             let (f2_1, f2_2) = match player_2_setup.1 {
                 FootmenSetup::Sides =>
                     (Coordinates { x: duke_2_x + 1, y: last_row }, Coordinates { x: duke_2_x - 1, y: last_row }),
@@ -99,8 +99,8 @@ impl GameBoard {
                 FootmenSetup::Right =>
                     (Coordinates { x: duke_2_x + 1, y: last_row }, Coordinates { x: duke_2_x, y: last_row - 1 }),
             };
-            result.place(&f2_1, units::place_tile(Owner::BottomPlayer, units::footman));
-            result.place(&f2_2, units::place_tile(Owner::BottomPlayer, units::footman));
+            result.place(f2_1, units::place_tile(Owner::BottomPlayer, units::footman));
+            result.place(f2_2, units::place_tile(Owner::BottomPlayer, units::footman));
         }
 
         result
@@ -117,7 +117,7 @@ impl GameBoard {
     pub fn empty() -> GameBoard {
         GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
     }
-    pub fn place(&mut self, c: &Coordinates, t: PlacedTile) -> () {
+    pub fn place(&mut self, c: Coordinates, t: PlacedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
         self.board.put(c, t);
     }
@@ -126,14 +126,14 @@ impl GameBoard {
         self.board.rows()
     }
 
-    pub fn get(&self, c: &Coordinates) -> Option<&PlacedTile> {
+    pub fn get(&self, c: Coordinates) -> Option<&PlacedTile> {
         self.board.get(c)
     }
 
     fn to_absolute_coordinate(
-        &self, src: &Coordinates, offset: &Offsets, center: &VerticalOffset,
+        &self, src: Coordinates, offset: Offsets, center: VerticalOffset,
     ) -> Option<Coordinates> {
-        fn vertical_offset(y: &VerticalOffset) -> i32 {
+        fn vertical_offset(y: VerticalOffset) -> i32 {
             match y {
                 VerticalOffset::FarTop => -2,
                 VerticalOffset::Top => -1,
@@ -149,15 +149,15 @@ impl GameBoard {
             HorizontalOffset::Right => 1,
             HorizontalOffset::FarRight => 2,
         };
-        let y: i32 = src.y as i32 + vertical_offset(&offset.y) + vertical_offset(&center);
+        let y: i32 = src.y as i32 + vertical_offset(offset.y) + vertical_offset(center);
         u16::try_from(x)
             .and_then(|x| u16::try_from(y).map(|y| Coordinates { x, y }))
             .ok()
-            .filter(|e| self.board.is_in_bounds(e))
+            .filter(|c| self.board.is_in_bounds(*c))
     }
 
     fn target_coordinates(
-        &self, src: &Coordinates, offset: &Offsets, action: &TileAction, center: &VerticalOffset,
+        &self, src: Coordinates, offset: Offsets, action: TileAction, center: VerticalOffset,
     ) -> Vec<Coordinates> {
         match action {
             TileAction::Move => self.to_absolute_coordinate(src, offset, center).into_iter().collect(),
@@ -172,27 +172,27 @@ impl GameBoard {
                     x.zip(y).map(|(x, y)| Coordinates { x, y }).collect()
                 }
                 let res: Vec<Coordinates> =
-                    if offset == &HorizontalOffset::Right.center() {
+                    if offset == HorizontalOffset::Right.center() {
                         horizontal(0..src.x)
-                    } else if offset == &HorizontalOffset::Left.center() {
+                    } else if offset == HorizontalOffset::Left.center() {
                         horizontal(src.x + 1..self.width())
-                    } else if offset == &VerticalOffset::Top.center() {
+                    } else if offset == VerticalOffset::Top.center() {
                         vertical(0..src.y)
-                    } else if offset == &VerticalOffset::Bottom.center() {
+                    } else if offset == VerticalOffset::Bottom.center() {
                         vertical(src.y + 1..self.height())
                         // Diagonals
-                    } else if offset == &Offsets::new(HorizontalOffset::Right, VerticalOffset::Top) {
+                    } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Top) {
                         diagonal((0..src.x).rev(), (0..src.y).rev())
-                    } else if offset == &Offsets::new(HorizontalOffset::Left, VerticalOffset::Top) {
+                    } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Top) {
                         diagonal(src.x + 1..self.width(), (0..src.y).rev())
-                    } else if offset == &Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom) {
+                    } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom) {
                         diagonal((0..src.x).rev(), src.y + 1..self.height())
-                    } else if offset == &Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom) {
+                    } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom) {
                         diagonal(src.x + 1..self.width(), src.y + 1..self.height())
                     } else {
                         panic!("Invalid slide offset {:?}", offset)
                     };
-                res.iter().for_each(|e| assert!(self.board.is_in_bounds(e)));
+                res.iter().for_each(|e| assert!(self.board.is_in_bounds(*e)));
                 res.iter().for_each(|e| assert!(e.is_linear_to(src)));
                 res
             }
@@ -202,27 +202,27 @@ impl GameBoard {
         }
     }
 
-    fn unobstructed(&self, src: &Coordinates, dst: &Coordinates) -> bool {
-        src.linear_path_to(dst).iter().all(|c| self.board.is_empty(c))
+    fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
+        src.linear_path_to(dst).into_iter().all(|c| self.board.is_empty(c))
     }
 
-    pub fn can_place_new_tile_near_duke(&self, o: &Owner) -> bool {
+    pub fn can_place_new_tile_near_duke(&self, o: Owner) -> bool {
         !self.empty_spaces_near_current_duke(o).is_empty()
     }
-    pub fn empty_spaces_near_current_duke(&self, o: &Owner) -> Vec<Coordinates> {
-        let duke_location = self.duke_coordinates(&o);
+    pub fn empty_spaces_near_current_duke(&self, o: Owner) -> Vec<Coordinates> {
+        let duke_location = self.duke_coordinates(o);
         DukeOffset::iter()
-            .filter_map(|o| self.absolute_duke_offset(&o, &duke_location))
-            .filter(|c| self.board.is_empty(&c))
+            .filter_map(|offset| self.absolute_duke_offset(offset, duke_location))
+            .filter(|c| self.board.is_empty(*c))
             .collect()
     }
 
-    fn different_team_or_empty(&self, src: &Coordinates, dst: &Coordinates) -> bool {
+    fn different_team_or_empty(&self, src: Coordinates, dst: Coordinates) -> bool {
         let src_tile = self.board.get(src).expect("No unit found in src to apply an action with");
-        self.board.get(dst).for_all(|c| src_tile.borrow().different_team(&&c))
+        self.board.get(dst).for_all(|c| src_tile.different_team(c))
     }
 
-    fn can_apply_action(&self, src: &Coordinates, dst: &Coordinates, action: &TileAction) -> bool {
+    fn can_apply_action(&self, src: Coordinates, dst: Coordinates, action: &TileAction) -> bool {
         if !self.different_team_or_empty(src, dst) {
             return false;
         }
@@ -238,8 +238,8 @@ impl GameBoard {
     }
     fn can_apply(
         &self,
-        src: &Coordinates,
-        dst: &Coordinates,
+        src: Coordinates,
+        dst: Coordinates,
     ) -> AppliedPubAction {
         self.get(src)
             .expect("src position is empty")
@@ -258,9 +258,9 @@ impl GameBoard {
 
     fn can_command(
         &self,
-        commander_src: &Coordinates,
-        unit_src: &Coordinates,
-        unit_dst: &Coordinates,
+        commander_src: Coordinates,
+        unit_src: Coordinates,
+        unit_dst: Coordinates,
     ) -> bool {
         let commander_tile = self.get(commander_src).expect("No unit found in commander_src");
         let unit_tile = self.get(unit_src).expect("No commanded unit found in unit_src");
@@ -268,45 +268,47 @@ impl GameBoard {
         self.different_team_or_empty(unit_src, unit_dst)
     }
 
-    pub fn duke_coordinates(&self, o: &Owner) -> Coordinates {
+    pub fn duke_coordinates(&self, o: Owner) -> Coordinates {
         self.board
-            .find(|a| a.owner == *o && units::is_duke(a.tile.borrow()))
+            .find(|a| a.owner == o && units::is_duke(a.tile.borrow()))
             .expect(format!("Could not find the duke for {:?}", o).as_str())
     }
 
-    fn flip(&mut self, c: &Coordinates) -> () {
-        self.board.get_mut(&c).unwrap().flip()
+    fn flip(&mut self, c: Coordinates) -> () {
+        self.board.get_mut(c).unwrap().flip()
     }
 
-    pub fn can_move(&self, src: &Coordinates, dst: &Coordinates) -> bool {
+    pub fn can_move(&self, src: Coordinates, dst: Coordinates) -> bool {
         self.can_apply(src, dst) != AppliedPubAction::Invalid
     }
 
     // TODO: Should this really accept an owner?
-    pub fn make_a_move(&mut self, gm: &GameMove, o: &Owner) -> () {
+    // Returns true if succeeded. This allows GameMove to be move instead of being borrowed, which
+    // the types all around nicer to use
+    pub fn make_a_move(&mut self, gm: GameMove, o: Owner) -> () {
         match gm {
             GameMove::PlaceNewTile(tile, duke_offset) => {
-                let c = self.absolute_duke_offset(duke_offset, &self.duke_coordinates(o))
+                let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(o))
                     .expect("Request duke location is out of bounds");
-                assert!(self.board.is_empty(&c), "Cannot place new tile in non-empty spot");
-                self.place(&c, PlacedTile::new(o.clone(), tile.clone()));
+                assert!(self.board.is_empty(c), "Cannot place new tile in non-empty spot");
+                self.place(c, PlacedTile::new(o.clone(), tile.clone()));
             }
             GameMove::ApplyNonCommandTileAction { src, dst } => {
                 let tile = self.board.get(src).expect("Cannot move from an empty tile");
                 assert_eq!(
                     tile.owner,
-                    *o,
+                    o,
                     "Cannot move unowned tile in {:?}",
                     src
                 );
                 match self.can_apply(src, dst) {
                     AppliedPubAction::Movement => {
-                        self.flip(&src);
-                        self.board.mv(&src, &dst);
+                        self.flip(src);
+                        self.board.mv(src, dst);
                     }
                     AppliedPubAction::Strike => {
-                        self.flip(&src);
-                        self.board.remove(&dst);
+                        self.flip(src);
+                        self.board.remove(dst);
                     }
                     AppliedPubAction::Invalid =>
                         panic!("Cannot move unit in {:?} to {:?}", &src, &dst)
@@ -317,7 +319,7 @@ impl GameBoard {
                 let commander = self.board.get(commander_src).expect("Cannot command from an empty tile");
                 assert_eq!(
                     commander.owner,
-                    *o,
+                    o,
                     "Cannot command using unowned command in {:?}",
                     commander_src
                 );
@@ -326,34 +328,34 @@ impl GameBoard {
                     "Can't apply command (commander: {:?}, unit_src: {:?}, unit_dst: {:?}",
                     commander_src, unit_src, unit_dst,
                 );
-                self.flip(&commander_src);
-                self.board.mv(&unit_src, &unit_dst);
+                self.flip(commander_src);
+                self.board.mv(unit_src, unit_dst);
             }
         }
     }
 
-    pub fn get_tiles_for(&self, o: &Owner) -> Vec<(Coordinates, &PlacedTile)> {
+    pub fn get_tiles_for(&self, o: Owner) -> Vec<(Coordinates, &PlacedTile)> {
         self.board
             .active_coordinates()
             .into_iter()
-            .filter(|e| e.1.owner.borrow().same_team(&o))
+            .filter(|e| e.1.owner.same_team(o))
             .collect()
     }
 
     // Except commands.
-    pub fn get_legal_moves(&self, src: &Coordinates) -> Vec<(Coordinates, TileAction)> {
+    pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         let tile = self.get(src).unwrap().get_current_side();
         let center_offset = tile.center_offset();
         tile.actions()
             .into_iter()
             .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit && e.1 != TileAction::Jump)
             .flat_map(|o| self
-                .target_coordinates(src, &o.0, &o.1, &center_offset)
+                .target_coordinates(src, o.0, o.1, center_offset)
                 .iter()
                 .map(|c| (*c, o.1))
                 .collect::<Vec<(Coordinates, TileAction)>>()
             )
-            .filter(|o| self.can_apply_action(src, &o.0, &o.1))
+            .filter(|o| self.can_apply_action(src, o.0, &o.1))
             .collect()
     }
 }
@@ -368,7 +370,7 @@ mod test {
     fn get_legal_moves_moves_only() {
         let mut gs = GameBoard::empty();
         let c = Coordinates { x: 2, y: 4 };
-        gs.place(&c, units::place_tile(Owner::TopPlayer, units::footman));
+        gs.place(c, units::place_tile(Owner::TopPlayer, units::footman));
         assert_eq_set!(
             vec![
                 (Coordinates { x: 3, y: 4 }, TileAction::Move),
@@ -376,7 +378,7 @@ mod test {
                 (Coordinates { x: 1, y: 4 }, TileAction::Move),
                 (Coordinates { x: 2, y: 3 }, TileAction::Move),
             ],
-            gs.get_legal_moves(&c),
+            gs.get_legal_moves(c),
         );
     }
 
@@ -384,7 +386,7 @@ mod test {
     fn get_legal_moves_horizontal_slides() {
         let mut gs = GameBoard::empty();
         let c = Coordinates { x: 2, y: 4 };
-        gs.place(&c, units::place_tile(Owner::TopPlayer, units::duke));
+        gs.place(c, units::place_tile(Owner::TopPlayer, units::duke));
         assert_eq_set!(
             vec![
                 (Coordinates { x: 0, y: 4 }, TileAction::Slide),
@@ -393,7 +395,7 @@ mod test {
                 (Coordinates { x: 4, y: 4 }, TileAction::Slide),
                 (Coordinates { x: 5, y: 4 }, TileAction::Slide),
             ],
-            gs.get_legal_moves(&c),
+            gs.get_legal_moves(c),
         );
     }
 
@@ -401,8 +403,8 @@ mod test {
     fn get_legal_moves_vertical_slides() {
         let mut gs = GameBoard::empty();
         let c = Coordinates { x: 2, y: 4 };
-        gs.place(&c, units::place_tile(Owner::TopPlayer, units::duke));
-        gs.flip(&c);
+        gs.place(c, units::place_tile(Owner::TopPlayer, units::duke));
+        gs.flip(c);
         assert_eq_set!(
             vec![
                 (Coordinates { x: 2, y: 0 }, TileAction::Slide),
@@ -411,7 +413,7 @@ mod test {
                 (Coordinates { x: 2, y: 3 }, TileAction::Slide),
                 (Coordinates { x: 2, y: 5 }, TileAction::Slide),
             ],
-            gs.get_legal_moves(&c),
+            gs.get_legal_moves(c),
         );
     }
 
@@ -419,7 +421,7 @@ mod test {
     fn get_legal_moves_diagonal_slides() {
         let mut gs = GameBoard::empty();
         let c = Coordinates { x: 2, y: 4 };
-        gs.place(&c, units::place_tile(Owner::TopPlayer, units::priest));
+        gs.place(c, units::place_tile(Owner::TopPlayer, units::priest));
         assert_eq_set!(
             vec![
                 (Coordinates { x: 1, y: 3 }, TileAction::Slide),
@@ -433,7 +435,7 @@ mod test {
                 (Coordinates { x: 4, y: 2 }, TileAction::Slide),
                 (Coordinates { x: 5, y: 1 }, TileAction::Slide),
             ],
-            gs.get_legal_moves(&c),
+            gs.get_legal_moves(c),
         );
     }
 
@@ -442,13 +444,13 @@ mod test {
     fn make_a_move() {
         let mut gs = GameBoard::empty();
         let c = Coordinates { x: 2, y: 4 };
-        gs.place(&c, units::place_tile(Owner::TopPlayer, units::footman));
+        gs.place(c, units::place_tile(Owner::TopPlayer, units::footman));
         let c2 = Coordinates { x: 1, y: 4 };
         gs.make_a_move(
-            &GameMove::ApplyNonCommandTileAction { src: c, dst: c2 },
-            &Owner::TopPlayer,
+            GameMove::ApplyNonCommandTileAction { src: c, dst: c2 },
+            Owner::TopPlayer,
         );
-        assert!(gs.get(&c2).is_some());
-        assert!(gs.get(&c).is_none());
+        assert!(gs.get(c2).is_some());
+        assert!(gs.get(c).is_none());
     }
 }

@@ -1,4 +1,3 @@
-
 #[macro_export] macro_rules! assert_none {
     ($e: expr) => {assert_eq!(None, $e)}
 }
@@ -13,4 +12,3 @@
         assert_eq!(hs, HashSet::from_iter($actual));
     }}
 }
-

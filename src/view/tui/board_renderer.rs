@@ -70,7 +70,7 @@ pub fn render_board(
         );
     }
 
-    if let Some(tile) = hightlighting.and_then(|c| board.get_board().get(&c)) {
+    if let Some(tile) = hightlighting.and_then(|c| board.get_board().get(c)) {
         let info_block_position = Rect {
             y: game_board_area.y + game_board_area.height - tile_height() - 1 - 1,
             x: game_board_area.x + game_board_area.width + 1,
