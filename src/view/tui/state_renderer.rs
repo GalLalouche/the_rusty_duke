@@ -5,6 +5,7 @@ use tui::widgets::Widget;
 use crate::game::tile::PlacedTile;
 use crate::view::state::{ViewPosition, ViewState};
 use crate::view::tui::board_renderer::{MovingConfig, render_board};
+use crate::view::controller::Controller;
 
 impl Widget for &ViewState {
     fn render(self, area: Rect, buf: &mut Buffer) -> () {
@@ -29,7 +30,7 @@ impl Widget for &ViewState {
             ViewPosition::Placing(relative_duke_offset, tile) => {
                 let duke_coordinate = self.get_game_state().current_duke_coordinate();
                 let placement =
-                    self.relative_to_absolute_panicing(duke_coordinate, *relative_duke_offset);
+                    self.relative_to_absolute_panicking(duke_coordinate, *relative_duke_offset);
                 // Not the most efficient, but safer for now.
                 let mut temp_board = self.get_game_state().board.clone();
                 temp_board.place(
@@ -48,5 +49,11 @@ impl Widget for &ViewState {
                 )
             }
         };
+    }
+}
+
+impl Widget for &Controller {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.get_view_state().render(area, buf);
     }
 }

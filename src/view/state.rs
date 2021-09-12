@@ -3,7 +3,7 @@ use std::mem;
 use crate::common::coordinates::Coordinates;
 use crate::common::utils::Folding;
 use crate::game::board::GameMove;
-use crate::game::state::GameState;
+use crate::game::state::{CanPullNewTileResult, GameState};
 use crate::game::tile::Tile;
 use crate::view::tui::move_view::MoveView;
 
@@ -134,6 +134,14 @@ impl ViewState {
         }
     }
 
+    pub fn can_pull_token_from_bag(&self) -> bool {
+        match &self.view_position {
+            ViewPosition::BoardPosition { moving: None, .. } =>
+                self.game_state.can_pull_tile_from_bag() == CanPullNewTileResult::OK,
+            _ => false,
+        }
+    }
+
     pub fn pull_token_from_bag(&mut self) -> () {
         match &self.view_position {
             ViewPosition::BoardPosition { moving: None, .. } =>
@@ -144,7 +152,6 @@ impl ViewState {
                             *self.game_state.empty_spaces_near_current_duke()
                                 .first()
                                 .expect("No empty space near duke"),
-
                         ).expect("ASSERTION ERROR: empty space near duke isn't near duke"),
                         self.game_state.pull_tile_from_bag(),
                     ),
@@ -159,7 +166,7 @@ impl ViewState {
         }
     }
 
-    pub(super) fn relative_to_absolute_panicing(&self, c: Coordinates, mv: MoveView) -> Coordinates {
+    pub(super) fn relative_to_absolute_panicking(&self, c: Coordinates, mv: MoveView) -> Coordinates {
         mv
             .mv(c, &self.game_state.board.get_board())
             .expect(
@@ -175,7 +182,7 @@ impl ViewState {
         let p = match &self.view_position {
             ViewPosition::Placing(p, _) => {
                 let duke_coordinate = self.game_state.current_duke_coordinate();
-                self.relative_to_absolute_panicing(duke_coordinate, *p)
+                self.relative_to_absolute_panicking(duke_coordinate, *p)
             }
             e => panic!("ASSERTION_ERROR: Invalid view position for placing: {:?}", e),
         };

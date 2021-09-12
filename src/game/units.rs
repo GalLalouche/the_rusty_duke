@@ -251,6 +251,8 @@ mod test {
         knight,
         pikeman,
         wizard,
+
+        //TODO add box units, like Light Horse.
     );
 }
 

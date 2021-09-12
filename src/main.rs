@@ -12,6 +12,7 @@ use crate::game::state::GameState;
 use crate::game::tile::TileBag;
 use crate::game::units;
 use crate::view::state::ViewState;
+use crate::view::controller::{Controller, ControllerCommand, Error};
 
 mod common;
 mod game;
@@ -39,7 +40,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (DukeInitialLocation::Left, FootmenSetup::Right),
         (DukeInitialLocation::Right, FootmenSetup::Right),
     );
-    let mut vs = ViewState::new(gs);
+    let vs = ViewState::new(gs);
+    let mut controller = Controller::new(vs);
     // stupid_sync_ai::next_move(gs.borrow_mut());
 
     enable_raw_mode().expect("can run in raw mode");
@@ -88,51 +90,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .split(size);
 
-            rect.render_widget(vs.borrow(), chunks[0]);
+            rect.render_widget(controller.borrow(), chunks[0]);
         })?;
-        macro_rules! place {
-            ($e: expr, $terminal: ident, $vs: ident) => {
-                if $vs.can_move_placement($e) {
-                    $vs.move_placement($e);
-                } else if $vs.can_move_view_position($e) {
-                    $vs.move_view_position($e);
-                }
+        fn wrap(o: Option<view::controller::Error>) -> () {
+            match o {
+                None => (),
+                Some(e) => panic!("Unexpected controller error: {:?}", e),
             }
         }
         match rx.recv()? {
             Event::Input(event) => match event.code {
-                KeyCode::Char('h') => place!(MoveView::Left, terminal, vs),
-                KeyCode::Char('j') => place!(MoveView::Down, terminal, vs),
-                KeyCode::Char('k') => place!(MoveView::Up, terminal, vs),
-                KeyCode::Char('l') => place!(MoveView::Right, terminal, vs),
-                KeyCode::Char('p') => {
-                    // disable_raw_mode()?;
-                    // terminal.show_cursor()?;
-                    vs.pull_token_from_bag();
-                }
+                KeyCode::Char('q') => break,
+                KeyCode::Char('h') => wrap(controller.apply(ControllerCommand::Left)),
+                KeyCode::Char('j') => wrap(controller.apply(ControllerCommand::Down)),
+                KeyCode::Char('k') => wrap(controller.apply(ControllerCommand::Up)),
+                KeyCode::Char('l') => wrap(controller.apply(ControllerCommand::Right)),
+                KeyCode::Char('p') => wrap(controller.apply(ControllerCommand::PullFromBag)),
                 KeyCode::Char('u') => {
                     unimplemented!("Undo is not supported");
                 }
-                KeyCode::Enter => {
-                    if vs.is_moving() {
-                        vs.move_selected();
-                    } else if vs.is_placing() {
-                        vs.place();
-                    } else if vs.can_select_for_movement() {
-                        vs.select_for_movement();
-                    }
-                }
-                KeyCode::Esc => {
-                    if vs.can_unselect() {
-                        vs.unselect();
-                    }
-                }
-                KeyCode::Char('q') => {
-                    break;
-                }
-                _ => {}
+                KeyCode::Enter => wrap(controller.apply(ControllerCommand::Select)),
+                KeyCode::Esc => wrap(controller.apply(ControllerCommand::Escape)),
+                _ => {},
             },
-            Event::Tick => {}
+            Event::Tick => {},
         }
     };
     Ok(())
