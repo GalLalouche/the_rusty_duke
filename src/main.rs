@@ -5,14 +5,12 @@ use std::borrow::Borrow;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::view::tui::move_view::MoveView;
-
 use crate::game::board::{DukeInitialLocation, FootmenSetup};
 use crate::game::state::GameState;
 use crate::game::tile::TileBag;
 use crate::game::units;
+use crate::view::controller::{Controller, ControllerCommand};
 use crate::view::state::ViewState;
-use crate::view::controller::{Controller, ControllerCommand, Error};
 
 mod common;
 mod game;
@@ -111,9 +109,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 KeyCode::Enter => wrap(controller.apply(ControllerCommand::Select)),
                 KeyCode::Esc => wrap(controller.apply(ControllerCommand::Escape)),
-                _ => {},
+                _ => {}
             },
-            Event::Tick => {},
+            Event::Tick => {}
         }
     };
     Ok(())

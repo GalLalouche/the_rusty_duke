@@ -1,5 +1,5 @@
+use crate::view::move_view::MoveView;
 use crate::view::state::ViewState;
-use crate::view::tui::move_view::MoveView;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ControllerCommand {

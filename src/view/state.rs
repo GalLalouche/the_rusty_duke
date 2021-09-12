@@ -5,7 +5,7 @@ use crate::common::utils::Folding;
 use crate::game::board::GameMove;
 use crate::game::state::{CanPullNewTileResult, GameState};
 use crate::game::tile::Tile;
-use crate::view::tui::move_view::MoveView;
+use crate::view::move_view::MoveView;
 
 #[derive(Debug, Clone)]
 pub(super) enum ViewPosition {
