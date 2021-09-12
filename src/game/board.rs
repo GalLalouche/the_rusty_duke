@@ -222,7 +222,7 @@ impl GameBoard {
         self.board.get(dst).for_all(|c| src_tile.different_team(c))
     }
 
-    fn can_apply_action(&self, src: Coordinates, dst: Coordinates, action: &TileAction) -> bool {
+    fn can_apply_action(&self, src: Coordinates, dst: Coordinates, action: TileAction) -> bool {
         if !self.different_team_or_empty(src, dst) {
             return false;
         }
@@ -283,8 +283,6 @@ impl GameBoard {
     }
 
     // TODO: Should this really accept an owner?
-    // Returns true if succeeded. This allows GameMove to be move instead of being borrowed, which
-    // the types all around nicer to use
     pub fn make_a_move(&mut self, gm: GameMove, o: Owner) -> () {
         match gm {
             GameMove::PlaceNewTile(tile, duke_offset) => {
@@ -355,7 +353,7 @@ impl GameBoard {
                 .map(|c| (*c, o.1))
                 .collect::<Vec<(Coordinates, TileAction)>>()
             )
-            .filter(|o| self.can_apply_action(src, o.0, &o.1))
+            .filter(|o| self.can_apply_action(src, o.0, o.1))
             .collect()
     }
 }

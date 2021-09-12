@@ -145,7 +145,7 @@ impl TileSide {
     pub fn center_offset(&self) -> VerticalOffset {
         let center_horizontal_offset = TileSide::SIDE / 2;
         for y in 0..5 {
-            if self.board.get(Coordinates { x: center_horizontal_offset, y }) == Some(&TileAction::Unit) {
+            if self.board.get(Coordinates { x: center_horizontal_offset, y }).cloned() == Some(TileAction::Unit) {
                 return VerticalOffset::from_index(y);
             };
         }
@@ -156,13 +156,13 @@ impl TileSide {
         let left_offset = Offsets::new(HorizontalOffset::Left, self.center_offset());
         let right_offset = Offsets::new(HorizontalOffset::Right, self.center_offset());
         assert_eq!(self.board.get(left_offset.into()), self.board.get(right_offset.into()));
-        self.board.get(left_offset.into()).has(&&TileAction::Slide)
+        self.board.get(left_offset.into()).cloned().has(&TileAction::Slide)
     }
 
     /// Panics if dst is out of bounds.
     // TODO: Should this really panic?
     // TODO: Handle jump slides
-    pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<&TileAction> {
+    pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<TileAction> {
         let x_diff = i32::from(dst.x) - i32::from(src.x);
         let y_base = i32::from(self.center_offset().to_index() - 2);
         let y_diff = y_base + i32::from(dst.y) - i32::from(src.y);
@@ -189,7 +189,7 @@ impl TileSide {
                 self.board.get(VerticalOffset::Top.center().into())
             } else {
                 None
-            }).filter(|a| *a == &TileAction::Slide);
+            }).cloned().filter(|a| *a == TileAction::Slide);
 
         let y_offset = get_vertical_slide
             .filter(|_| x_diff == 0)
@@ -202,7 +202,7 @@ impl TileSide {
                 2 => VerticalOffset::FarBottom,
                 _ => panic!("Out of bounds"),
             });
-        self.board.get(Offsets::new(x_offset, y_offset).into())
+        self.board.get(Offsets::new(x_offset, y_offset).into()).cloned()
     }
 
     pub fn flip_vertical(self) -> TileSide {
@@ -293,7 +293,7 @@ impl PlacedTile {
             CurrentSide::Flipped => c.to_ascii_uppercase(),
         }
     }
-    pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<&TileAction> {
+    pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<TileAction> {
         self.get_current_side().get_action_from_coordinates(src, dst)
     }
 }
@@ -397,7 +397,7 @@ mod test {
             (&(HorizontalSymmetricOffset::Far, VerticalOffset::Top), TileAction::Jump)
         ]);
         assert_some!(
-            &TileAction::Jump,
+            TileAction::Jump,
             tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, Coordinates{x: 4, y:3}),
         )
     }
@@ -409,7 +409,7 @@ mod test {
             (&(VerticalOffset::Bottom), TileAction::Unit),
         ]);
         assert_some!(
-            &TileAction::Strike,
+            TileAction::Strike,
             tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, Coordinates{x: 2, y:1}),
         )
     }
@@ -420,7 +420,7 @@ mod test {
             (&HorizontalSymmetricOffset::Near, TileAction::Slide)
         ]);
         assert_some!(
-            &TileAction::Slide,
+            TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:2}, Coordinates{x: 1, y:2}),
         )
     }
@@ -431,7 +431,7 @@ mod test {
             (&HorizontalSymmetricOffset::Near, TileAction::Slide)
         ]);
         assert_some!(
-            &TileAction::Slide,
+            TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:2}, Coordinates{x: 2, y:2}),
         )
     }
@@ -442,7 +442,7 @@ mod test {
             (&HorizontalSymmetricOffset::Near, TileAction::Slide)
         ]);
         assert_some!(
-            &TileAction::Slide,
+            TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:2}, Coordinates{x: 5, y:2}),
         )
     }
@@ -453,7 +453,7 @@ mod test {
             (&VerticalOffset::Top, TileAction::Slide)
         ]);
         assert_some!(
-            &TileAction::Slide,
+            TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:5}, Coordinates{x: 0, y:0}),
         )
     }
@@ -464,7 +464,7 @@ mod test {
             (&VerticalOffset::Top, TileAction::Slide)
         ]);
         assert_some!(
-            &TileAction::Slide,
+            TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:5}, Coordinates{x: 0, y:3}),
         )
     }
@@ -475,7 +475,7 @@ mod test {
             (&VerticalOffset::Bottom, TileAction::Slide)
         ]);
         assert_some!(
-            &TileAction::Slide,
+            TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:0}, Coordinates{x: 0, y:5}),
         )
     }
@@ -486,7 +486,7 @@ mod test {
             (&VerticalOffset::Bottom, TileAction::Slide)
         ]);
         assert_some!(
-            &TileAction::Slide,
+            TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:3}, Coordinates{x: 0, y:5}),
         )
     }

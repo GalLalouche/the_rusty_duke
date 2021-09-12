@@ -97,6 +97,7 @@ impl GameState {
         self.board.get_tiles_for(self.current_player_turn)
     }
 
+    // Except commands
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         assert!(self.board.get(src).unwrap().owner.same_team(self.current_player_turn));
         self.board.get_legal_moves(src)

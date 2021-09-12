@@ -7,7 +7,7 @@ use crate::common::coordinates::Coordinates;
 use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::tile::{CurrentSide, PlacedTile, TileAction};
 
-fn to_char(c: Coordinates, t: Option<&TileAction>, side: CurrentSide) -> char {
+fn to_char(c: Coordinates, t: Option<TileAction>, side: CurrentSide) -> char {
     match t {
         Some(TileAction::Move) => '●',
         Some(TileAction::Jump) => '○',
@@ -87,7 +87,7 @@ pub(super) fn render_board_tile(
             buf.set_string(
                 inside_border.x + normalized_c.x as u16,
                 inside_border.y + normalized_c.y as u16,
-                to_char(c, t, o.current_side).to_string(), Style::default(),
+                to_char(c, t.cloned(), o.current_side).to_string(), Style::default(),
             );
         }
     }
