@@ -3,9 +3,9 @@ use tui::layout::Rect;
 use tui::widgets::Widget;
 
 use crate::game::tile::PlacedTile;
+use crate::view::controller::Controller;
 use crate::view::state::{ViewPosition, ViewState};
 use crate::view::tui::board_renderer::{MovingConfig, render_board};
-use crate::view::controller::Controller;
 
 impl Widget for &ViewState {
     fn render(self, area: Rect, buf: &mut Buffer) -> () {
@@ -25,7 +25,14 @@ impl Widget for &ViewState {
                     } else {
                         None
                     };
-                render_board(&self.get_game_state().board, Some(*p), moving_config, area, buf);
+                render_board(
+                    &self.get_game_state().board,
+                    Some(*p),
+                    moving_config,
+                    Some("This is a very very very long test to check out line breaks"),
+                    area,
+                    buf,
+                );
             }
             ViewPosition::Placing(relative_duke_offset, tile) => {
                 let duke_coordinate = self.get_game_state().current_duke_coordinate();
@@ -44,6 +51,7 @@ impl Widget for &ViewState {
                         focus: duke_coordinate,
                         legal_options: vec!(placement),
                     }),
+                    Some("This is another test"),
                     area,
                     buf,
                 )

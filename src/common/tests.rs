@@ -1,3 +1,6 @@
+#[macro_export] macro_rules! assert_empty {
+    ($e: expr) => {assert!($e.is_empty())}
+}
 #[macro_export] macro_rules! assert_none {
     ($e: expr) => {assert_eq!(None, $e)}
 }

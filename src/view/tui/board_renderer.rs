@@ -1,6 +1,8 @@
+use std::borrow::Borrow;
+
 use tui::buffer::Buffer;
 use tui::layout::Rect;
-use tui::widgets::{Block, Borders, BorderType, Widget};
+use tui::widgets::{Block, Borders, BorderType, Paragraph, Widget, Wrap};
 
 use crate::common::coordinates::Coordinates;
 use crate::common::utils::Folding;
@@ -28,13 +30,14 @@ pub struct MovingConfig {
     pub legal_options: Vec<Coordinates>,
 }
 
-pub fn render_board(
+pub fn render_board<S>(
     board: &GameBoard,
     hightlighting: Option<Coordinates>,
     moving: Option<MovingConfig>,
+    info: Option<S>,
     area: Rect,
     buf: &mut Buffer,
-) {
+) where S: Borrow<str> {
     let b = Block::default()
         .title("Game Board")
         .border_type(BorderType::Double)
@@ -71,7 +74,7 @@ pub fn render_board(
     }
 
     if let Some(tile) = hightlighting.and_then(|c| board.get_board().get(c)) {
-        let info_block_position = Rect {
+        let tile_info_block_position = Rect {
             y: game_board_area.y + game_board_area.height - tile_height() - 1 - 1,
             x: game_board_area.x + game_board_area.width + 1,
             width: tile_width() * 2 + 2,
@@ -82,8 +85,8 @@ pub fn render_board(
             .border_type(BorderType::Double)
             .borders(Borders::ALL)
             ;
-        let inner = b.inner(info_block_position);
-        b.render(info_block_position, buf);
+        let inner = b.inner(tile_info_block_position);
+        b.render(tile_info_block_position, buf);
 
         let current_position = Rect {
             x: inner.x,
@@ -113,5 +116,24 @@ pub fn render_board(
             flipped_position,
             buf,
         );
+    }
+
+    if let Some(s) = info {
+        let info_message_area = Rect {
+            y: game_board_area.height + 2,
+            x: 1,
+            width: game_board_area.width + 2,
+            height: 5,
+        };
+        let b = Block::default()
+            .title("Info messages")
+            .borders(Borders::ALL)
+            ;
+        let p = Paragraph::new(s.borrow())
+            .block(b)
+            .wrap(Wrap { trim: true })
+            ;
+
+        p.render(info_message_area, buf)
     }
 }

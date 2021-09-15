@@ -323,6 +323,10 @@ pub struct TileBag {
 }
 
 impl TileBag {
+    // Used for testing.
+    pub(super) fn empty() -> TileBag {
+        TileBag { bag: Vec::new() }
+    }
     pub fn new(bag: Vec<Tile>) -> TileBag {
         TileBag { bag }
     }

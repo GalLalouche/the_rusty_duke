@@ -61,7 +61,7 @@ pub(super) fn render_board_tile(
     let color = match &config {
         RenderTileConfig::Board(RenderBoardTileConfig { highlight_style: Some(t), .. }) =>
             match t {
-                RenderBoardTileHighlight::Moving => Color::LightRed,
+                RenderBoardTileHighlight::Moving => Color::LightBlue,
                 RenderBoardTileHighlight::LegalMove => Color::LightGreen,
             },
         _ => Color::White,

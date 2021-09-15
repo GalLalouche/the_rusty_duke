@@ -58,10 +58,10 @@ impl ViewState {
     }
 
     pub fn can_move_placement(&self, mv: MoveView) -> bool {
-        let duke_coordinate = self.game_state.current_duke_coordinate();
-        self.is_placing() && mv
-            .mv(duke_coordinate, &self.game_state.board.get_board())
-            .exists(|c| self.game_state.board.get_board().is_empty(*c))
+        match &self.view_position {
+            ViewPosition::Placing(_, _) => self.game_state.is_valid_placement(mv.into()),
+            e => panic!("Invalid position for checking move placement: {:?}", e)
+        }
     }
     pub fn move_placement(&mut self, mv: MoveView) -> () {
         assert!(self.can_move_placement(mv));
