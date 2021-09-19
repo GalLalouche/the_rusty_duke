@@ -34,15 +34,19 @@ pub struct GameBoard {
     board: Board<PlacedTile>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithNewTiles { True, False }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckForGuard { True, False }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
 
 impl GameBoard {
     pub const BOARD_SIZE: u16 = 6;
 
-    pub(super) fn new(board: Board<PlacedTile>) -> GameBoard {
-        GameBoard { board }
-    }
+    pub(super) fn new(board: Board<PlacedTile>) -> Self { GameBoard { board } }
     fn absolute_duke_offset(&self, offset: DukeOffset, c: Coordinates) -> Option<Coordinates> {
         fn or_none<P>(b: bool, c: P) -> Option<Coordinates> where P: Fn() -> Coordinates {
             if b { Some(c()) } else { None }
@@ -299,9 +303,16 @@ impl GameBoard {
 
     // Except commands.
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
-        let tile = self.get(src).unwrap().get_current_side();
-        let center_offset = tile.center_offset();
-        tile.actions()
+        self.get_legal_moves_aux(src, CheckForGuard::True)
+    }
+
+    fn get_legal_moves_aux(
+        &self, src: Coordinates, cfg: CheckForGuard) -> Vec<(Coordinates, TileAction)> {
+        let tile = self.get(src).unwrap();
+        let owner = tile.owner;
+        let tile_side = tile.get_current_side();
+        let center_offset = tile_side.center_offset();
+        tile_side.actions()
             .into_iter()
             .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
             .flat_map(|o| self
@@ -311,24 +322,112 @@ impl GameBoard {
                 .collect::<Vec<(Coordinates, TileAction)>>()
             )
             .filter(|o| self.can_apply_action(src, o.0, o.1))
+            .filter(|o| match cfg {
+                CheckForGuard::True => self.does_not_put_in_guard(
+                    BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
+                    owner,
+                ),
+                CheckForGuard::False => true,
+            })
             .collect()
     }
 
     pub fn is_attacked(&self, c: Coordinates, owner: Owner) -> bool {
+        self.is_attacked_aux(c, owner, CheckForGuard::True)
+    }
+
+    fn is_attacked_aux(&self, c: Coordinates, owner: Owner, cfg: CheckForGuard) -> bool {
         self.get_board()
             .active_coordinates()
             .iter()
             .filter(|e| e.1.owner.different_team(owner))
             .any(|other_tile|
                 self
-                    .get_legal_moves(other_tile.0)
+                    .get_legal_moves_aux(other_tile.0, cfg)
                     .iter()
                     .any(|other_move| other_move.0 == c)
             )
     }
 
     pub fn is_guard(&self, owner: Owner) -> bool {
-        self.is_attacked(self.duke_coordinates(owner), owner)
+        self.is_attacked_aux(self.duke_coordinates(owner), owner, CheckForGuard::False)
+    }
+
+    pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
+        let mut clone = self.clone();
+        clone.make_a_move(mv, owner);
+        !clone.is_guard(owner)
+    }
+    //
+    // fn to_possible_move(&self, mv: &BoardMove) -> PossibleMove {
+    //     match mv {
+    //         BoardMove::PlaceNewTile(_, o) => PossibleMove::PlaceNewTile(*o),
+    //         BoardMove::ApplyNonCommandTileAction { src, dst } =>
+    //             PossibleMove::ApplyNonCommandTileAction {
+    //                 src: *src,
+    //                 dst: *dst,
+    //                 capturing: self.get(*dst).cloned(),
+    //             }
+    //     }
+    // }
+
+    // Returns the tile that was removed, if such a tile exists. E.g., when placing a new tile,
+    // undoing the action would remove the new tile from the board.
+    pub fn undo(&mut self, mv: PossibleMove, owner: Owner) -> Option<PlacedTile> {
+        match mv {
+            PossibleMove::PlaceNewTile(offset) => {
+                let c = self
+                    .to_absolute_duke_offset(offset, owner)
+                    .expect(format!(
+                        "Invalid tile placement {:?} relative to duke {:?}",
+                        offset,
+                        self.duke_coordinates(owner),
+                    ).as_str());
+                let t = self.remove(c);
+                Some(t)
+            }
+            PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
+                // TODO handle strikes and other stuff.
+                let mut mover = self.remove(dst);
+                mover.flip();
+                self.place(src, mover);
+                if let Some(captured) = capturing {
+                    self.place(dst, captured.clone());
+                }
+                None
+            }
+        }
+    }
+
+    pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+        let mut result: Vec<PossibleMove> = self
+            .get_tiles_for(owner)
+            .iter()
+            .map(|e| e.0)
+            .flat_map(|src| self
+                .get_legal_moves(src)
+                .iter()
+                .map(|e| e.0)
+                .map(|dst| PossibleMove::ApplyNonCommandTileAction {
+                    src,
+                    dst,
+                    capturing: self.board.get(dst).cloned(),
+                })
+                .collect::<Vec<PossibleMove>>()
+            )
+            .collect();
+        if new_tiles == WithNewTiles::True {
+            result.extend(
+                DukeOffset::iter()
+                    .filter_map(|offset|
+                        if self.is_valid_placement(owner, offset) {
+                            Some(PossibleMove::PlaceNewTile(offset))
+                        } else {
+                            None
+                        })
+            );
+        }
+        result
     }
 }
 
@@ -352,6 +451,8 @@ mod test {
     #[test]
     fn get_legal_moves_moves_only() {
         let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+
         let c = Coordinates { x: 2, y: 4 };
         board.place(c, units::place_tile(Owner::TopPlayer, units::footman));
         assert_eq_set!(
@@ -369,6 +470,7 @@ mod test {
     fn get_legal_moves_and_jumps() {
         let mut board = GameBoard::empty();
         let c = Coordinates { x: 1, y: 4 };
+        board.place(Coordinates { x: 5, y: 5 }, units::place_tile(Owner::TopPlayer, units::duke));
         board.place(c, units::place_tile(Owner::TopPlayer, units::champion));
         assert_eq_set!(
             vec![
@@ -419,8 +521,18 @@ mod test {
     }
 
     #[test]
+    fn can_move_returns_true_for_diagonal_sliding() {
+        let mut board = GameBoard::empty();
+        let c = Coordinates { x: 2, y: 4 };
+        board.place(c, units::place_tile(Owner::TopPlayer, units::priest));
+        assert!(board.can_move(c, Coordinates { x: 4, y: 2 }));
+    }
+
+    #[test]
     fn get_legal_moves_diagonal_slides() {
         let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+
         let c = Coordinates { x: 2, y: 4 };
         board.place(c, units::place_tile(Owner::TopPlayer, units::priest));
         assert_eq_set!(
@@ -474,6 +586,9 @@ mod test {
     #[test]
     fn is_attacked_returns_true_when_attacked_by_an_enemy_move() {
         let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 5, y: 5 }, units::place_tile(Owner::BottomPlayer, units::duke));
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+
         board.place(Coordinates { x: 2, y: 4 }, units::place_tile(Owner::TopPlayer, units::footman));
         let c = Coordinates { x: 4, y: 4 };
         board.place(c, units::place_tile(Owner::BottomPlayer, units::footman));
@@ -484,7 +599,9 @@ mod test {
     #[test]
     fn is_attacked_returns_true_when_attacked_by_an_enemy_jump() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 2, y: 4 }, units::place_tile(Owner::TopPlayer, units::duke));
+        board.place(Coordinates { x: 5, y: 5 }, units::place_tile(Owner::BottomPlayer, units::duke));
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+
         let c = Coordinates { x: 4, y: 5 };
         board.place(c, units::place_tile(Owner::BottomPlayer, units::champion));
         board.flip(c);

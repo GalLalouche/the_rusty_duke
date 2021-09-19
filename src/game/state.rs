@@ -3,11 +3,11 @@ use strum::IntoEnumIterator;
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
-use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove};
-use crate::game::dumb_printer::print_board;
-use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileAction, TileBag, TileRef};
-use crate::game::{units, board_setup};
+use crate::game::{board_setup, units};
+use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNewTiles};
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
+use crate::game::dumb_printer::print_state;
+use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileAction, TileBag, TileRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
@@ -165,7 +165,7 @@ impl GameState {
                 self.can_pull_tile_from_bag_bool() && self.is_valid_placement(*o),
             GameMove::ApplyNonCommandTileAction { src, dst } =>
                 self.board.can_move(*src, *dst) &&
-                    self.does_not_put_in_guard(self.to_board_move(&game_move)),
+                    self.board.does_not_put_in_guard(self.to_board_move(&game_move), self.current_player_turn),
             // GameMove::CommandAnotherTile { .. } => unimplemented!(),
         }
     }
@@ -213,21 +213,10 @@ impl GameState {
         self.board.get_tiles_for(o)
     }
 
-    fn does_not_put_in_guard(&self, gm: BoardMove) -> bool {
-        let mut state_clone = self.clone();
-        let owner = self.current_player_turn;
-        state_clone.board.make_a_move(gm, owner);
-        !state_clone.board.is_guard(owner)
-    }
     // Except commands
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         assert!(self.board.get(src).unwrap().owner.same_team(self.current_player_turn));
-        self.board
-            .get_legal_moves(src)
-            .into_iter()
-            .filter(|(dst, _)|
-                self.does_not_put_in_guard(BoardMove::ApplyNonCommandTileAction { src, dst: *dst }))
-            .collect()
+        self.board.get_legal_moves(src)
     }
 
     pub fn current_duke_coordinate(&self) -> Coordinates {
@@ -244,7 +233,7 @@ impl GameState {
 
     pub fn is_valid_placement(&self, offset: DukeOffset) -> bool {
         self.board.is_valid_placement(self.current_player_turn, offset) &&
-            self.does_not_put_in_guard(BoardMove::PlaceNewTile(TileRef::new(units::footman()), offset))
+            self.board.does_not_put_in_guard(BoardMove::PlaceNewTile(TileRef::new(units::footman()), offset), self.current_player_turn)
     }
 
     pub fn is_over(&self) -> bool {
@@ -264,38 +253,21 @@ impl GameState {
         self.all_valid_game_moves_for(self.current_player_turn)
     }
     pub fn all_valid_game_moves_for(&self, o: Owner) -> Vec<PossibleMove> {
-        let mut result: Vec<PossibleMove> = self
-            .get_tiles_for_owner(o)
-            .iter()
-            .map(|e| e.0)
-            .flat_map(|src| self
-                .get_legal_moves(src)
-                .iter().map(|e| e.0)
-                .map(|dst| PossibleMove::ApplyNonCommandTileAction {
-                    src,
-                    dst,
-                    capturing: self.board.get(dst).cloned(),
-                })
-                .collect::<Vec<PossibleMove>>()
-            )
-            .collect();
-        result.extend(
-            DukeOffset::iter()
-                .filter_map(|o|
-                    if self.is_valid_placement(o) {
-                        Some(PossibleMove::PlaceNewTile(o))
-                    } else {
-                        None
-                    })
-        );
-        result
+        self.board.all_valid_moves(
+            o,
+            if self.bag_for_current_player().non_empty() {
+                WithNewTiles::True
+            } else {
+                WithNewTiles::False
+            },
+        )
     }
 
     pub fn as_string(&self) -> String {
-        print_board(self)
+        print_state(&self)
     }
 
-    pub fn get_bag_for_current_player(&self) -> &TileBag {
+    pub fn bag_for_current_player(&self) -> &TileBag {
         match self.current_player_turn {
             Owner::TopPlayer => &self.top_player_bag,
             Owner::BottomPlayer => &self.bottom_player_bag,
@@ -319,34 +291,14 @@ impl GameState {
     }
     pub fn undo(&mut self, mv: PossibleMove) -> () {
         self.current_player_turn = self.current_player_turn.next_player();
-
-        match mv {
-            PossibleMove::PlaceNewTile(o) => {
-                let c = self.board
-                    .to_absolute_duke_offset(o, self.current_player_turn)
-                    .expect(format!(
-                        "Invalid tile placement {:?} relative to duke {:?}",
-                        o,
-                        self.current_duke_coordinate(),
-                    ).as_str());
-                let t = self.board.remove(c);
-                let bag = match self.current_player_turn {
-                    Owner::TopPlayer => &mut self.top_player_bag,
-                    Owner::BottomPlayer => &mut self.bottom_player_bag,
-                };
-                assert_eq!(t.owner, self.current_player_turn);
-                assert_eq!(t.current_side, CurrentSide::Initial);
-                bag.push(t.tile);
-            }
-            PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
-                // TODO handle strikes and other stuff.
-                let mut mover = self.board.remove(dst);
-                mover.flip();
-                self.board.place(src, mover);
-                if let Some(captured) = capturing {
-                    self.board.place(dst, captured.clone());
-                }
-            }
+        if let Some(t) = self.board.undo(mv, self.current_player_turn) {
+            let bag = match self.current_player_turn {
+                Owner::TopPlayer => &mut self.top_player_bag,
+                Owner::BottomPlayer => &mut self.bottom_player_bag,
+            };
+            assert_eq!(t.owner, self.current_player_turn);
+            assert_eq!(t.current_side, CurrentSide::Initial);
+            bag.push(t.tile);
         }
     }
 

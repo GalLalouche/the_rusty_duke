@@ -1,8 +1,12 @@
 use crate::common::utils::{MkString, Vectors};
 use crate::game::state::GameState;
 use crate::game::tile::PlacedTile;
+use crate::game::board::GameBoard;
 
-pub fn print_board(gs: &GameState) -> String {
+pub fn print_state(gs: &GameState) -> String {
+    print_board(gs.board())
+}
+pub fn print_board(b: &GameBoard) -> String {
     fn to_row(row: &Vec<Option<PlacedTile>>) -> String {
         row.iter()
             .map(|o| o.as_ref().map_or(' ', |t| t.single_char_token()).to_string())
@@ -10,7 +14,7 @@ pub fn print_board(gs: &GameState) -> String {
             .mk_string_full("|", "|", "|")
     }
     let rows = || {
-        let mut result = gs
+        let mut result = b
             .rows()
             .iter()
             .map(|e| to_row(e))
@@ -23,6 +27,5 @@ pub fn print_board(gs: &GameState) -> String {
         );
         result
     };
-    let board = rows().join("\n");
-    board
+    rows().join("\n")
 }

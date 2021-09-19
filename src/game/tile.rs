@@ -161,10 +161,40 @@ impl TileSide {
         self.board.get(left_offset.into()).cloned().has(&TileAction::Slide)
     }
 
-    /// Panics if dst is out of bounds.
+    fn near_offset(src: Coordinates, dst: Coordinates) -> Option<Offsets> {
+        if !src.is_linear_to(dst) {
+            return None;
+        }
+
+        if src.x == dst.x && src.y < dst.y {
+            Some(Offsets::new(HorizontalOffset::Center, VerticalOffset::Bottom))
+        } else if src.x == dst.x && src.y > dst.y {
+            Some(Offsets::new(HorizontalOffset::Center, VerticalOffset::Top))
+        } else if src.x > dst.x && src.y == dst.y {
+            Some(Offsets::new(HorizontalOffset::Left, VerticalOffset::Center))
+        } else if src.x < dst.x && src.y == dst.y {
+            Some(Offsets::new(HorizontalOffset::Right, VerticalOffset::Center))
+        } else if src.x > dst.x && src.y > dst.y {
+            Some(Offsets::new(HorizontalOffset::Left, VerticalOffset::Top))
+        } else if src.x > dst.x && src.y < dst.y {
+            Some(Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom))
+        } else if src.x < dst.x && src.y > dst.y {
+            Some(Offsets::new(HorizontalOffset::Right, VerticalOffset::Top))
+        } else if src.x < dst.x && src.y < dst.y {
+            Some(Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom))
+        } else {
+            None
+        }
+    }
+    /// Panics if dst is out of bounds, except for slides.
     // TODO: Should this really panic?
     // TODO: Handle jump slides
     pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<TileAction> {
+        if let Some(near_offset) = TileSide::near_offset(src, dst) {
+            if self.board.get(near_offset.into()).has(&&TileAction::Slide) {
+                return Some(TileAction::Slide);
+            }
+        }
         let x_diff = i32::from(dst.x) - i32::from(src.x);
         let y_base = i32::from(self.center_offset().to_index() - 2);
         let y_diff = y_base + i32::from(dst.y) - i32::from(src.y);
@@ -204,7 +234,21 @@ impl TileSide {
                 2 => VerticalOffset::FarBottom,
                 _ => panic!("Out of bounds"),
             });
-        self.board.get(Offsets::new(x_offset, y_offset).into()).cloned()
+        self.board.get(Offsets::new(x_offset, y_offset).into()).cloned().or_else(|| {
+            // If still None, but src is linear to dst, that must mean they are diagonal to
+            // each-other.
+            if !src.is_linear_to(dst) {
+                return None;
+            }
+
+            let (h, v) = match (x_diff > 0, y_diff > 0) {
+                (true, true) => (VerticalOffset::Bottom, HorizontalOffset::Right),
+                (true, false) => (VerticalOffset::Top, HorizontalOffset::Right),
+                (false, true) => (VerticalOffset::Bottom, HorizontalOffset::Left),
+                (false, false) => (VerticalOffset::Top, HorizontalOffset::Left),
+            };
+            self.board.get(Offsets::new(v, h).into()).filter(|e| e == &&TileAction::Slide).cloned()
+        })
     }
 
     pub(super) fn flip_vertical(&self) -> TileSide {
@@ -378,8 +422,8 @@ pub struct TileBag {
 }
 
 impl TileBag {
-    // Used for testing.
-    pub(super) fn empty() -> TileBag {
+    #[cfg(test)]
+    pub fn empty() -> TileBag {
         TileBag { bag: Vec::new() }
     }
     pub fn new(bag: Vec<TileRef>) -> TileBag {
@@ -396,9 +440,9 @@ impl TileBag {
         }
     }
 
-    pub(super) fn pull_index(&mut self, x: usize) -> TileRef {
-        self.bag.remove(x)
-    }
+    // pub(super) fn pull_index(&mut self, x: usize) -> TileRef {
+    //     self.bag.remove(x)
+    // }
 
     pub fn remaining(&self) -> &Vec<TileRef> {
         &self.bag
@@ -557,5 +601,43 @@ mod test {
             TileAction::Slide,
             tile.get_action_from_coordinates(Coordinates{x: 0, y:3}, Coordinates{x: 0, y:5}),
         )
+    }
+
+    #[test]
+    fn get_action_returns_some_slides_if_there_is_a_top_diagonal_slide() {
+        let tile = TileSide::new(vec![
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Slide)
+        ]);
+        for dst in vec![
+            Coordinates { x: 1, y: 3 },
+            Coordinates { x: 0, y: 2 },
+            Coordinates { x: 3, y: 3 },
+            Coordinates { x: 4, y: 2 },
+            Coordinates { x: 5, y: 1 },
+        ] {
+            assert_some!(
+                TileAction::Slide,
+                tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, dst),
+            );
+        }
+    }
+
+    #[test]
+    fn get_action_returns_some_slides_if_there_is_a_bottom_diagonal_slide() {
+        let tile = TileSide::new(vec![
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Slide)
+        ]);
+        for dst in vec![
+            Coordinates { x: 4, y: 1 },
+            Coordinates { x: 5, y: 2 },
+            Coordinates { x: 2, y: 1 },
+            Coordinates { x: 1, y: 2 },
+            Coordinates { x: 0, y: 3 },
+        ] {
+            assert_some!(
+                TileAction::Slide,
+                tile.get_action_from_coordinates(Coordinates{x: 3, y:0}, dst),
+            );
+        }
     }
 }
