@@ -1,11 +1,13 @@
+use crossterm::style::Stylize;
 use tui::buffer::Buffer;
 use tui::layout::Rect;
-use tui::style::{Color, Style};
+use tui::style::{Color, Style, Modifier};
 use tui::widgets::{Block, Borders, BorderType, Widget};
 
 use crate::common::coordinates::Coordinates;
 use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::tile::{CurrentSide, PlacedTile, TileAction};
+use crate::game::tile::{CurrentSide, PlacedTile, TileAction, Owner};
+use crate::game::tile::Owner::TopPlayer;
 
 fn to_char(c: Coordinates, t: Option<TileAction>, side: CurrentSide) -> char {
     match t {
@@ -72,10 +74,14 @@ pub(super) fn render_board_tile(
         .border_style(Style::default().fg(color))
         ;
     let with_title_maybe = if let Some(o) = o {
+        let color = match o.owner {
+            TopPlayer => Color::LightCyan,
+            Owner::BottomPlayer => Color::LightMagenta,
+        };
         b.title(match config {
             RenderTileConfig::Info { title } => title,
-            _ => o.tile.name.to_owned(),
-        })
+            _ => o.tile.get_name().clone(),
+        }).style(Style::default().bg(color))
     } else {
         b
     };

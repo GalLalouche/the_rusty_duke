@@ -1,5 +1,7 @@
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use rand::Rng;
 
@@ -9,7 +11,7 @@ use crate::common::coordinates::Coordinates;
 use crate::common::utils::Folding;
 use crate::game::offset::{Centerable, HorizontalOffset, Indexable, Offsetable, Offsets, VerticalOffset};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum CurrentSide {
     Initial,
     Flipped,
@@ -205,21 +207,50 @@ impl TileSide {
         self.board.get(Offsets::new(x_offset, y_offset).into()).cloned()
     }
 
-    pub fn flip_vertical(self) -> TileSide {
+    pub(super) fn flip_vertical(&self) -> TileSide {
         TileSide {
             board: self.board.flip_vertical()
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Tile {
-    pub side_a: TileSide,
-    pub side_b: TileSide,
-    pub name: String,
+    side_a: TileSide,
+    side_b: TileSide,
+    name: String,
+}
+
+impl PartialEq for Tile {
+    fn eq(&self, other: &Self) -> bool {
+        self.name_compare(other)
+    }
+}
+
+impl Eq for Tile {}
+
+impl Hash for Tile {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state)
+    }
 }
 
 impl Tile {
+    pub fn get_side_a(&self) -> &TileSide {
+        &self.side_a
+    }
+
+    pub fn get_side_b(&self) -> &TileSide {
+        &self.side_b
+    }
+
+    pub fn get_name(&self) -> &String {
+        &self.name
+    }
+
+    pub fn name_compare(&self, other: &Tile) -> bool {
+        self.name == other.name
+    }
     pub fn new(side_a: TileSide, side_b: TileSide, name: &str) -> Tile {
         Tile {
             side_a,
@@ -228,7 +259,7 @@ impl Tile {
         }
     }
 
-    pub fn flip_vertical(self) -> Tile {
+    pub(super) fn flip_vertical(&self) -> Tile {
         Tile {
             side_a: self.side_a.flip_vertical(),
             side_b: self.side_b.flip_vertical(),
@@ -237,7 +268,14 @@ impl Tile {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+// #[derive(Debug, PartialEq, Eq, Clone)]
+// pub struct TileRef {
+//     pub tile: Rc<Tile>,
+// }
+
+pub type TileRef = Rc<Tile>;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Owner {
     TopPlayer,
     BottomPlayer,
@@ -261,18 +299,35 @@ impl CurrentSide {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct PlacedTile {
-    pub tile: Tile,
+    pub tile: TileRef,
     // TODO: this should be private
     pub current_side: CurrentSide,
     pub owner: Owner,
+}
+
+impl Clone for PlacedTile {
+    fn clone(&self) -> Self {
+        PlacedTile {
+            tile: self.tile.clone(),
+            current_side: self.current_side,
+            owner: self.owner,
+        }
+    }
 }
 
 impl PlacedTile {
     pub fn new(owner: Owner, tile: Tile) -> PlacedTile {
         let maybe_flipped_tile = match owner {
             Owner::TopPlayer => tile.flip_vertical(),
+            Owner::BottomPlayer => tile,
+        };
+        PlacedTile { owner, tile: Rc::new(maybe_flipped_tile), current_side: CurrentSide::Initial }
+    }
+    pub fn new_from_ref(owner: Owner, tile: TileRef) -> PlacedTile {
+        let maybe_flipped_tile = match owner {
+            Owner::TopPlayer => Rc::new(tile.flip_vertical()),
             Owner::BottomPlayer => tile,
         };
         PlacedTile { owner, tile: maybe_flipped_tile, current_side: CurrentSide::Initial }
@@ -317,9 +372,9 @@ impl Ownership for &PlacedTile {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileBag {
-    bag: Vec<Tile>,
+    bag: Vec<TileRef>,
 }
 
 impl TileBag {
@@ -327,11 +382,11 @@ impl TileBag {
     pub(super) fn empty() -> TileBag {
         TileBag { bag: Vec::new() }
     }
-    pub fn new(bag: Vec<Tile>) -> TileBag {
+    pub fn new(bag: Vec<TileRef>) -> TileBag {
         TileBag { bag }
     }
 
-    pub fn pull(&mut self) -> Option<Tile> {
+    pub fn pull(&mut self) -> Option<TileRef> {
         if self.bag.is_empty() {
             None
         } else {
@@ -341,7 +396,11 @@ impl TileBag {
         }
     }
 
-    pub fn remaining(&self) -> &Vec<Tile> {
+    pub(super) fn pull_index(&mut self, x: usize) -> TileRef {
+        self.bag.remove(x)
+    }
+
+    pub fn remaining(&self) -> &Vec<TileRef> {
         &self.bag
     }
     pub fn is_empty(&self) -> bool {
@@ -350,11 +409,16 @@ impl TileBag {
     pub fn non_empty(&self) -> bool {
         !self.is_empty()
     }
+
+    // For undoing
+    pub fn push(&mut self, t: TileRef) -> () {
+        self.bag.push(t);
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscardBag {
-    bag: Vec<Tile>,
+    bag: Vec<TileRef>,
 }
 
 impl DiscardBag {
@@ -362,11 +426,11 @@ impl DiscardBag {
         DiscardBag { bag: Vec::new() }
     }
 
-    pub fn add(&mut self, t: Tile) -> () {
+    pub fn add(&mut self, t: TileRef) -> () {
         self.bag.push(t);
     }
 
-    pub fn existing(&self) -> &Vec<Tile> {
+    pub fn existing(&self) -> &Vec<TileRef> {
         &self.bag
     }
 }

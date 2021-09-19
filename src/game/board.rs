@@ -9,7 +9,7 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::utils::Folding;
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::tile::{Owner, Ownership, PlacedTile, Tile, TileAction};
+use crate::game::tile::{Owner, Ownership, PlacedTile, Tile, TileAction, TileRef};
 use crate::game::units;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -25,18 +25,17 @@ pub enum FootmenSetup {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum DukeInitialLocation { Left, Right }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, EnumIter)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumIter)]
 pub enum DukeOffset { Top, Bottom, Left, Right }
 
 #[derive(Debug, Clone)]
-pub enum GameMove {
-    // TODO this tile should not be passed as a parameter...
-    PlaceNewTile(Tile, DukeOffset),
+pub(super) enum BoardMove {
+    PlaceNewTile(TileRef, DukeOffset),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates },
-    CommandAnotherTile { commander_src: Coordinates, unit_src: Coordinates, unit_dst: Coordinates },
+    // CommandAnotherTile { commander_src: Coordinates, unit_src: Coordinates, unit_dst: Coordinates },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameBoard {
     board: Board<PlacedTile>,
 }
@@ -56,6 +55,10 @@ impl GameBoard {
             DukeOffset::Left => or_none(c.x > 0, || Coordinates { x: c.x - 1, y: c.y }),
             DukeOffset::Right => or_none(c.x < self.board.width - 1, || Coordinates { x: c.x + 1, y: c.y }),
         }
+    }
+
+    pub fn to_absolute_duke_offset(&self, offset: DukeOffset, o: Owner) -> Option<Coordinates> {
+        self.absolute_duke_offset(offset, self.duke_coordinates(o))
     }
 
     pub fn setup(
@@ -121,6 +124,9 @@ impl GameBoard {
     pub fn place(&mut self, c: Coordinates, t: PlacedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
         self.board.put(c, t);
+    }
+    pub fn remove(&mut self, c: Coordinates) -> PlacedTile {
+        self.board.remove(c).expect(format!("Cannot remove tile from empty space {:?}", c).as_str())
     }
 
     pub fn rows(&self) -> &Vec<Vec<Option<PlacedTile>>> {
@@ -289,15 +295,15 @@ impl GameBoard {
             .exists(|c| self.board.is_empty(*c))
     }
     // TODO: Should this really accept an owner?
-    pub fn make_a_move(&mut self, gm: GameMove, o: Owner) -> () {
+    pub(super) fn make_a_move(&mut self, gm: BoardMove, o: Owner) -> () {
         match gm {
-            GameMove::PlaceNewTile(tile, duke_offset) => {
+            BoardMove::PlaceNewTile(tile, duke_offset) => {
                 let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(o))
                     .expect("Request duke location is out of bounds");
                 assert!(self.is_valid_placement(o, duke_offset));
-                self.place(c, PlacedTile::new(o.clone(), tile.clone()));
+                self.place(c, PlacedTile::new_from_ref(o.clone(), tile));
             }
-            GameMove::ApplyNonCommandTileAction { src, dst } => {
+            BoardMove::ApplyNonCommandTileAction { src, dst } => {
                 let tile = self.board.get(src).expect("Cannot move from an empty tile");
                 assert_eq!(
                     tile.owner,
@@ -319,22 +325,22 @@ impl GameBoard {
                 }
             }
 
-            GameMove::CommandAnotherTile { commander_src, unit_src, unit_dst } => {
-                let commander = self.board.get(commander_src).expect("Cannot command from an empty tile");
-                assert_eq!(
-                    commander.owner,
-                    o,
-                    "Cannot command using unowned command in {:?}",
-                    commander_src
-                );
-                assert!(
-                    self.can_command(commander_src, unit_src, unit_dst),
-                    "Can't apply command (commander: {:?}, unit_src: {:?}, unit_dst: {:?}",
-                    commander_src, unit_src, unit_dst,
-                );
-                self.flip(commander_src);
-                self.board.mv(unit_src, unit_dst);
-            }
+            // BoardMove::CommandAnotherTile { commander_src, unit_src, unit_dst } => {
+            //     let commander = self.board.get(commander_src).expect("Cannot command from an empty tile");
+            //     assert_eq!(
+            //         commander.owner,
+            //         o,
+            //         "Cannot command using unowned command in {:?}",
+            //         commander_src
+            //     );
+            //     assert!(
+            //         self.can_command(commander_src, unit_src, unit_dst),
+            //         "Can't apply command (commander: {:?}, unit_src: {:?}, unit_dst: {:?}",
+            //         commander_src, unit_src, unit_dst,
+            //     );
+            //     self.flip(commander_src);
+            //     self.board.mv(unit_src, unit_dst);
+            // }
         }
     }
 
@@ -483,7 +489,7 @@ mod test {
         board.place(c, units::place_tile(Owner::TopPlayer, units::footman));
         let c2 = Coordinates { x: 1, y: 4 };
         board.make_a_move(
-            GameMove::ApplyNonCommandTileAction { src: c, dst: c2 },
+            BoardMove::ApplyNonCommandTileAction { src: c, dst: c2 },
             Owner::TopPlayer,
         );
         assert!(board.get(c2).is_some());

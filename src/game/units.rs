@@ -4,7 +4,7 @@ use crate::game::tile::{Owner, PlacedTile, Tile, TileAction, TileSide};
 const DUKE_NAME: &str = "Duke";
 
 pub fn is_duke(t: &Tile) -> bool {
-    t.name == DUKE_NAME
+    t.get_name() == DUKE_NAME
 }
 
 pub fn duke() -> Tile {
@@ -226,11 +226,11 @@ mod test {
             $(paste! {
                 #[test]
                 fn [<$ctor _side_a_active_does_not_panic>]() {
-                    $ctor().side_a.actions();
+                    $ctor().get_side_a().actions();
                 }
                 #[test]
                 fn [<$ctor _side_b_active_does_not_panic>]() {
-                    $ctor().side_b.actions();
+                    $ctor().get_side_b().actions();
                 }
             })+
         }

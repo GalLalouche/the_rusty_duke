@@ -29,12 +29,16 @@ impl Widget for &ViewState {
                     &self.get_game_state().board,
                     Some(*p),
                     moving_config,
-                    Some("This is a very very very long test to check out line breaks"),
+                    self.info.as_ref(),
                     area,
                     buf,
                 );
             }
-            ViewPosition::Placing(relative_duke_offset, tile) => {
+            ViewPosition::Placing(relative_duke_offset) => {
+                let tile = self.get_game_state()
+                    .pulled_tile
+                    .clone()
+                    .expect("ViewPosition is placing but state has no pulled tile");
                 let duke_coordinate = self.get_game_state().current_duke_coordinate();
                 let placement =
                     self.relative_to_absolute_panicking(duke_coordinate, *relative_duke_offset);
@@ -42,7 +46,7 @@ impl Widget for &ViewState {
                 let mut temp_board = self.get_game_state().board.clone();
                 temp_board.place(
                     placement,
-                    PlacedTile::new(self.get_game_state().current_player_turn, tile.clone()),
+                    PlacedTile::new_from_ref(self.get_game_state().current_player_turn, tile),
                 );
                 render_board(
                     &temp_board,
@@ -51,7 +55,7 @@ impl Widget for &ViewState {
                         focus: duke_coordinate,
                         legal_options: vec!(placement),
                     }),
-                    Some("This is another test"),
+                    self.info.as_ref(),
                     area,
                     buf,
                 )

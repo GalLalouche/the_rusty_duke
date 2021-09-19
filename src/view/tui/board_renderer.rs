@@ -30,14 +30,14 @@ pub struct MovingConfig {
     pub legal_options: Vec<Coordinates>,
 }
 
-pub fn render_board<S>(
+pub fn render_board(
     board: &GameBoard,
     hightlighting: Option<Coordinates>,
     moving: Option<MovingConfig>,
-    info: Option<S>,
+    info: Option<&String>,
     area: Rect,
     buf: &mut Buffer,
-) where S: Borrow<str> {
+) where {
     let b = Block::default()
         .title("Game Board")
         .border_type(BorderType::Double)
@@ -81,7 +81,7 @@ pub fn render_board<S>(
             height: tile_height() + 2,
         };
         let b = Block::default()
-            .title(tile.tile.name.clone() + " info")
+            .title(tile.tile.get_name().clone() + " info")
             .border_type(BorderType::Double)
             .borders(Borders::ALL)
             ;
@@ -122,7 +122,7 @@ pub fn render_board<S>(
         let info_message_area = Rect {
             y: game_board_area.height + 2,
             x: 1,
-            width: game_board_area.width + 2,
+            width: game_board_area.width + 2 + 20,
             height: 5,
         };
         let b = Block::default()

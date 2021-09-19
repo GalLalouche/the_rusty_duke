@@ -1,10 +1,9 @@
+use std::borrow::Borrow;
 use std::mem;
 
 use crate::common::coordinates::Coordinates;
-use crate::common::utils::Folding;
-use crate::game::board::GameMove;
 use crate::game::state::{CanPullNewTileResult, GameState};
-use crate::game::tile::Tile;
+use crate::game::state::GameMove;
 use crate::view::move_view::MoveView;
 
 #[derive(Debug, Clone)]
@@ -14,12 +13,20 @@ pub(super) enum ViewPosition {
         // If a current tile has been selected for moving, but not yet moved
         moving: Option<Coordinates>,
     },
-    Placing(MoveView, Tile),
+    Placing(MoveView),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewStateMode {
+    FreeMoving(Coordinates),
+    MovingSelection(Coordinates, Coordinates),
+    Placing(MoveView),
 }
 
 pub struct ViewState {
     game_state: GameState,
     view_position: ViewPosition,
+    pub info: Option<String>,
 }
 
 // In general, mutating methods will panic on an invalid state. Every mutating function also
@@ -28,45 +35,58 @@ impl ViewState {
     pub(super) fn get_game_state(&self) -> &GameState {
         &self.game_state
     }
+    pub(super) fn get_game_state_mut(&mut self) -> &mut GameState {
+        &mut self.game_state
+    }
     pub(super) fn get_view_position(&self) -> &ViewPosition {
         &self.view_position
+    }
+
+    pub fn current_state(&self) -> ViewStateMode {
+        match self.view_position {
+            ViewPosition::BoardPosition { p, moving } => moving.map_or(
+                ViewStateMode::FreeMoving(p),
+                |m| ViewStateMode::MovingSelection(p, m),
+            ),
+            ViewPosition::Placing(mv) => ViewStateMode::Placing(mv),
+        }
+    }
+    pub fn info<S>(&mut self, str: S) -> () where S: Borrow<str> {
+        self.info = Some(str.borrow().to_owned())
     }
 
     pub fn new(gs: GameState) -> ViewState {
         ViewState {
             game_state: gs,
             view_position: ViewPosition::BoardPosition { p: Coordinates { x: 0, y: 0 }, moving: None },
+            info: None,
         }
     }
 
-    pub fn can_move_view_position(&self, mv: MoveView) -> bool {
-        match self.view_position {
-            ViewPosition::BoardPosition { p, .. } =>
-                mv.mv(p, self.game_state.board.get_board()).is_some(),
-            _ => false,
-        }
-    }
-    pub fn move_view_position(&mut self, mv: MoveView) -> () {
+    pub fn move_view_position(&mut self, mv: MoveView) -> bool {
         match &self.view_position {
-            ViewPosition::BoardPosition { p, moving } =>
+            ViewPosition::BoardPosition { p, moving } => {
                 match mv.mv(*p, self.game_state.board.get_board()) {
-                    Some(c) => self.view_position = ViewPosition::BoardPosition { p: c, moving: *moving },
-                    None => panic!("Cannot move from {:?} to {:?}", p, mv),
-                },
+                    Some(c) => {
+                        self.view_position = ViewPosition::BoardPosition { p: c, moving: *moving };
+                        true
+                    }
+                    None => false,
+                }
+            }
             e => panic!("Invalid position for move: {:?}", e)
         }
     }
 
-    pub fn can_move_placement(&self, mv: MoveView) -> bool {
-        match &self.view_position {
-            ViewPosition::Placing(_, _) => self.game_state.is_valid_placement(mv.into()),
-            e => panic!("Invalid position for checking move placement: {:?}", e)
-        }
-    }
-    pub fn move_placement(&mut self, mv: MoveView) -> () {
-        assert!(self.can_move_placement(mv));
+    pub fn move_placement(&mut self, mv: MoveView) -> bool {
         match &mut self.view_position {
-            ViewPosition::Placing(ref mut current_mv, ..) => *current_mv = mv,
+            ViewPosition::Placing(ref mut current_mv) => {
+                let result = self.game_state.is_valid_placement(mv.into());
+                if result {
+                    *current_mv = mv;
+                }
+                result
+            }
             e => panic!("Invalid view position for move placement: {:?}", e),
         }
     }
@@ -78,7 +98,7 @@ impl ViewState {
         }
     }
 
-    fn select_for_movement_aux(&self) -> Option<ViewPosition> {
+    pub fn select_for_movement(&mut self) -> bool {
         match &self.view_position {
             ViewPosition::BoardPosition { p, moving } if moving.is_none() => {
                 let tile = self.game_state.board.get(*p);
@@ -86,35 +106,24 @@ impl ViewState {
                     tile.map_or(false, |t| t.owner == self.game_state.current_player_turn);
                 let result = is_owned_tile && tile.is_some();
                 if result {
-                    Some(ViewPosition::BoardPosition { p: *p, moving: Some(*p) })
-                } else {
-                    None
+                    self.view_position = ViewPosition::BoardPosition { p: *p, moving: Some(*p) };
                 }
+                result
             }
-            _ => None,
+            _ => panic!("Invalid state for movement selection: {:?}", self.view_position),
         }
     }
 
-    pub fn can_select_for_movement(&self) -> bool {
-        self.select_for_movement_aux().is_some()
-    }
-    pub fn select_for_movement(&mut self) -> () {
-        match self.select_for_movement_aux() {
-            None => panic!("Invalid state for movement selection: {:?}", self.view_position),
-            Some(vp) => self.view_position = vp,
-        }
-    }
-
-    pub fn move_selected(&mut self) -> () {
+    pub fn move_selected(&mut self) -> bool {
         match &self.view_position {
             ViewPosition::BoardPosition { p, moving: Some(m) } => {
                 let game_move = GameMove::ApplyNonCommandTileAction { src: *m, dst: *p };
-                if self.game_state.can_make_a_move(&game_move) {
+                let result = self.game_state.can_make_a_move(&game_move);
+                if result {
                     self.game_state.make_a_move(game_move);
                     self.unselect();
-                } else {
-                    panic!("Cannot move selected: {:?}", self.view_position)
                 }
+                result
             }
             e => panic!("Invalid state for moving selected: {:?}", e),
         }
@@ -144,7 +153,8 @@ impl ViewState {
 
     pub fn pull_token_from_bag(&mut self) -> () {
         match &self.view_position {
-            ViewPosition::BoardPosition { moving: None, .. } =>
+            ViewPosition::BoardPosition { moving: None, .. } => {
+                self.game_state.pull_tile_from_bag();
                 self.view_position =
                     ViewPosition::Placing(
                         MoveView::relative_direction(
@@ -153,15 +163,15 @@ impl ViewState {
                                 .first()
                                 .expect("No empty space near duke"),
                         ).expect("ASSERTION ERROR: empty space near duke isn't near duke"),
-                        self.game_state.pull_tile_from_bag(),
-                    ),
+                    );
+            }
             e => panic!("Invalid state to pull token: {:?}", e)
         }
     }
 
     pub fn is_placing(&self) -> bool {
         match &self.view_position {
-            ViewPosition::Placing(_, _) => true,
+            ViewPosition::Placing(_) => true,
             _ => false,
         }
     }
@@ -177,23 +187,25 @@ impl ViewState {
             )
     }
 
+    // place always succeeds (short of panic), since we don't allow the view state to enter an
+    // invalid placement state to begin with.
     pub fn place(&mut self) -> () {
         assert!(self.is_placing());
         let p = match &self.view_position {
-            ViewPosition::Placing(p, _) => {
+            ViewPosition::Placing(p) => {
                 let duke_coordinate = self.game_state.current_duke_coordinate();
                 self.relative_to_absolute_panicking(duke_coordinate, *p)
             }
-            e => panic!("ASSERTION_ERROR: Invalid view position for placing: {:?}", e),
+            e => panic!("Invalid view position for placing: {:?}", e),
         };
         let old = mem::replace(
             &mut self.view_position,
             ViewPosition::BoardPosition { p, moving: None },
         );
         match old {
-            ViewPosition::Placing(p, tile) =>
-                self.game_state.make_a_move(GameMove::PlaceNewTile(tile, p.into())),
+            ViewPosition::Placing(p) =>
+                self.game_state.make_a_move(GameMove::PlaceNewTile(p.into())),
             e => panic!("ASSERTION_ERROR: Invalid view position for placing: {:?}", e),
-        }
+        };
     }
 }

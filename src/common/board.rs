@@ -2,7 +2,7 @@ use std::mem;
 
 use crate::common::coordinates::Coordinates;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board<A> {
     // Row-first, i.e., every vector is a row, Board size is height, each vector has size of width.
     board: Vec<Vec<Option<A>>>,
@@ -82,6 +82,7 @@ impl<A> Board<A> {
     pub fn all_coordinated_values(&self) -> Vec<(Coordinates, Option<&A>)> {
         self.coordinates().into_iter().map(|c| (c, self.get(c))).collect()
     }
+
     pub fn active_coordinates(&self) -> Vec<(Coordinates, &A)> {
         self.coordinates()
             .into_iter()
