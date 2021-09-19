@@ -26,7 +26,7 @@ impl Widget for &ViewState {
                         None
                     };
                 render_board(
-                    &self.get_game_state().board,
+                    &self.get_game_state().board(),
                     Some(*p),
                     moving_config,
                     self.info.as_ref(),
@@ -36,17 +36,17 @@ impl Widget for &ViewState {
             }
             ViewPosition::Placing(relative_duke_offset) => {
                 let tile = self.get_game_state()
-                    .pulled_tile
+                    .pulled_tile()
                     .clone()
                     .expect("ViewPosition is placing but state has no pulled tile");
                 let duke_coordinate = self.get_game_state().current_duke_coordinate();
                 let placement =
                     self.relative_to_absolute_panicking(duke_coordinate, *relative_duke_offset);
                 // Not the most efficient, but safer for now.
-                let mut temp_board = self.get_game_state().board.clone();
+                let mut temp_board = self.get_game_state().board().clone();
                 temp_board.place(
                     placement,
-                    PlacedTile::new_from_ref(self.get_game_state().current_player_turn, tile),
+                    PlacedTile::new_from_ref(self.get_game_state().current_player_turn(), tile),
                 );
                 render_board(
                     &temp_board,

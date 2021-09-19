@@ -7,6 +7,7 @@ use strum_macros::EnumIter;
 
 use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
+use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::tile::{Owner, Ownership, PlacedTile, TileAction, TileRef};
@@ -57,9 +58,9 @@ impl GameBoard {
         }
         match offset {
             DukeOffset::Top => or_none(c.y > 0, || Coordinates { x: c.x, y: c.y - 1 }),
-            DukeOffset::Bottom => or_none(c.y < self.board.height - 1, || Coordinates { x: c.x, y: c.y + 1 }),
+            DukeOffset::Bottom => or_none(c.y < self.height() - 1, || Coordinates { x: c.x, y: c.y + 1 }),
             DukeOffset::Left => or_none(c.x > 0, || Coordinates { x: c.x - 1, y: c.y }),
-            DukeOffset::Right => or_none(c.x < self.board.width - 1, || Coordinates { x: c.x + 1, y: c.y }),
+            DukeOffset::Right => or_none(c.x < self.width() - 1, || Coordinates { x: c.x + 1, y: c.y }),
         }
     }
 
@@ -115,12 +116,7 @@ impl GameBoard {
 
         result
     }
-    pub fn height(&self) -> u16 {
-        self.board.height
-    }
-    pub fn width(&self) -> u16 {
-        self.board.width
-    }
+
     pub fn get_board(&self) -> &Board<PlacedTile> {
         &self.board
     }
@@ -390,6 +386,16 @@ impl GameBoard {
 
     pub fn is_guard(&self, owner: Owner) -> bool {
         self.is_attacked(self.duke_coordinates(owner), owner)
+    }
+}
+
+impl Rectangular for GameBoard {
+    fn width(&self) -> u16 {
+        self.board.width()
+    }
+
+    fn height(&self) -> u16 {
+        self.board.height()
     }
 }
 

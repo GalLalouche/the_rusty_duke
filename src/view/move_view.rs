@@ -1,5 +1,5 @@
-use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
+use crate::common::geometry::Rectangular;
 use crate::game::board::DukeOffset;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
@@ -23,13 +23,13 @@ impl MoveView {
         }
     }
 
-    pub fn mv<A>(&self, c: Coordinates, b: &Board<A>) -> Option<Coordinates> {
+    pub fn mv(&self, c: Coordinates, r: &impl Rectangular) -> Option<Coordinates> {
         (match self {
             MoveView::Up => if c.y > 0 { Some(Coordinates { x: c.x, y: c.y - 1 }) } else { None },
-            MoveView::Down => if c.y < b.height - 1 { Some(Coordinates { x: c.x, y: c.y + 1 }) } else { None },
+            MoveView::Down => if c.y < r.height() - 1 { Some(Coordinates { x: c.x, y: c.y + 1 }) } else { None },
             MoveView::Left => if c.x > 0 { Some(Coordinates { x: c.x - 1, y: c.y }) } else { None },
-            MoveView::Right => if c.x < b.width - 1 { Some(Coordinates { x: c.x + 1, y: c.y }) } else { None },
-        }).filter(|e| b.is_in_bounds(*e))
+            MoveView::Right => if c.x < r.width() - 1 { Some(Coordinates { x: c.x + 1, y: c.y }) } else { None },
+        }).filter(|e| r.is_in_bounds(*e))
     }
 }
 

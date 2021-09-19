@@ -5,6 +5,7 @@ use tui::layout::Rect;
 use tui::widgets::{Block, Borders, BorderType, Paragraph, Widget, Wrap};
 
 use crate::common::coordinates::Coordinates;
+use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
 use crate::game::board::GameBoard;
 use crate::game::tile::TileSide;

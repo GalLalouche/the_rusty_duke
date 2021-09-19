@@ -45,7 +45,7 @@ fn go_aux(turn_count: i32, max_depth: usize, print: bool, wait_for_input: bool) 
         if wait_for_input {
             io::stdin().bytes().next();
         }
-        match gs.current_player_turn {
+        match gs.current_player_turn() {
             Owner::TopPlayer => dumb_ai.play_next_move(&mut std_gen, &mut gs),
             Owner::BottomPlayer => smart_ai.play_next_move(&mut std_gen, &mut gs)
         }

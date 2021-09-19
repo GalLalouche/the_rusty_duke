@@ -1,13 +1,14 @@
 use std::mem;
 
 use crate::common::coordinates::Coordinates;
+use crate::common::geometry::Rectangular;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board<A> {
     // Row-first, i.e., every vector is a row, Board size is height, each vector has size of width.
     board: Vec<Vec<Option<A>>>,
-    pub width: u16,
-    pub height: u16,
+    width: u16,
+    height: u16,
 }
 
 impl<A> Board<A> {
@@ -56,12 +57,6 @@ impl<A> Board<A> {
         self.place(dst, e);
         result
     }
-    pub fn is_in_bounds(&self, c: Coordinates) -> bool {
-        c.x < self.width && c.y < self.height
-    }
-    pub fn is_out_of_bounds(&self, c: Coordinates) -> bool {
-        !self.is_in_bounds(c)
-    }
     pub fn is_occupied(&self, c: Coordinates) -> bool {
         self.get(c).is_some()
     }
@@ -82,7 +77,6 @@ impl<A> Board<A> {
     pub fn all_coordinated_values(&self) -> Vec<(Coordinates, Option<&A>)> {
         self.coordinates().into_iter().map(|c| (c, self.get(c))).collect()
     }
-
     pub fn active_coordinates(&self) -> Vec<(Coordinates, &A)> {
         self.coordinates()
             .into_iter()
@@ -237,5 +231,15 @@ mod test {
             expected.board,
             board.flip_vertical().board,
         )
+    }
+}
+
+impl <A> Rectangular for Board<A> {
+    fn width(&self) -> u16 {
+        self.width
+    }
+
+    fn height(&self) -> u16 {
+        self.height
     }
 }

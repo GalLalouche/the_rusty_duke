@@ -2,21 +2,22 @@ use strum::IntoEnumIterator;
 
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
+use crate::common::geometry::Rectangular;
 use crate::game::board::{BoardMove, DukeInitialLocation, DukeOffset, FootmenSetup, GameBoard, PossibleMove};
 use crate::game::dumb_printer::print_board;
-use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileAction, TileBag, TileRef, TileSide};
+use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileAction, TileBag, TileRef};
 use crate::game::units;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
     // Shouldn't really be pub, breaks Demeter. At the very not be mutable...
-    pub board: GameBoard,
-    pub pulled_tile: Option<TileRef>,
-    pub current_player_turn: Owner,
-    pub top_player_bag: TileBag,
-    pub player_1_discard: DiscardBag,
-    pub bottom_player_bag: TileBag,
-    pub player_2_discard: DiscardBag,
+    board: GameBoard,
+    pulled_tile: Option<TileRef>,
+    current_player_turn: Owner,
+    top_player_bag: TileBag,
+    player_1_discard: DiscardBag,
+    bottom_player_bag: TileBag,
+    player_2_discard: DiscardBag,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +49,29 @@ pub enum CanPullNewTileResult {
 }
 
 impl GameState {
+    pub fn board(&self) -> &GameBoard {
+        &self.board
+    }
+
+    pub fn pulled_tile(&self) -> &Option<TileRef> {
+        &self.pulled_tile
+    }
+    pub fn current_player_turn(&self) -> Owner {
+        self.current_player_turn
+    }
+    pub fn top_player_bag(&self) -> &TileBag {
+        &self.top_player_bag
+    }
+    pub fn player_1_discard(&self) -> &DiscardBag {
+        &self.player_1_discard
+    }
+    pub fn bottom_player_bag(&self) -> &TileBag {
+        &self.bottom_player_bag
+    }
+    pub fn player_2_discard(&self) -> &DiscardBag {
+        &self.player_2_discard
+    }
+
     #[cfg(test)]
     fn from_board(board: GameBoard) -> GameState {
         GameState::from_board_with_bag(board, TileBag::empty())
@@ -323,6 +347,20 @@ impl GameState {
                 }
             }
         }
+    }
+
+    pub fn get(&self, c: Coordinates) -> Option<&PlacedTile> {
+        self.board.get(c)
+    }
+}
+
+impl Rectangular for GameState {
+    fn width(&self) -> u16 {
+        self.board.width()
+    }
+
+    fn height(&self) -> u16 {
+        self.board.height()
     }
 }
 

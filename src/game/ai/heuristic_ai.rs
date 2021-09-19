@@ -26,7 +26,7 @@ impl EvaluatingPlayer for HeuristicAi {
 
 impl ArtificialPlayer for HeuristicAi {
     fn play_next_move<R>(&self, _rng: &mut R, gs: &mut GameState) -> () where R: Rng {
-        assert_eq!(Owner::BottomPlayer, gs.current_player_turn);
+        assert_eq!(Owner::BottomPlayer, gs.current_player_turn());
         let mut strategy =
             ArtificialStrategy { state: gs.clone(), evaluator: Box::new(self) };
         let best_move = strategy.get_best_move(self.max_depth as i64, true);

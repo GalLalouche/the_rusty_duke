@@ -66,7 +66,7 @@ impl ViewState {
     pub fn move_view_position(&mut self, mv: MoveView) -> bool {
         match &self.view_position {
             ViewPosition::BoardPosition { p, moving } => {
-                match mv.mv(*p, self.game_state.board.get_board()) {
+                match mv.mv(*p, &self.game_state) {
                     Some(c) => {
                         self.view_position = ViewPosition::BoardPosition { p: c, moving: *moving };
                         true
@@ -101,9 +101,9 @@ impl ViewState {
     pub fn select_for_movement(&mut self) -> bool {
         match &self.view_position {
             ViewPosition::BoardPosition { p, moving } if moving.is_none() => {
-                let tile = self.game_state.board.get(*p);
+                let tile = self.game_state.get(*p);
                 let is_owned_tile =
-                    tile.map_or(false, |t| t.owner == self.game_state.current_player_turn);
+                    tile.map_or(false, |t| t.owner == self.game_state.current_player_turn());
                 let result = is_owned_tile && tile.is_some();
                 if result {
                     self.view_position = ViewPosition::BoardPosition { p: *p, moving: Some(*p) };
@@ -178,7 +178,7 @@ impl ViewState {
 
     pub(super) fn relative_to_absolute_panicking(&self, c: Coordinates, mv: MoveView) -> Coordinates {
         mv
-            .mv(c, &self.game_state.board.get_board())
+            .mv(c, &self.game_state)
             .expect(
                 format!("ASSERTION ERROR: Invalid duke_offset: {:?}; duke_position: {:?}",
                         &mv,

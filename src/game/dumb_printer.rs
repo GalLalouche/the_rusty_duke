@@ -10,7 +10,7 @@ pub fn print_board(gs: &GameState) -> String {
             .mk_string_full("|", "|", "|")
     }
     let rows = || {
-        let mut result = gs.board
+        let mut result = gs
             .rows()
             .iter()
             .map(|e| to_row(e))

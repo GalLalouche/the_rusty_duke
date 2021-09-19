@@ -78,7 +78,7 @@ pub struct Controller {
 
 impl Controller {
     pub fn current_player_turn(&self) -> Owner {
-        self.state.get_game_state().current_player_turn
+        self.state.get_game_state().current_player_turn()
     }
     pub fn add_info(&mut self, str: &str) -> () {
         self.state.info(str)
