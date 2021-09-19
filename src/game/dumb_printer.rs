@@ -2,11 +2,12 @@ use crate::common::utils::{MkString, Vectors};
 use crate::game::state::GameState;
 use crate::game::tile::PlacedTile;
 use crate::game::board::GameBoard;
+use crate::common::board::Board;
 
 pub fn print_state(gs: &GameState) -> String {
     print_board(gs.board())
 }
-pub fn print_board(b: &GameBoard) -> String {
+pub fn print_board(b: &Board<PlacedTile>) -> String {
     fn to_row(row: &Vec<Option<PlacedTile>>) -> String {
         row.iter()
             .map(|o| o.as_ref().map_or(' ', |t| t.single_char_token()).to_string())

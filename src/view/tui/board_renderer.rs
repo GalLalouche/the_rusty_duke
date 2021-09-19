@@ -4,11 +4,11 @@ use tui::buffer::Buffer;
 use tui::layout::Rect;
 use tui::widgets::{Block, Borders, BorderType, Paragraph, Widget, Wrap};
 
+use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
-use crate::game::board::GameBoard;
-use crate::game::tile::TileSide;
+use crate::game::tile::{PlacedTile, TileSide};
 use crate::view::tui::tile_renderer::{render_board_tile, RenderBoardTileConfig, RenderBoardTileHighlight, RenderTileConfig};
 
 fn tile_width() -> u16 { TileSide::SIDE + 2 }
@@ -32,7 +32,7 @@ pub struct MovingConfig {
 }
 
 pub fn render_board(
-    board: &GameBoard,
+    board: &Board<PlacedTile>,
     hightlighting: Option<Coordinates>,
     moving: Option<MovingConfig>,
     info: Option<&String>,
@@ -48,7 +48,7 @@ pub fn render_board(
     let inner_area = b.inner(game_board_area);
     b.render(game_board_area, buf);
 
-    for (c, w) in board.get_board().all_coordinated_values() {
+    for (c, w) in board.all_coordinated_values() {
         render_board_tile(
             w,
             RenderTileConfig::Board(
@@ -74,7 +74,7 @@ pub fn render_board(
         );
     }
 
-    if let Some(tile) = hightlighting.and_then(|c| board.get_board().get(c)) {
+    if let Some(tile) = hightlighting.and_then(|c| board.get(c)) {
         let tile_info_block_position = Rect {
             y: game_board_area.y + game_board_area.height - tile_height() - 1 - 1,
             x: game_board_area.x + game_board_area.width + 1,

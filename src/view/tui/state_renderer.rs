@@ -44,7 +44,7 @@ impl Widget for &ViewState {
                     self.relative_to_absolute_panicking(duke_coordinate, *relative_duke_offset);
                 // Not the most efficient, but safer for now.
                 let mut temp_board = self.get_game_state().board().clone();
-                temp_board.place(
+                temp_board.put(
                     placement,
                     PlacedTile::new_from_ref(self.get_game_state().current_player_turn(), tile),
                 );

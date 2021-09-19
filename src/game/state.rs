@@ -8,6 +8,7 @@ use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNew
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::dumb_printer::print_state;
 use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileAction, TileBag, TileRef};
+use crate::common::board::Board;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
@@ -50,8 +51,8 @@ pub enum CanPullNewTileResult {
 }
 
 impl GameState {
-    pub fn board(&self) -> &GameBoard {
-        &self.board
+    pub fn board(&self) -> &Board<PlacedTile> {
+        self.board.get_board()
     }
 
     pub fn pulled_tile(&self) -> &Option<TileRef> {
