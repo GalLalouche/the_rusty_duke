@@ -24,8 +24,8 @@ pub fn eq_set_msg<A>(expected: HashSet<A>, actual: HashSet<A>) -> Option<String>
         result.push_str(format!("Actual {} {} items:\n", str1, missing.len()).as_str());
         result.push_str(format!("{:?}\n", missing).as_str());
     };
-    add_missing(&actual, &expected, "is missing");
-    add_missing(&expected, &actual, "has extra");
+    add_missing(&actual, &expected, "has extra");
+    add_missing(&expected, &actual, "is missing");
     Some(result)
 }
 #[macro_export] macro_rules! assert_eq_set {
