@@ -190,8 +190,9 @@ impl GameState {
 
     fn does_not_put_in_guard(&self, gm: BoardMove) -> bool {
         let mut state_clone = self.clone();
-        state_clone.board.make_a_move(gm, self.current_player_turn);
-        !state_clone.is_guard()
+        let owner = self.current_player_turn;
+        state_clone.board.make_a_move(gm, owner);
+        !state_clone.board.is_guard(owner)
     }
     // Except commands
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
@@ -219,10 +220,6 @@ impl GameState {
     pub fn is_valid_placement(&self, offset: DukeOffset) -> bool {
         self.board.is_valid_placement(self.current_player_turn, offset) &&
             self.does_not_put_in_guard(BoardMove::PlaceNewTile(TileRef::new(units::footman()), offset))
-    }
-    // TODO use this to verify the duke is not in guard after a move
-    pub fn is_guard(&self) -> bool {
-        self.board.is_attacked(self.current_duke_coordinate(), self.current_player_turn)
     }
 
     pub fn is_over(&self) -> bool {

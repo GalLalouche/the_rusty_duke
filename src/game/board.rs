@@ -9,7 +9,7 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::utils::Folding;
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::tile::{Owner, Ownership, PlacedTile, Tile, TileAction, TileRef};
+use crate::game::tile::{Owner, Ownership, PlacedTile, TileAction, TileRef};
 use crate::game::units;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -386,6 +386,10 @@ impl GameBoard {
                     .iter()
                     .any(|other_move| other_move.0 == c)
             )
+    }
+
+    pub fn is_guard(&self, owner: Owner) -> bool {
+        self.is_attacked(self.duke_coordinates(owner), owner)
     }
 }
 
