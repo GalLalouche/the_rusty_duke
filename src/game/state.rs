@@ -2,7 +2,7 @@ use strum::IntoEnumIterator;
 
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
-use crate::game::board::{BoardMove, DukeInitialLocation, DukeOffset, FootmenSetup, GameBoard};
+use crate::game::board::{BoardMove, DukeInitialLocation, DukeOffset, FootmenSetup, GameBoard, PossibleMove};
 use crate::game::dumb_printer::print_board;
 use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileAction, TileBag, TileRef, TileSide};
 use crate::game::units;
@@ -26,18 +26,6 @@ pub enum GameMove {
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates },
 }
 
-#[derive(Debug, Clone)]
-pub enum UndoMove {
-    PlaceNewTile(DukeOffset),
-    ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PossibleMove {
-    PlaceNewTile(DukeOffset),
-    ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
-}
-
 impl Into<GameMove> for &PossibleMove {
     fn into(self) -> GameMove {
         match self {
@@ -46,20 +34,6 @@ impl Into<GameMove> for &PossibleMove {
                 GameMove::ApplyNonCommandTileAction {
                     src: *src,
                     dst: *dst,
-                }
-        }
-    }
-}
-
-impl Into<UndoMove> for &PossibleMove {
-    fn into(self) -> UndoMove {
-        match self {
-            PossibleMove::PlaceNewTile(o) => UndoMove::PlaceNewTile(*o),
-            PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } =>
-                UndoMove::ApplyNonCommandTileAction {
-                    src: *src,
-                    dst: *dst,
-                    capturing: capturing.clone(),
                 }
         }
     }
@@ -306,14 +280,14 @@ impl GameState {
         }
     }
 
-    pub fn to_undo(&self, mv: &GameMove) -> UndoMove {
+    pub fn to_undo(&self, mv: &GameMove) -> PossibleMove {
         match mv {
-            GameMove::PlaceNewTile(o) => UndoMove::PlaceNewTile(*o),
+            GameMove::PlaceNewTile(o) => PossibleMove::PlaceNewTile(*o),
             GameMove::PullAndPlay(o) => self.to_undo(&GameMove::PlaceNewTile(*o)),
             GameMove::ApplyNonCommandTileAction { src, dst } => {
                 // TODO handle duplication with the other place where capturing is extracted.
                 let capturing = self.board.get_board().get(*dst);
-                UndoMove::ApplyNonCommandTileAction {
+                PossibleMove::ApplyNonCommandTileAction {
                     src: *src,
                     dst: *dst,
                     capturing: capturing.cloned(),
@@ -321,11 +295,11 @@ impl GameState {
             }
         }
     }
-    pub fn undo(&mut self, mv: UndoMove) -> () {
+    pub fn undo(&mut self, mv: PossibleMove) -> () {
         self.current_player_turn = self.current_player_turn.next_player();
 
         match mv {
-            UndoMove::PlaceNewTile(o) => {
+            PossibleMove::PlaceNewTile(o) => {
                 let c = self.board
                     .to_absolute_duke_offset(o, self.current_player_turn)
                     .expect(format!(
@@ -342,7 +316,7 @@ impl GameState {
                 assert_eq!(t.current_side, CurrentSide::Initial);
                 bag.push(t.tile);
             }
-            UndoMove::ApplyNonCommandTileAction { src, dst, capturing } => {
+            PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
                 // TODO handle strikes and other stuff.
                 let mut mover = self.board.remove(dst);
                 mover.flip();

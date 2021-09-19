@@ -2,8 +2,8 @@ use minimax_alpha_beta::strategy::Strategy;
 use rand::Rng;
 
 use crate::common::coordinates::Coordinates;
-use crate::game::board::DukeOffset;
-use crate::game::state::{GameMove, GameState, PossibleMove, UndoMove};
+use crate::game::board::{DukeOffset, PossibleMove};
+use crate::game::state::{GameMove, GameState};
 use crate::game::tile::{Owner, PlacedTile};
 
 pub trait ArtificialPlayer {
@@ -42,11 +42,11 @@ impl AiMove {
         }
     }
 
-    pub fn to_undo_move(&self) -> Option<UndoMove> {
+    pub fn to_undo_move(&self) -> Option<PossibleMove> {
         match self {
-            AiMove::PullTileFormBagAndPlay(o) => Some(UndoMove::PlaceNewTile(*o)),
+            AiMove::PullTileFormBagAndPlay(o) => Some(PossibleMove::PlaceNewTile(*o)),
             AiMove::ApplyNonCommandTileAction { src, dst, capturing } =>
-                Some(UndoMove::ApplyNonCommandTileAction {
+                Some(PossibleMove::ApplyNonCommandTileAction {
                     src: *src,
                     dst: *dst,
                     capturing: capturing.clone(),
@@ -67,7 +67,7 @@ impl Into<AiMove> for &PossibleMove {
     }
 }
 
-impl <'a> Strategy for ArtificialStrategy<'a> {
+impl<'a> Strategy for ArtificialStrategy<'a> {
     type Player = Owner;
     // A hack to make undoing a bit easier
     type Move = AiMove;

@@ -35,6 +35,12 @@ pub(super) enum BoardMove {
     // CommandAnotherTile { commander_src: Coordinates, unit_src: Coordinates, unit_dst: Coordinates },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PossibleMove {
+    PlaceNewTile(DukeOffset),
+    ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameBoard {
     board: Board<PlacedTile>,
