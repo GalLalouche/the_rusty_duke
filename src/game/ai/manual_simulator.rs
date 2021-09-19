@@ -7,12 +7,12 @@ use rand::SeedableRng;
 use crate::game::ai::ai_move::ArtificialPlayer;
 use crate::game::ai::heuristic_ai::HeuristicAi;
 use crate::game::ai::heuristics;
+use crate::game::ai::heuristics::Heuristics;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
-use crate::game::board::{DukeInitialLocation, FootmenSetup};
+use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::state::GameState;
 use crate::game::tile::{Owner, TileBag, TileRef};
 use crate::game::units;
-use crate::game::ai::heuristics::Heuristics;
 
 fn go_aux(turn_count: i32, max_depth: usize, print: bool, wait_for_input: bool) {
     let mut gs = GameState::new(

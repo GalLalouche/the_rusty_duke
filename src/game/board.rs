@@ -13,19 +13,6 @@ use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset}
 use crate::game::tile::{Owner, Ownership, PlacedTile, TileAction, TileRef};
 use crate::game::units;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum FootmenSetup {
-    // Footmen are to the sides of the Duke
-    Sides,
-    // One Footman is above the Duke, and one is to its player's left
-    Left,
-    // One Footman is above the Duke, and one is to its player's right
-    Right,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum DukeInitialLocation { Left, Right }
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumIter)]
 pub enum DukeOffset { Top, Bottom, Left, Right }
 
@@ -51,7 +38,11 @@ pub struct GameBoard {
 enum AppliedPubAction { Movement, Strike, Invalid }
 
 impl GameBoard {
-    const BOARD_SIZE: u16 = 6;
+    pub const BOARD_SIZE: u16 = 6;
+
+    pub(super) fn new(board: Board<PlacedTile>) -> GameBoard {
+        GameBoard { board }
+    }
     fn absolute_duke_offset(&self, offset: DukeOffset, c: Coordinates) -> Option<Coordinates> {
         fn or_none<P>(b: bool, c: P) -> Option<Coordinates> where P: Fn() -> Coordinates {
             if b { Some(c()) } else { None }
@@ -66,55 +57,6 @@ impl GameBoard {
 
     pub fn to_absolute_duke_offset(&self, offset: DukeOffset, o: Owner) -> Option<Coordinates> {
         self.absolute_duke_offset(offset, self.duke_coordinates(o))
-    }
-
-    pub fn setup(
-        player_1_setup: (DukeInitialLocation, FootmenSetup),
-        player_2_setup: (DukeInitialLocation, FootmenSetup),
-    ) -> GameBoard {
-        let mut result = GameBoard { board: Board::square(GameBoard::BOARD_SIZE) };
-
-        { // First player
-            let duke_1_x = match player_1_setup.0 {
-                DukeInitialLocation::Left => 3,
-                DukeInitialLocation::Right => 2,
-            };
-            result.place(
-                Coordinates { y: 0, x: duke_1_x },
-                units::place_tile(Owner::TopPlayer, units::duke),
-            );
-            let (f1_1, f1_2) = match player_1_setup.1 {
-                FootmenSetup::Sides =>
-                    (Coordinates { x: duke_1_x + 1, y: 0 }, Coordinates { x: duke_1_x - 1, y: 0 }),
-                FootmenSetup::Left =>
-                    (Coordinates { x: duke_1_x + 1, y: 0 }, Coordinates { x: duke_1_x, y: 1 }),
-                FootmenSetup::Right =>
-                    (Coordinates { x: duke_1_x - 1, y: 0 }, Coordinates { x: duke_1_x, y: 1 }),
-            };
-            result.place(f1_1, units::place_tile(Owner::TopPlayer, units::footman));
-            result.place(f1_2, units::place_tile(Owner::TopPlayer, units::footman));
-        }
-        { // Second player
-            let last_row = result.height() - 1;
-            let duke_2_x = match player_2_setup.0 {
-                DukeInitialLocation::Left => 2,
-                DukeInitialLocation::Right => 3,
-            };
-            result.place(
-                Coordinates { y: last_row, x: duke_2_x }, units::place_tile(Owner::BottomPlayer, units::duke));
-            let (f2_1, f2_2) = match player_2_setup.1 {
-                FootmenSetup::Sides =>
-                    (Coordinates { x: duke_2_x + 1, y: last_row }, Coordinates { x: duke_2_x - 1, y: last_row }),
-                FootmenSetup::Left =>
-                    (Coordinates { x: duke_2_x - 1, y: last_row }, Coordinates { x: duke_2_x, y: last_row - 1 }),
-                FootmenSetup::Right =>
-                    (Coordinates { x: duke_2_x + 1, y: last_row }, Coordinates { x: duke_2_x, y: last_row - 1 }),
-            };
-            result.place(f2_1, units::place_tile(Owner::BottomPlayer, units::footman));
-            result.place(f2_2, units::place_tile(Owner::BottomPlayer, units::footman));
-        }
-
-        result
     }
 
     pub fn get_board(&self) -> &Board<PlacedTile> {
@@ -245,6 +187,7 @@ impl GameBoard {
             TileAction::Strike => true,
         }
     }
+
     fn can_apply(
         &self,
         src: Coordinates,
@@ -265,18 +208,18 @@ impl GameBoard {
             )
     }
 
-    fn can_command(
-        &self,
-        commander_src: Coordinates,
-        unit_src: Coordinates,
-        unit_dst: Coordinates,
-    ) -> bool {
-        let commander_tile = self.get(commander_src).expect("No unit found in commander_src");
-        let unit_tile = self.get(unit_src).expect("No commanded unit found in unit_src");
-        assert!(commander_tile.same_team(unit_tile), "Cannot command a unit from a different team");
-        self.different_team_or_empty(unit_src, unit_dst)
-    }
-
+    // fn can_command(
+    //     &self,
+    //     commander_src: Coordinates,
+    //     unit_src: Coordinates,
+    //     unit_dst: Coordinates,
+    // ) -> bool {
+    //     let commander_tile = self.get(commander_src).expect("No unit found in commander_src");
+    //     let unit_tile = self.get(unit_src).expect("No commanded unit found in unit_src");
+    //     assert!(commander_tile.same_team(unit_tile), "Cannot command a unit from a different team");
+    //     self.different_team_or_empty(unit_src, unit_dst)
+    // }
+    //
     pub fn duke_coordinates(&self, o: Owner) -> Coordinates {
         self.board
             .find(|a| a.owner == o && units::is_duke(a.tile.borrow()))

@@ -3,10 +3,11 @@ use strum::IntoEnumIterator;
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
-use crate::game::board::{BoardMove, DukeInitialLocation, DukeOffset, FootmenSetup, GameBoard, PossibleMove};
+use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove};
 use crate::game::dumb_printer::print_board;
 use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileAction, TileBag, TileRef};
-use crate::game::units;
+use crate::game::{units, board_setup};
+use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
@@ -93,7 +94,7 @@ impl GameState {
         player_1_setup: (DukeInitialLocation, FootmenSetup),
         player_2_setup: (DukeInitialLocation, FootmenSetup),
     ) -> GameState {
-        let board = GameBoard::setup(player_1_setup, player_2_setup);
+        let board = board_setup::setup(player_1_setup, player_2_setup);
 
         GameState {
             board,
