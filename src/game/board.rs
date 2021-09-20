@@ -67,6 +67,8 @@ impl GameBoard {
     pub fn get_board(&self) -> &Board<PlacedTile> {
         &self.board
     }
+
+    #[cfg(test)]
     pub fn empty() -> GameBoard {
         GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
     }
@@ -333,25 +335,18 @@ impl GameBoard {
             .collect()
     }
 
-    fn is_attacked(&self, c: Coordinates, owner: Owner) -> bool {
-        self.is_attacked_aux(c, owner, CheckForGuard::True)
-    }
-
-    fn is_attacked_aux(&self, c: Coordinates, owner: Owner, cfg: CheckForGuard) -> bool {
+    pub fn is_guard(&self, owner: Owner) -> bool {
+        let c = self.duke_coordinates(owner);
         self.get_board()
             .active_coordinates()
             .iter()
             .filter(|e| e.1.owner.different_team(owner))
             .any(|other_tile|
                 self
-                    .get_legal_moves_aux(other_tile.0, cfg)
+                    .get_legal_moves_aux(other_tile.0, CheckForGuard::False)
                     .iter()
                     .any(|other_move| other_move.0 == c)
             )
-    }
-
-    pub fn is_guard(&self, owner: Owner) -> bool {
-        self.is_attacked_aux(self.duke_coordinates(owner), owner, CheckForGuard::False)
     }
 
     pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
@@ -359,33 +354,20 @@ impl GameBoard {
         clone.make_a_move(mv, owner);
         !clone.is_guard(owner)
     }
-    //
-    // fn to_possible_move(&self, mv: &BoardMove) -> PossibleMove {
-    //     match mv {
-    //         BoardMove::PlaceNewTile(_, o) => PossibleMove::PlaceNewTile(*o),
-    //         BoardMove::ApplyNonCommandTileAction { src, dst } =>
-    //             PossibleMove::ApplyNonCommandTileAction {
-    //                 src: *src,
-    //                 dst: *dst,
-    //                 capturing: self.get(*dst).cloned(),
-    //             }
-    //     }
-    // }
 
-    // Returns the tile that was removed, if such a tile exists. E.g., when placing a new tile,
+    // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,
     // undoing the action would remove the new tile from the board.
     pub fn undo(&mut self, mv: PossibleMove, owner: Owner) -> Option<PlacedTile> {
         match mv {
             PossibleMove::PlaceNewTile(offset) => {
-                let c = self
+                let absolute_coordinate = self
                     .to_absolute_duke_offset(offset, owner)
                     .expect(format!(
                         "Invalid tile placement {:?} relative to duke {:?}",
                         offset,
                         self.duke_coordinates(owner),
                     ).as_str());
-                let t = self.remove(c);
-                Some(t)
+                Some(self.remove(absolute_coordinate))
             }
             PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
                 // TODO handle strikes and other stuff.
@@ -444,7 +426,7 @@ impl Rectangular for GameBoard {
 
 #[cfg(test)]
 mod test {
-    use crate::{assert_eq_set, assert_not};
+    use crate::assert_eq_set;
 
     use super::*;
 
@@ -566,46 +548,5 @@ mod test {
         );
         assert!(board.get(c2).is_some());
         assert!(board.get(c).is_none());
-    }
-
-    // is_attacked
-    #[test]
-    fn is_attacked_returns_false_when_not_attacked_by_anyone() {
-        let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 2, y: 4 }, units::place_tile(Owner::TopPlayer, units::footman));
-        assert_not!(board.is_attacked(Coordinates { x: 3, y: 5 }, Owner::TopPlayer));
-    }
-
-    #[test]
-    fn is_attacked_returns_false_when_not_attacked_by_an_enemy() {
-        let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 2, y: 4 }, units::place_tile(Owner::TopPlayer, units::footman));
-        board.place(Coordinates { x: 2, y: 5 }, units::place_tile(Owner::TopPlayer, units::footman));
-        assert_not!(board.is_attacked(Coordinates { x: 3, y: 5 }, Owner::TopPlayer));
-    }
-
-    #[test]
-    fn is_attacked_returns_true_when_attacked_by_an_enemy_move() {
-        let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 5, y: 5 }, units::place_tile(Owner::BottomPlayer, units::duke));
-        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
-
-        board.place(Coordinates { x: 2, y: 4 }, units::place_tile(Owner::TopPlayer, units::footman));
-        let c = Coordinates { x: 4, y: 4 };
-        board.place(c, units::place_tile(Owner::BottomPlayer, units::footman));
-        board.flip(c);
-        assert!(board.is_attacked(Coordinates { x: 3, y: 5 }, Owner::TopPlayer));
-    }
-
-    #[test]
-    fn is_attacked_returns_true_when_attacked_by_an_enemy_jump() {
-        let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 5, y: 5 }, units::place_tile(Owner::BottomPlayer, units::duke));
-        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
-
-        let c = Coordinates { x: 4, y: 5 };
-        board.place(c, units::place_tile(Owner::BottomPlayer, units::champion));
-        board.flip(c);
-        assert!(board.is_attacked(Coordinates { x: 2, y: 5 }, Owner::TopPlayer));
     }
 }

@@ -1,8 +1,7 @@
+use crate::common::board::Board;
 use crate::common::utils::{MkString, Vectors};
 use crate::game::state::GameState;
 use crate::game::tile::PlacedTile;
-use crate::game::board::GameBoard;
-use crate::common::board::Board;
 
 pub fn print_state(gs: &GameState) -> String {
     print_board(gs.board())
