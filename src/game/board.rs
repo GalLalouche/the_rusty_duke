@@ -31,17 +31,17 @@ pub enum PossibleMove {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GameBoard {
+pub(super) struct GameBoard {
     board: Board<PlacedTile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WithNewTiles { True, False }
+pub(super) enum WithNewTiles { True, False }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckForGuard { True, False }
+enum CheckForGuard { True, False }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
 
 impl GameBoard {
@@ -401,13 +401,12 @@ impl GameBoard {
             .collect();
         if new_tiles == WithNewTiles::True {
             result.extend(
-                DukeOffset::iter()
-                    .filter_map(|offset|
-                        if self.is_valid_placement(owner, offset) {
-                            Some(PossibleMove::PlaceNewTile(offset))
-                        } else {
-                            None
-                        })
+                DukeOffset::iter().filter_map(|offset|
+                    if self.is_valid_placement(owner, offset) {
+                        Some(PossibleMove::PlaceNewTile(offset))
+                    } else {
+                        None
+                    })
             );
         }
         result
