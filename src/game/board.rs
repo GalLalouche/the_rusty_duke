@@ -10,7 +10,8 @@ use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::tile::{Owner, Ownership, PlacedTile, TileAction, TileRef};
+use crate::game::tile::{Owner, Ownership, PlacedTile, TileRef};
+use crate::game::tile_side::TileAction;
 use crate::game::units;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumIter)]
@@ -332,7 +333,7 @@ impl GameBoard {
             .collect()
     }
 
-    pub fn is_attacked(&self, c: Coordinates, owner: Owner) -> bool {
+    fn is_attacked(&self, c: Coordinates, owner: Owner) -> bool {
         self.is_attacked_aux(c, owner, CheckForGuard::True)
     }
 

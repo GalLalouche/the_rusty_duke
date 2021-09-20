@@ -1,5 +1,6 @@
 use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalOffset};
-use crate::game::tile::{Owner, PlacedTile, Tile, TileAction, TileSide};
+use crate::game::tile::{Owner, PlacedTile, Tile};
+use crate::game::tile_side::{TileAction, TileSide};
 
 const DUKE_NAME: &str = "Duke";
 

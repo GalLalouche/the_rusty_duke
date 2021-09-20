@@ -8,7 +8,8 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
-use crate::game::tile::{PlacedTile, TileSide};
+use crate::game::tile::PlacedTile;
+use crate::game::tile_side::TileSide;
 use crate::view::tui::tile_renderer::{render_board_tile, RenderBoardTileConfig, RenderBoardTileHighlight, RenderTileConfig};
 
 fn tile_width() -> u16 { TileSide::SIDE + 2 }

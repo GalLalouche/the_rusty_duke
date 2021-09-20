@@ -4,6 +4,7 @@ pub mod board_setup;
 pub mod offset;
 pub mod state;
 pub mod tile;
+pub mod tile_side;
 pub mod units;
 
 mod dumb_printer;
