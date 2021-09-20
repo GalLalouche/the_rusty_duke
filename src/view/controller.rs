@@ -169,9 +169,10 @@ impl Controller {
 mod tests {
     use crate::assert_none;
     use crate::assert_some;
+    use crate::game::bag::TileBag;
     use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
     use crate::game::state::GameState;
-    use crate::game::tile::{TileBag, TileRef};
+    use crate::game::tile::TileRef;
     use crate::game::units;
 
     use super::*;

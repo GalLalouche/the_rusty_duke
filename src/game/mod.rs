@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod bag;
 pub mod board;
 pub mod board_setup;
 pub mod offset;

@@ -5,10 +5,11 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
 use crate::game::{board_setup, units};
+use crate::game::bag::{DiscardBag, TileBag};
 use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNewTiles};
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::dumb_printer::print_state;
-use crate::game::tile::{CurrentSide, DiscardBag, Owner, Ownership, PlacedTile, TileBag, TileRef};
+use crate::game::tile::{CurrentSide, Owner, Ownership, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

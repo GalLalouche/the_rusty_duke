@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
@@ -107,7 +106,7 @@ impl TileSide {
         let mut non_command_actions = HashSet::new();
         let mut unit_icon = 0; // TODO: unused for now
 
-        for (c, a) in map.borrow() {
+        for (c, a) in map {
             match a {
                 TileAction::Command => {
                     assert!(!commands.contains(c), "Command already exists for {:?}", c);
@@ -145,18 +144,12 @@ impl TileSide {
         panic!("No Unit action found in the center columns;\n{:?}", self);
     }
 
-    fn has_horizontal_slide(&self) -> bool {
-        let left_offset = Offsets::new(HorizontalOffset::Left, self.center_offset());
-        let right_offset = Offsets::new(HorizontalOffset::Right, self.center_offset());
-        assert_eq!(self.board.get(left_offset.into()), self.board.get(right_offset.into()));
-        self.board.get(left_offset.into()).cloned().has(&TileAction::Slide)
-    }
-
     fn near_offset(src: Coordinates, dst: Coordinates) -> Option<Offsets> {
         if !src.is_linear_to(dst) {
             return None;
         }
 
+        // Straights
         if src.x == dst.x && src.y < dst.y {
             Some(Offsets::new(HorizontalOffset::Center, VerticalOffset::Bottom))
         } else if src.x == dst.x && src.y > dst.y {
@@ -165,6 +158,7 @@ impl TileSide {
             Some(Offsets::new(HorizontalOffset::Left, VerticalOffset::Center))
         } else if src.x < dst.x && src.y == dst.y {
             Some(Offsets::new(HorizontalOffset::Right, VerticalOffset::Center))
+            // Diagonals
         } else if src.x > dst.x && src.y > dst.y {
             Some(Offsets::new(HorizontalOffset::Left, VerticalOffset::Top))
         } else if src.x > dst.x && src.y < dst.y {
@@ -173,6 +167,7 @@ impl TileSide {
             Some(Offsets::new(HorizontalOffset::Right, VerticalOffset::Top))
         } else if src.x < dst.x && src.y < dst.y {
             Some(Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom))
+            // Remainder
         } else {
             None
         }
@@ -186,63 +181,36 @@ impl TileSide {
                 return Some(TileAction::Slide);
             }
         }
-        let x_diff = i32::from(dst.x) - i32::from(src.x);
-        let y_base = i32::from(self.center_offset().to_index() - 2);
-        let y_diff = y_base + i32::from(dst.y) - i32::from(src.y);
-        let x_offset =
-            if y_diff == 0 && self.has_horizontal_slide() {
-                assert!(self.board.get(HorizontalOffset::FarLeft.center().into()).is_none());
-                assert!(self.board.get(HorizontalOffset::FarRight.center().into()).is_none());
-                if x_diff > 0 { HorizontalOffset::Right } else { HorizontalOffset::Left }
-            } else {
-                match x_diff {
-                    -2 => HorizontalOffset::FarLeft,
-                    -1 => HorizontalOffset::Left,
-                    0 => HorizontalOffset::Center,
-                    1 => HorizontalOffset::Right,
-                    2 => HorizontalOffset::FarRight,
-                    _ => panic!("Out of bounds"),
-                }
-            };
-        // TODO extract this out to a helper function as well
-        let get_vertical_slide =
-            (if y_diff > 0 {
-                self.board.get(VerticalOffset::Bottom.center().into())
-            } else if y_diff < 0 {
-                self.board.get(VerticalOffset::Top.center().into())
-            } else {
-                None
-            }).cloned().filter(|a| *a == TileAction::Slide);
 
-        let y_offset = get_vertical_slide
-            .filter(|_| x_diff == 0)
-            .map(|_| if y_diff > 0 { VerticalOffset::Bottom } else { VerticalOffset::Top })
-            .unwrap_or_else(|| match y_diff {
+        let x_offset = {
+            let x_diff = i32::from(dst.x) - i32::from(src.x);
+            match x_diff {
+                -2 => HorizontalOffset::FarLeft,
+                -1 => HorizontalOffset::Left,
+                0 => HorizontalOffset::Center,
+                1 => HorizontalOffset::Right,
+                2 => HorizontalOffset::FarRight,
+                _ => panic!("Out of bounds"),
+            }
+        };
+
+        let y_offset = {
+            let y_base = i32::from(self.center_offset().to_index() - 2);
+            let y_diff = y_base + i32::from(dst.y) - i32::from(src.y);
+            match y_diff {
                 -2 => VerticalOffset::FarTop,
                 -1 => VerticalOffset::Top,
                 0 => VerticalOffset::Center,
                 1 => VerticalOffset::Bottom,
                 2 => VerticalOffset::FarBottom,
                 _ => panic!("Out of bounds"),
-            });
-        self.board.get(Offsets::new(x_offset, y_offset).into()).cloned().or_else(|| {
-            // If still None, but src is linear to dst, that must mean they are diagonal to
-            // each-other.
-            if !src.is_linear_to(dst) {
-                return None;
             }
+        };
 
-            let (h, v) = match (x_diff > 0, y_diff > 0) {
-                (true, true) => (VerticalOffset::Bottom, HorizontalOffset::Right),
-                (true, false) => (VerticalOffset::Top, HorizontalOffset::Right),
-                (false, true) => (VerticalOffset::Bottom, HorizontalOffset::Left),
-                (false, false) => (VerticalOffset::Top, HorizontalOffset::Left),
-            };
-            self.board.get(Offsets::new(v, h).into()).filter(|e| e == &&TileAction::Slide).cloned()
-        })
+        self.board.get(Offsets::new(x_offset, y_offset).into()).cloned()
     }
 
-    pub(in crate::game) fn flip_vertical(&self) -> TileSide {
+    pub(super) fn flip_vertical(&self) -> TileSide {
         TileSide {
             board: self.board.flip_vertical()
         }
