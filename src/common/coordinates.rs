@@ -9,8 +9,8 @@ pub struct Coordinates {
 }
 
 impl Coordinates {
-    /// Panics if src isn't on a linear (horizontal, vertical, or bishop-like diagonal to dst,
-    /// or if src == dst.
+    /// `panic`s if src isn't on a linear (horizontal, vertical, or bishop-like diagonal to `dst`,
+    /// or if `src == dst`.
     pub fn linear_path_to(self, dst: Coordinates) -> Vec<Coordinates> {
         assert_ne!(self, dst, "{}", f!("Can't take linear path from {dst:?} to itself"));
         // TODO use macros to avoid this ugly ass duplication

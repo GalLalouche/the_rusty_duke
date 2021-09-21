@@ -124,4 +124,3 @@ impl<'a> Strategy for ArtificialStrategy<'a> {
         AiMove::Sentinel
     }
 }
-

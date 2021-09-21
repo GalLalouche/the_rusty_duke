@@ -144,7 +144,8 @@ impl TileSide {
         panic!("No Unit action found in the center columns;\n{:?}", self);
     }
 
-    fn near_offset(src: Coordinates, dst: Coordinates) -> Option<Offsets> {
+    /// If `dst` is linear to to `src`, returns the direction offset from the center.
+    fn near_diagonal_offset(src: Coordinates, dst: Coordinates) -> Option<Offsets> {
         if !src.is_linear_to(dst) {
             return None;
         }
@@ -172,11 +173,11 @@ impl TileSide {
             None
         }
     }
-    /// Panics if dst is out of bounds, except for slides.
+    /// `panic`s if `dst` is out of bounds, unless a [TileAction::Slide] can be applied.
     // TODO: Should this really panic?
     // TODO: Handle jump slides
     pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<TileAction> {
-        if let Some(near_offset) = TileSide::near_offset(src, dst) {
+        if let Some(near_offset) = TileSide::near_diagonal_offset(src, dst) {
             if self.board.get(near_offset.into()).has(&&TileAction::Slide) {
                 return Some(TileAction::Slide);
             }

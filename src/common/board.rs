@@ -1,51 +1,50 @@
 use std::mem;
 
 use crate::common::coordinates::Coordinates;
-use crate::common::geometry::Rectangular;
+use crate::common::geometry::{Rectangular, Square};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board<A> {
-    // Row-first, i.e., every vector is a row, Board size is height, each vector has size of width.
-    board: Vec<Vec<Option<A>>>,
+    // Row-first, i.e.,
+    // [1 2 3
+    //  4 5 6]
+    // Is represented as [1 2 3 4 5 6]
+    board: Vec<Option<A>>,
     width: u16,
     height: u16,
 }
 
 impl<A> Board<A> {
-    pub fn square(side: u16) -> Board<A> {
-        let mut board = Vec::with_capacity(side.into());
-        for _ in 0..side {
-            let mut col = Vec::with_capacity(side.into());
-            for _ in 0..side {
-                col.push(None);
-            }
-            board.push(col);
-        }
-
+    pub fn rect(r: impl Rectangular) -> Board<A> {
+        let mut board = Vec::with_capacity(r.area() as usize);
+        board.resize_with(r.area() as usize, || None);
         Board {
-            width: side,
-            height: side,
+            width: r.width(),
+            height: r.height(),
             board,
         }
     }
+    pub fn square(side: u16) -> Board<A> { Board::rect(Square::new(side)) }
     fn verify_bounds(&self, c: Coordinates) -> () {
         assert!(self.is_in_bounds(c), "Coordinate {:?} is out of bounds", c)
     }
+    fn to_vec_index(&self, c: Coordinates) -> usize { (self.width * c.y + c.x) as usize }
     fn place(&mut self, c: Coordinates, a: Option<A>) -> Option<A> {
         self.verify_bounds(c);
-        let column = self.board.get_mut(usize::from(c.y)).unwrap();
-        mem::replace(&mut column[usize::from(c.x)], a)
+        let index = self.to_vec_index(c);
+        mem::replace(&mut self.board[index], a)
     }
     pub fn put(&mut self, c: Coordinates, a: A) -> Option<A> {
         self.place(c, Some(a))
     }
     pub fn get(&self, c: Coordinates) -> Option<&A> {
         self.verify_bounds(c);
-        self.board[usize::from(c.y)][usize::from(c.x)].as_ref()
+        self.board[self.to_vec_index(c)].as_ref()
     }
     pub fn get_mut(&mut self, c: Coordinates) -> Option<&mut A> {
         self.verify_bounds(c);
-        self.board.get_mut(usize::from(c.y)).and_then(|b| b.get_mut(usize::from(c.x))).unwrap().as_mut()
+        let index = self.to_vec_index(c);
+        self.board.get_mut(index).unwrap().as_mut()
     }
     pub fn remove(&mut self, c: Coordinates) -> Option<A> {
         self.place(c, None)
@@ -62,10 +61,6 @@ impl<A> Board<A> {
     }
     pub fn is_empty(&self, c: Coordinates) -> bool {
         self.get(c).is_none()
-    }
-
-    pub fn rows(&self) -> &Vec<Vec<Option<A>>> {
-        &self.board
     }
 
     pub fn coordinates(&self) -> Vec<Coordinates> {
@@ -91,24 +86,46 @@ impl<A> Board<A> {
 
 impl<A> Board<A> where A: Clone {
     pub fn flip_vertical(&self) -> Board<A> {
-        let mut res = Vec::with_capacity(self.height.into());
-        for _ in 0..self.height {}
-        for v in self.board.iter().rev() {
-            res.push(v.clone())
+        let mut res = Vec::with_capacity(self.area() as usize);
+        for y in (0..self.height).rev() {
+            for x in 0..self.width {
+                res.push(self.get(Coordinates { x, y }).cloned())
+            }
         }
         Board { board: res, width: self.width, height: self.height }
     }
+
+    pub fn rows(&self) -> Vec<Vec<Option<A>>> {
+        let mut result = Vec::with_capacity(self.height as usize);
+        for y in 0..self.height {
+            let mut row = Vec::with_capacity(self.width as usize);
+            for x in 0..self.width {
+                let c = Coordinates { x, y };
+                row.push(self.get(c).cloned())
+            }
+            result.push(row);
+        }
+        result
+    }
+}
+
+impl<A> Rectangular for Board<A> {
+    fn width(&self) -> u16 { self.width }
+    fn height(&self) -> u16 { self.height }
 }
 
 #[cfg(test)]
 mod test {
     use crate::{assert_none, assert_some};
+    use crate::common::geometry::Rectangle;
 
     use super::*;
 
+    fn make_board() -> Board<i32> { Board::rect(Rectangle::with_width_and_height(3, 2)) }
+
     #[test]
     fn get_indexing() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 1, y: 0 }, 1);
         assert_some!(
             1,
@@ -121,7 +138,7 @@ mod test {
 
     #[test]
     fn get_mut_indexing() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 1, y: 0 }, 1);
         let c = board.get_mut(Coordinates { x: 1, y: 0 }).unwrap();
         *c += 1;
@@ -135,20 +152,21 @@ mod test {
     }
 
     #[test]
-    fn rows_returns_the_rows_no_columns() {
-        let mut board = Board::square(2);
+    fn rows_returns_the_rows_not_columns() {
+        let mut board = make_board();
         board.put(Coordinates { x: 0, y: 0 }, 0);
         board.put(Coordinates { x: 1, y: 0 }, 1);
+        board.put(Coordinates { x: 2, y: 1 }, 4);
         board.put(Coordinates { x: 1, y: 1 }, 3);
         assert_eq!(
-            &vec![vec![Some(0), Some(1)], vec![None, Some(3)]],
+            vec![vec![Some(0), Some(1), None], vec![None, Some(3), Some(4)]],
             board.rows(),
         )
     }
 
     #[test]
     fn find_returns_the_correct_coordinates_if_it_exists() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 0, y: 0 }, 0);
         board.put(Coordinates { x: 1, y: 0 }, 1);
         board.put(Coordinates { x: 1, y: 1 }, 3);
@@ -160,7 +178,7 @@ mod test {
 
     #[test]
     fn find_returns_none_if_it_doesnt_exists() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 0, y: 0 }, 0);
         board.put(Coordinates { x: 1, y: 0 }, 1);
         board.put(Coordinates { x: 1, y: 1 }, 3);
@@ -170,7 +188,7 @@ mod test {
     #[test]
     #[should_panic]
     fn mv_should_panic_on_empty() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 0, y: 0 }, 0);
         board.put(Coordinates { x: 1, y: 0 }, 1);
         board.put(Coordinates { x: 1, y: 1 }, 3);
@@ -180,7 +198,7 @@ mod test {
     #[test]
     #[should_panic]
     fn mv_should_move_to_unoccupied() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 0, y: 0 }, 0);
         board.put(Coordinates { x: 1, y: 0 }, 1);
         board.put(Coordinates { x: 1, y: 1 }, 3);
@@ -197,7 +215,7 @@ mod test {
 
     #[test]
     fn mv_should_move_to_occupied() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 0, y: 0 }, 0);
         board.put(Coordinates { x: 1, y: 0 }, 1);
         board.put(Coordinates { x: 1, y: 1 }, 3);
@@ -217,29 +235,21 @@ mod test {
 
     #[test]
     fn flip_vertical_should_flip_vertical() {
-        let mut board = Board::square(2);
+        let mut board = make_board();
         board.put(Coordinates { x: 0, y: 0 }, 0);
         board.put(Coordinates { x: 1, y: 0 }, 1);
         board.put(Coordinates { x: 1, y: 1 }, 3);
+        board.put(Coordinates { x: 2, y: 0 }, 4);
 
-        let mut expected = Board::square(2);
+        let mut expected = make_board();
         expected.put(Coordinates { x: 0, y: 1 }, 0);
         expected.put(Coordinates { x: 1, y: 1 }, 1);
         expected.put(Coordinates { x: 1, y: 0 }, 3);
+        expected.put(Coordinates { x: 2, y: 1 }, 4);
 
         assert_eq!(
             expected.board,
             board.flip_vertical().board,
         )
-    }
-}
-
-impl <A> Rectangular for Board<A> {
-    fn width(&self) -> u16 {
-        self.width
-    }
-
-    fn height(&self) -> u16 {
-        self.height
     }
 }
