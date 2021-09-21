@@ -19,14 +19,14 @@ pub enum DukeOffset { Top, Bottom, Left, Right }
 
 #[derive(Debug, Clone)]
 pub(super) enum BoardMove {
-    PlaceNewTile(TileRef, DukeOffset),
+    PlaceNewTile(TileRef, DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates },
     // CommandAnotherTile { commander_src: Coordinates, unit_src: Coordinates, unit_dst: Coordinates },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PossibleMove {
-    PlaceNewTile(DukeOffset),
+    PlaceNewTile(DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
 }
 
@@ -76,7 +76,7 @@ impl GameBoard {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
         self.board.put(c, t);
     }
-    pub fn remove(&mut self, c: Coordinates) -> PlacedTile {
+    fn remove(&mut self, c: Coordinates) -> PlacedTile {
         self.board.remove(c).expect(format!("Cannot remove tile from empty space {:?}", c).as_str())
     }
 
@@ -243,22 +243,15 @@ impl GameBoard {
             .exists(|c| self.board.is_empty(*c))
     }
 
-    pub(super) fn make_a_move(&mut self, gm: BoardMove, o: Owner) -> () {
+    pub(super) fn make_a_move(&mut self, gm: BoardMove) -> () {
         match gm {
-            BoardMove::PlaceNewTile(tile, duke_offset) => {
-                let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(o))
+            BoardMove::PlaceNewTile(tile, duke_offset, owner) => {
+                let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(owner))
                     .expect("Request duke location is out of bounds");
-                assert!(self.is_valid_placement(o, duke_offset));
-                self.place(c, PlacedTile::new_from_ref(o.clone(), tile));
+                assert!(self.is_valid_placement(owner, duke_offset));
+                self.place(c, PlacedTile::new_from_ref(owner, tile));
             }
             BoardMove::ApplyNonCommandTileAction { src, dst } => {
-                let tile = self.board.get(src).expect("Cannot move from an empty tile");
-                assert_eq!(
-                    tile.owner,
-                    o,
-                    "Cannot move unowned tile in {:?}",
-                    src
-                );
                 match self.can_apply(src, dst) {
                     AppliedPubAction::Movement => {
                         self.flip(src);
@@ -347,15 +340,15 @@ impl GameBoard {
 
     pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
         let mut clone = self.clone();
-        clone.make_a_move(mv, owner);
+        clone.make_a_move(mv);
         !clone.is_guard(owner)
     }
 
     // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,
     // undoing the action would remove the new tile from the board.
-    pub fn undo(&mut self, mv: PossibleMove, owner: Owner) -> Option<PlacedTile> {
+    pub fn undo(&mut self, mv: PossibleMove) -> Option<PlacedTile> {
         match mv {
-            PossibleMove::PlaceNewTile(offset) => {
+            PossibleMove::PlaceNewTile(offset, owner) => {
                 let absolute_coordinate = self
                     .to_absolute_duke_offset(offset, owner)
                     .expect(format!(
@@ -399,7 +392,7 @@ impl GameBoard {
             result.extend(
                 DukeOffset::iter().filter_map(|offset|
                     if self.is_valid_placement(owner, offset) {
-                        Some(PossibleMove::PlaceNewTile(offset))
+                        Some(PossibleMove::PlaceNewTile(offset, owner))
                     } else {
                         None
                     })
@@ -539,7 +532,6 @@ mod test {
         let c2 = Coordinates { x: 1, y: 4 };
         board.make_a_move(
             BoardMove::ApplyNonCommandTileAction { src: c, dst: c2 },
-            Owner::TopPlayer,
         );
         assert!(board.get(c2).is_some());
         assert!(board.get(c).is_none());

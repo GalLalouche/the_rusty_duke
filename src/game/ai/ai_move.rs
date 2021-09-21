@@ -24,7 +24,7 @@ pub(super) struct ArtificialStrategy<'a> {
 pub(super) enum AiMove {
     // FIXME Pulling is random, but the library doesn't suppose that stuff yet...
     // so just take the random value pulled.
-    PullTileFormBagAndPlay(DukeOffset),
+    PullTileFormBagAndPlay(DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
     Sentinel,
 }
@@ -32,7 +32,7 @@ pub(super) enum AiMove {
 impl AiMove {
     pub fn to_game_move(&self) -> Option<GameMove> {
         match self {
-            AiMove::PullTileFormBagAndPlay(o) => Some(GameMove::PullAndPlay(*o)),
+            AiMove::PullTileFormBagAndPlay(o, _) => Some(GameMove::PullAndPlay(*o)),
             AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
                 Some(GameMove::ApplyNonCommandTileAction {
                     src: *src,
@@ -44,7 +44,7 @@ impl AiMove {
 
     pub fn to_undo_move(&self) -> Option<PossibleMove> {
         match self {
-            AiMove::PullTileFormBagAndPlay(o) => Some(PossibleMove::PlaceNewTile(*o)),
+            AiMove::PullTileFormBagAndPlay(o, owner) => Some(PossibleMove::PlaceNewTile(*o, *owner)),
             AiMove::ApplyNonCommandTileAction { src, dst, capturing } =>
                 Some(PossibleMove::ApplyNonCommandTileAction {
                     src: *src,
@@ -59,8 +59,8 @@ impl AiMove {
 impl Into<AiMove> for &PossibleMove {
     fn into(self) -> AiMove {
         match self {
-            PossibleMove::PlaceNewTile(o) =>
-                AiMove::PullTileFormBagAndPlay(*o),
+            PossibleMove::PlaceNewTile(o, owner) =>
+                AiMove::PullTileFormBagAndPlay(*o, *owner),
             PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } =>
                 AiMove::ApplyNonCommandTileAction { src: *src, dst: *dst, capturing: capturing.clone() },
         }
@@ -95,7 +95,7 @@ impl<'a> Strategy for ArtificialStrategy<'a> {
 
     fn play(&mut self, mv: &Self::Move, maximizer: bool) {
         match &mv {
-            AiMove::PullTileFormBagAndPlay(o) =>
+            AiMove::PullTileFormBagAndPlay(o, _) =>
                 self.state.make_a_move(GameMove::PullAndPlay(*o)),
             AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
                 self.state.make_a_move(GameMove::ApplyNonCommandTileAction {

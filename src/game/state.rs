@@ -34,7 +34,7 @@ pub enum GameMove {
 impl Into<GameMove> for &PossibleMove {
     fn into(self) -> GameMove {
         match self {
-            PossibleMove::PlaceNewTile(o) => GameMove::PullAndPlay(*o),
+            PossibleMove::PlaceNewTile(o, _) => GameMove::PullAndPlay(*o),
             PossibleMove::ApplyNonCommandTileAction { src, dst, .. } =>
                 GameMove::ApplyNonCommandTileAction {
                     src: *src,
@@ -93,13 +93,6 @@ impl GameState {
             player_1_discard: DiscardBag::empty(),
             bottom_player_bag: base_bag.clone(),
             player_2_discard: DiscardBag::empty(),
-        }
-    }
-
-    pub fn other_player(&self) -> Owner {
-        match self.current_player_turn {
-            Owner::TopPlayer => Owner::BottomPlayer,
-            Owner::BottomPlayer => Owner::TopPlayer,
         }
     }
 
@@ -165,7 +158,16 @@ impl GameState {
             self.make_a_move(GameMove::PlaceNewTile(*o));
             return;
         }
-        self.board.make_a_move(self.to_board_move(&game_move), self.current_player_turn);
+        if let GameMove::ApplyNonCommandTileAction { src, .. } = game_move {
+            let tile = self.board.get(src).expect("Cannot move from an empty tile");
+            assert_eq!(
+                tile.owner,
+                self.current_player_turn,
+                "Cannot move unowned tile in {:?}",
+                src
+            );
+        }
+        self.board.make_a_move(self.to_board_move(&game_move));
         self.current_player_turn = self.current_player_turn.next_player();
         if self.is_waiting_for_tile_placement() {
             self.pulled_tile = None
@@ -178,6 +180,7 @@ impl GameState {
                 BoardMove::PlaceNewTile(
                     self.pulled_tile.as_ref().expect("No pulled tile").clone(),
                     *offset,
+                    self.current_player_turn,
                 ),
             GameMove::ApplyNonCommandTileAction { src, dst } =>
                 BoardMove::ApplyNonCommandTileAction { src: *src, dst: *dst },
@@ -185,7 +188,6 @@ impl GameState {
             //     BoardMove::CommandAnotherTile { commander_src, unit_src, unit_dst },
             GameMove::PullAndPlay(o) => {
                 todo!();
-                BoardMove::PlaceNewTile(todo!(), *o)
             }
         }
     }
@@ -217,8 +219,12 @@ impl GameState {
     }
 
     pub fn is_valid_placement(&self, offset: DukeOffset) -> bool {
-        self.board.is_valid_placement(self.current_player_turn, offset) &&
-            self.board.does_not_put_in_guard(BoardMove::PlaceNewTile(TileRef::new(units::footman()), offset), self.current_player_turn)
+        let owner = self.current_player_turn;
+        self.board.is_valid_placement(owner, offset) &&
+            self.board.does_not_put_in_guard(
+                BoardMove::PlaceNewTile(TileRef::new(units::footman()), offset, owner),
+                owner,
+            )
     }
 
     pub fn is_over(&self) -> bool {
@@ -227,7 +233,7 @@ impl GameState {
 
     pub fn winner(&self) -> Option<Owner> {
         if self.is_over() {
-            Some(self.other_player())
+            Some(self.current_player_turn.next_player())
         } else {
             None
         }
@@ -257,7 +263,7 @@ impl GameState {
 
     pub fn to_undo(&self, mv: &GameMove) -> PossibleMove {
         match mv {
-            GameMove::PlaceNewTile(o) => PossibleMove::PlaceNewTile(*o),
+            GameMove::PlaceNewTile(o) => PossibleMove::PlaceNewTile(*o, self.current_player_turn),
             GameMove::PullAndPlay(o) => self.to_undo(&GameMove::PlaceNewTile(*o)),
             GameMove::ApplyNonCommandTileAction { src, dst } => {
                 // TODO handle duplication with the other place where capturing is extracted.
@@ -272,7 +278,7 @@ impl GameState {
     }
     pub fn undo(&mut self, mv: PossibleMove) -> () {
         self.current_player_turn = self.current_player_turn.next_player();
-        if let Some(t) = self.board.undo(mv, self.current_player_turn) {
+        if let Some(t) = self.board.undo(mv) {
             let bag = match self.current_player_turn {
                 Owner::TopPlayer => &mut self.top_player_bag,
                 Owner::BottomPlayer => &mut self.bottom_player_bag,
@@ -447,9 +453,9 @@ mod tests {
         let state = GameState::from_board_with_bag(board, bag);
         assert_eq_set!(
             vec!(
-                PossibleMove::PlaceNewTile(DukeOffset::Right),
-                PossibleMove::PlaceNewTile(DukeOffset::Left),
-                PossibleMove::PlaceNewTile(DukeOffset::Bottom),
+                PossibleMove::PlaceNewTile(DukeOffset::Right, Owner::TopPlayer),
+                PossibleMove::PlaceNewTile(DukeOffset::Left, Owner::TopPlayer),
+                PossibleMove::PlaceNewTile(DukeOffset::Bottom, Owner::TopPlayer),
 
                 PossibleMove::ApplyNonCommandTileAction {
                     src: duke_coordinates, dst: Coordinates {x: 1, y: 0}, capturing: None},
