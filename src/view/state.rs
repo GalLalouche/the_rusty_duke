@@ -146,7 +146,7 @@ impl ViewState {
     pub fn can_pull_token_from_bag(&self) -> bool {
         match &self.view_position {
             ViewPosition::BoardPosition { moving: None, .. } =>
-                self.game_state.can_pull_tile_from_bag() == CanPullNewTileResult::OK,
+                self.game_state.can_pull_tile_from_bag_bool(),
             _ => false,
         }
     }

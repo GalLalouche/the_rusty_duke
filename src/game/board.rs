@@ -36,7 +36,7 @@ pub(super) struct GameBoard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WithNewTiles { True, False }
+pub(super) struct WithNewTiles(pub bool);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckForGuard { True, False }
@@ -78,10 +78,6 @@ impl GameBoard {
     }
     pub fn remove(&mut self, c: Coordinates) -> PlacedTile {
         self.board.remove(c).expect(format!("Cannot remove tile from empty space {:?}", c).as_str())
-    }
-
-    pub fn rows(&self) -> &Vec<Vec<Option<PlacedTile>>> {
-        self.board.rows()
     }
 
     pub fn get(&self, c: Coordinates) -> Option<&PlacedTile> {
@@ -246,7 +242,7 @@ impl GameBoard {
             .absolute_duke_offset(offset, self.duke_coordinates(owner))
             .exists(|c| self.board.is_empty(*c))
     }
-    // TODO: Should this really accept an owner?
+
     pub(super) fn make_a_move(&mut self, gm: BoardMove, o: Owner) -> () {
         match gm {
             BoardMove::PlaceNewTile(tile, duke_offset) => {
@@ -399,7 +395,7 @@ impl GameBoard {
                 .collect::<Vec<PossibleMove>>()
             )
             .collect();
-        if new_tiles == WithNewTiles::True {
+        if let WithNewTiles(true) = new_tiles {
             result.extend(
                 DukeOffset::iter().filter_map(|offset|
                     if self.is_valid_placement(owner, offset) {

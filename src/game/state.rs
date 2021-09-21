@@ -53,28 +53,14 @@ pub enum CanPullNewTileResult {
 }
 
 impl GameState {
-    pub fn board(&self) -> &Board<PlacedTile> {
-        self.board.get_board()
-    }
+    pub fn board(&self) -> &Board<PlacedTile> { self.board.get_board() }
 
-    pub fn pulled_tile(&self) -> &Option<TileRef> {
-        &self.pulled_tile
-    }
-    pub fn current_player_turn(&self) -> Owner {
-        self.current_player_turn
-    }
-    pub fn top_player_bag(&self) -> &TileBag {
-        &self.top_player_bag
-    }
-    pub fn player_1_discard(&self) -> &DiscardBag {
-        &self.player_1_discard
-    }
-    pub fn bottom_player_bag(&self) -> &TileBag {
-        &self.bottom_player_bag
-    }
-    pub fn player_2_discard(&self) -> &DiscardBag {
-        &self.player_2_discard
-    }
+    pub fn pulled_tile(&self) -> &Option<TileRef> { &self.pulled_tile }
+    pub fn current_player_turn(&self) -> Owner { self.current_player_turn }
+    pub fn top_player_bag(&self) -> &TileBag { &self.top_player_bag }
+    pub fn player_1_discard(&self) -> &DiscardBag { &self.player_1_discard }
+    pub fn bottom_player_bag(&self) -> &TileBag { &self.bottom_player_bag }
+    pub fn player_2_discard(&self) -> &DiscardBag { &self.player_2_discard }
 
     #[cfg(test)]
     fn from_board(board: GameBoard) -> GameState {
@@ -117,11 +103,7 @@ impl GameState {
         }
     }
 
-    pub fn rows(&self) -> &Vec<Vec<Option<PlacedTile>>> {
-        self.board.rows()
-    }
-
-    pub fn can_pull_tile_from_bag(&self) -> CanPullNewTileResult {
+    fn can_pull_tile_from_bag(&self) -> CanPullNewTileResult {
         let bag = match self.current_player_turn {
             Owner::TopPlayer => &self.top_player_bag,
             Owner::BottomPlayer => &self.bottom_player_bag,
@@ -258,11 +240,7 @@ impl GameState {
     pub fn all_valid_game_moves_for(&self, o: Owner) -> Vec<PossibleMove> {
         self.board.all_valid_moves(
             o,
-            if self.bag_for_current_player().non_empty() {
-                WithNewTiles::True
-            } else {
-                WithNewTiles::False
-            },
+            WithNewTiles(self.bag_for_current_player().non_empty()),
         )
     }
 
