@@ -1,15 +1,18 @@
 use crate::game::state::GameState;
 use crate::game::tile::Owner;
+use std::fmt::Debug;
 
-pub trait Heuristic {
+pub trait Heuristic: Debug {
     fn evaluate_for_owner(&self, o: Owner, gs: &GameState) -> f64;
-    fn difference(&self, o: Owner, gs: &GameState) -> f64 {
-        let o_score = self.evaluate_for_owner(o, &gs);
-        let other_score = self.evaluate_for_owner(o.next_player(), &gs);
-        o_score - other_score
+    fn difference(&self, owner: Owner, gs: &GameState) -> f64 {
+        let owner_score = self.evaluate_for_owner(owner, &gs);
+        let other_score = self.evaluate_for_owner(owner.next_player(), &gs);
+        owner_score - other_score
     }
 }
 
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Heuristics {
     DukeMovementOptions,
     TotalTilesOnBoard,
@@ -22,7 +25,7 @@ impl Heuristic for Heuristics {
             Heuristics::DukeMovementOptions =>
                 gs.get_legal_moves(gs.duke_coordinate(o)).len() as f64,
             Heuristics::TotalTilesOnBoard =>
-                gs.get_tiles_for_owner(o).len() as f64 * 10.0,
+                gs.get_tiles_for_owner(o).len() as f64 * 100.0,
             Heuristics::TotalMovementOptions =>
                 gs.all_valid_game_moves_for(o).len() as f64,
         }

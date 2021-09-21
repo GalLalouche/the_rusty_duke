@@ -202,7 +202,6 @@ impl GameState {
 
     // Except commands
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
-        assert!(self.board.get(src).unwrap().owner.same_team(self.current_player_turn));
         self.board.get_legal_moves(src)
     }
 
@@ -479,8 +478,8 @@ mod tests {
         state.make_a_move(mv);
         state.undo(undo);
         assert_eq!(
-            state,
             expected,
+            state,
         )
     }
 
@@ -525,6 +524,25 @@ mod tests {
             GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 1, y: 0 },
                 dst,
+            },
+        );
+    }
+
+    #[test]
+    fn undo_can_undo_a_strike_move_with_capture() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        let mut pikeman = PlacedTile::new(Owner::TopPlayer, units::pikeman());
+        pikeman.flip();
+        board.place(Coordinates { x: 1, y: 0 }, pikeman);
+        let footman_coordinates = Coordinates { x: 2, y: 2 };
+        board.place(footman_coordinates, PlacedTile::new(Owner::BottomPlayer, units::footman()));
+        let gs = GameState::from_board(board);
+        test_undo_move(
+            gs,
+            GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 1, y: 0 },
+                dst: footman_coordinates,
             },
         );
     }

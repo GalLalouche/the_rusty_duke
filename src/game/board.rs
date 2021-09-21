@@ -187,7 +187,7 @@ impl GameBoard {
             TileAction::Slide => self.unobstructed(src, dst),
             TileAction::Command => panic!("Commands shouldn't have been used here"),
             TileAction::JumpSlide => todo!(),
-            TileAction::Strike => true,
+            TileAction::Strike => self.get(dst).exists(|o| o.different_team(self.get(src).unwrap())),
         }
     }
 
@@ -359,12 +359,17 @@ impl GameBoard {
                 Some(self.remove(absolute_coordinate))
             }
             PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
-                // TODO handle strikes and other stuff.
-                let mut mover = self.remove(dst);
-                mover.flip();
-                self.place(src, mover);
-                if let Some(captured) = capturing {
-                    self.place(dst, captured.clone());
+                if !self.board.is_occupied(dst) { // Strike
+                    let captured = capturing.expect("No captured but attacker didn't move");
+                    self.flip(src);
+                    self.place(dst, captured);
+                } else {
+                    let mut mover = self.remove(dst);
+                    mover.flip();
+                    self.place(src, mover);
+                    if let Some(captured) = capturing {
+                        self.place(dst, captured.clone());
+                    }
                 }
                 None
             }
@@ -414,7 +419,7 @@ impl Rectangular for GameBoard {
 
 #[cfg(test)]
 mod test {
-    use crate::assert_eq_set;
+    use crate::{assert_eq_set, assert_not};
 
     use super::*;
 
@@ -497,6 +502,16 @@ mod test {
         let c = Coordinates { x: 2, y: 4 };
         board.place(c, units::place_tile(Owner::TopPlayer, units::priest));
         assert!(board.can_move(c, Coordinates { x: 4, y: 2 }));
+    }
+
+    #[test]
+    fn can_move_returns_false_for_empty_strike() {
+        let mut board = GameBoard::empty();
+        let c = Coordinates { x: 0, y: 0 };
+        let mut tile = units::place_tile(Owner::TopPlayer, units::pikeman);
+        tile.flip();
+        board.place(c, tile);
+        assert_not!(board.can_move(c, Coordinates { x: 1, y: 2 }));
     }
 
     #[test]
