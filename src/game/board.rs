@@ -13,6 +13,7 @@ use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset}
 use crate::game::tile::{Owner, Ownership, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
 use crate::game::units;
+use crate::time_it_macro;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumIter)]
 pub enum DukeOffset { Top, Bottom, Left, Right }
@@ -110,18 +111,25 @@ impl GameBoard {
             .filter(|c| self.board.is_in_bounds(*c))
     }
 
+    // TODO this should return an Iterator
     fn target_coordinates(
         &self, src: Coordinates, offset: Offsets, action: TileAction, center: VerticalOffset,
     ) -> Vec<Coordinates> {
+        macro_rules! to_list {
+            ($o: expr) => {match $o {
+                None => Vec::new(),
+                Some(x) => vec![x],
+            }
+            }
+        }
         match action {
-            TileAction::Move => self.to_absolute_coordinate(src, offset, center).into_iter().collect(),
-            TileAction::Jump => self.to_absolute_coordinate(src, offset, center).into_iter().collect(),
-            TileAction::Strike => self.to_absolute_coordinate(src, offset, center).into_iter().collect(),
+            TileAction::Move => to_list!(self.to_absolute_coordinate(src, offset, center)),
+            TileAction::Jump => to_list!(self.to_absolute_coordinate(src, offset, center)),
+            TileAction::Strike => to_list!(self.to_absolute_coordinate(src, offset, center)),
             TileAction::Slide => {
                 let horizontal = |r: Range<u16>| r.map(|x| Coordinates { x, y: src.y }).collect();
                 let vertical = |r: Range<u16>| r.map(|y| Coordinates { x: src.x, y }).collect();
-                fn diagonal<I1, I2>(
-                    x: I1, y: I2) -> Vec<Coordinates>
+                fn diagonal<I1, I2>(x: I1, y: I2) -> Vec<Coordinates>
                     where I1: Iterator<Item=u16>, I2: Iterator<Item=u16> {
                     x.zip(y).map(|(x, y)| Coordinates { x, y }).collect()
                 }
@@ -146,8 +154,10 @@ impl GameBoard {
                     } else {
                         panic!("Invalid slide offset {:?}", offset)
                     };
-                res.iter().for_each(|e| assert!(self.board.is_in_bounds(*e)));
-                res.iter().for_each(|e| assert!(e.is_linear_to(src)));
+                if cfg!(debug_assertions) {
+                    res.iter().for_each(|e| assert!(self.board.is_in_bounds(*e)));
+                    res.iter().for_each(|e| assert!(e.is_straight_line_to(src)));
+                }
                 res
             }
             TileAction::JumpSlide => unimplemented!(),
@@ -157,12 +167,17 @@ impl GameBoard {
     }
 
     fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
-        src.linear_path_to(dst).into_iter().all(|c| self.board.is_empty(c))
+        if src.is_near(dst) {
+            self.board.is_empty(dst)
+        } else {
+            !src.on_the_linear_path_to(dst, |x, y| self.board.is_occupied(Coordinates { x, y }))
+        }
     }
 
     pub fn can_place_new_tile_near_duke(&self, o: Owner) -> bool {
         !self.empty_spaces_near_current_duke(o).is_empty()
     }
+
     pub fn empty_spaces_near_current_duke(&self, o: Owner) -> Vec<Coordinates> {
         let duke_location = self.duke_coordinates(o);
         DukeOffset::iter()
@@ -171,6 +186,7 @@ impl GameBoard {
             .collect()
     }
 
+    #[inline(always)]
     fn different_team_or_empty(&self, src: Coordinates, dst: Coordinates) -> bool {
         let src_tile = self.board.get(src).expect("No unit found in src to apply an action with");
         self.board.get(dst).for_all(|c| src_tile.different_team(c))
@@ -212,17 +228,17 @@ impl GameBoard {
     }
 
     // fn can_command(
-    //     &self,
-    //     commander_src: Coordinates,
-    //     unit_src: Coordinates,
-    //     unit_dst: Coordinates,
-    // ) -> bool {
-    //     let commander_tile = self.get(commander_src).expect("No unit found in commander_src");
-    //     let unit_tile = self.get(unit_src).expect("No commanded unit found in unit_src");
-    //     assert!(commander_tile.same_team(unit_tile), "Cannot command a unit from a different team");
-    //     self.different_team_or_empty(unit_src, unit_dst)
-    // }
-    //
+//     &self,
+//     commander_src: Coordinates,
+//     unit_src: Coordinates,
+//     unit_dst: Coordinates,
+// ) -> bool {
+//     let commander_tile = self.get(commander_src).expect("No unit found in commander_src");
+//     let unit_tile = self.get(unit_src).expect("No commanded unit found in unit_src");
+//     assert!(commander_tile.same_team(unit_tile), "Cannot command a unit from a different team");
+//     self.different_team_or_empty(unit_src, unit_dst)
+// }
+//
     pub fn duke_coordinates(&self, o: Owner) -> Coordinates {
         self.board
             .find(|a| a.owner == o && units::is_duke(a.tile.borrow()))
@@ -238,9 +254,19 @@ impl GameBoard {
     }
 
     pub fn is_valid_placement(&self, owner: Owner, offset: DukeOffset) -> bool {
-        self
-            .absolute_duke_offset(offset, self.duke_coordinates(owner))
-            .exists(|c| self.board.is_empty(*c))
+        match self.absolute_duke_offset(offset, self.duke_coordinates(owner)) {
+            None => false,
+            Some(c) =>
+                if self.board.is_occupied(c) {
+                    false
+                } else {
+                    // Cannot use does_not_put_in_guard as that will cause an infinite recursion.
+                    // TODO cache this footman, stop cloning for guard checks.
+                    let mut clone = self.clone();
+                    clone.place(c, PlacedTile::new(owner, units::footman()));
+                    !clone.is_guard(owner)
+                }
+        }
     }
 
     pub(super) fn make_a_move(&mut self, gm: BoardMove) -> () {
@@ -295,47 +321,130 @@ impl GameBoard {
 
     // Except commands.
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
-        self.get_legal_moves_aux(src, CheckForGuard::True)
+        self.get_legal_moves_aux(src, CheckForGuard::True).collect()
     }
 
     fn get_legal_moves_aux(
-        &self, src: Coordinates, cfg: CheckForGuard) -> Vec<(Coordinates, TileAction)> {
+        &self, src: Coordinates, cfg: CheckForGuard) -> Box<dyn Iterator<Item=(Coordinates, TileAction)> + '_> {
+        // time_it_macro!("get_legal_moves_aux", {
         let tile = self.get(src).unwrap();
         let owner = tile.owner;
         let tile_side = tile.get_current_side();
         let center_offset = tile_side.center_offset();
-        tile_side.actions()
-            .into_iter()
-            .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-            .flat_map(|o| self
-                .target_coordinates(src, o.0, o.1, center_offset)
-                .iter()
-                .map(|c| (*c, o.1))
-                .collect::<Vec<(Coordinates, TileAction)>>()
+        // TODO unhardcode name
+        // time_it_macro!("glma sanity: actions", {
+        //         tile_side.actions()
+        //             .iter()
+        //             .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
+        //             // TODO deduplicate
+        //             .flat_map(|o| self
+        //                 .target_coordinates(src, o.0, o.1, center_offset)
+        //                 .into_iter()
+        //                 .map(move |c| (c, o.1))
+        //             )
+        //             .filter(|o| self.can_apply_action(src, o.0, o.1))
+        //     .collect::<Vec<_>>()
+        // });
+        // time_it_macro!("glma sanity: actions 1", {
+        //         tile_side.actions()
+        //             .iter()
+        //             .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
+        //             // TODO deduplicate
+        //     .collect::<Vec<_>>()
+        // });
+        // {
+        //     let x: Vec<_> = tile_side.actions()
+        //         .iter()
+        //         .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
+        //         .collect();
+        //     time_it_macro!("glma sanity: actions 2", {
+        //             x
+        //         .iter()
+        //             .flat_map(|o| self
+        //                 .target_coordinates(src, o.0, o.1, center_offset)
+        //                 .into_iter()
+        //                 .map(move |c| (c, o.1))
+        //             )
+        //     .collect::<Vec<_>>()
+        // });
+        // }
+        // {
+        //     let x: Vec<_> = tile_side.actions()
+        //         .iter()
+        //         .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
+        //         .flat_map(|o| self
+        //             .target_coordinates(src, o.0, o.1, center_offset)
+        //             .into_iter()
+        //             .map(move |c| (c, o.1))
+        //         )
+        //         .collect();
+        //     time_it_macro!("glma sanity: actions 3", {
+        //             x
+        //         .iter()
+        //             .filter(|o| self.can_apply_action(src, o.0, o.1))
+        //     .collect::<Vec<_>>()
+        // });
+        // }
+        if tile.tile.get_name() == "Duke" {
+            Box::new(
+                tile_side.actions()
+                    .iter()
+                    .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
+                    // TODO deduplicate
+                    .flat_map(move |o| self
+                        .target_coordinates(src, o.0, o.1, center_offset)
+                        .into_iter()
+                        .map(move |c| (c, o.1))
+                    )
+                    .filter(move |o| self.can_apply_action(src, o.0, o.1))
+                    .filter(move |o| match cfg {
+                        CheckForGuard::True =>
+                            self.does_not_put_in_guard(
+                                BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
+                                owner,
+                            ),
+                        CheckForGuard::False => true,
+                    })
+                    .into_iter()
             )
-            .filter(|o| self.can_apply_action(src, o.0, o.1))
-            .filter(|o| match cfg {
-                CheckForGuard::True => self.does_not_put_in_guard(
-                    BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
-                    owner,
-                ),
-                CheckForGuard::False => true,
-            })
-            .collect()
+        } else {
+            let puts_in_guard = match cfg {
+                CheckForGuard::True => {
+                    let mut clone = self.clone();
+                    clone.board.remove(src);
+                    clone.is_guard(owner)
+                }
+                CheckForGuard::False => false,
+            };
+            Box::new(
+                tile_side.actions()
+                    .iter()
+                    .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
+                    .filter(move |e| if puts_in_guard { e.1 == TileAction::Strike } else { true })
+                    .flat_map(move |o| self
+                        .target_coordinates(src, o.0, o.1, center_offset)
+                        .into_iter()
+                        .map(move |c| (c, o.1))
+                    )
+                    .filter(move |o| self.can_apply_action(src, o.0, o.1))
+                    .into_iter()
+            )
+        }
+        // })
     }
 
     pub fn is_guard(&self, owner: Owner) -> bool {
-        let c = self.duke_coordinates(owner);
-        self.get_board()
-            .active_coordinates()
-            .iter()
-            .filter(|e| e.1.owner.different_team(owner))
-            .any(|other_tile|
-                self
-                    .get_legal_moves_aux(other_tile.0, CheckForGuard::False)
-                    .iter()
-                    .any(|other_move| other_move.0 == c)
-            )
+        time_it_macro!("is_guard", {
+            let c = self.duke_coordinates(owner);
+            self.get_board()
+                .active_coordinates()
+                .filter(|e| e.1.owner.different_team(owner))
+                .any(|other_tile|
+                    self
+                        .get_legal_moves_aux(other_tile.0, CheckForGuard::False)
+                        .any(|other_move| other_move.0 == c)
+                )
+        })
     }
 
     pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
@@ -345,7 +454,7 @@ impl GameBoard {
     }
 
     // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,
-    // undoing the action would remove the new tile from the board.
+// undoing the action would remove the new tile from the board.
     pub fn undo(&mut self, mv: PossibleMove) -> Option<PlacedTile> {
         match mv {
             PossibleMove::PlaceNewTile(offset, owner) => {
@@ -550,5 +659,16 @@ mod test {
         );
         assert!(board.get(c2).is_some());
         assert!(board.get(c).is_none());
+    }
+
+    #[test]
+    fn is_valid_placement_returns_false_if_in_guard() {
+        let mut board = GameBoard::empty();
+        let c = Coordinates { x: 0, y: 0 };
+        board.place(c, units::place_tile(Owner::TopPlayer, units::duke));
+        let c2 = Coordinates { x: 0, y: 2 };
+        board.place(c2, units::place_tile(Owner::BottomPlayer, units::footman));
+        board.flip(c2);
+        assert_not!(board.is_valid_placement(Owner::TopPlayer, DukeOffset::Right));
     }
 }

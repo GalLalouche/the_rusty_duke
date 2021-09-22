@@ -4,12 +4,16 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-minimax-alpha-beta = "*"
 fstrings = "*"
 rand = "*"
 paste = "*"
 strum = "*"
 strum_macros = "*"
+
+log = "*"
+
+minimax-alpha-beta = "*"
+minimax = "*"
 
 crossterm = "*"
 tui = { version = "*", default-features = false, features = ['crossterm'] }

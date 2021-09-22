@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
+use crate::assert_none;
+use crate::time_it_macro;
 use crate::assert_not;
 use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
@@ -18,9 +20,24 @@ pub enum TileAction {
     Strike,
 }
 
+impl TileAction {
+    pub fn is_movement(&self) -> bool {
+        match self {
+            TileAction::Unit => false,
+            TileAction::Move => true,
+            TileAction::Jump => true,
+            TileAction::Slide => true,
+            TileAction::Command => true, // Moves another unit
+            TileAction::JumpSlide => true,
+            TileAction::Strike => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TileSide {
     board: Board<TileAction>,
+    actions: Vec<(Offsets, TileAction)>,
 }
 
 impl TileSide {
@@ -42,12 +59,13 @@ impl TileSide {
         }
         TileSide::verify_no_illegal_repeats(&map);
         TileSide::verify_actions(&map);
-        let mut res = TileSide { board: Board::square(TileSide::SIDE) };
+        let mut board = Board::square(TileSide::SIDE);
         for (k, v) in map {
-            let result = res.board.put(k.into(), v);
-            assert!(result.is_none());
+            let result = board.put(k.into(), v);
+            assert_none!(result);
         }
-        res
+        let actions = TileSide::actions_aux(&board);
+        TileSide { actions, board }
     }
 
     // TODO: Verify that there is nothing after slides
@@ -123,15 +141,13 @@ impl TileSide {
         assert_eq!(unit_icon, 1, "Unit action should have been 1, was {}", unit_icon);
     }
 
-    pub fn actions(&self) -> Vec<(Offsets, TileAction)> {
-        self.board.active_coordinates()
-            .iter()
-            .map(|e| (e.0.into(), e.1.clone()))
-            .collect()
+    fn actions_aux(board: &Board<TileAction>) -> Vec<(Offsets, TileAction)> {
+        board.active_coordinates().map(|e| (e.0.into(), e.1.clone())).collect()
     }
 
-    pub fn get_board(&self) -> &Board<TileAction> {
-        &self.board
+    pub fn board(&self) -> &Board<TileAction> { &self.board }
+    pub fn actions(&self) -> &Vec<(Offsets, TileAction)> {
+        &self.actions
     }
 
     pub fn center_offset(&self) -> VerticalOffset {
@@ -146,7 +162,7 @@ impl TileSide {
 
     /// If `dst` is linear to to `src`, returns the direction offset from the center.
     fn near_diagonal_offset(src: Coordinates, dst: Coordinates) -> Option<Offsets> {
-        if !src.is_linear_to(dst) {
+        if !src.is_straight_line_to(dst) {
             return None;
         }
 
@@ -212,9 +228,10 @@ impl TileSide {
     }
 
     pub(super) fn flip_vertical(&self) -> TileSide {
-        TileSide {
-            board: self.board.flip_vertical()
-        }
+        // TODO extract private ctor
+        let board = self.board.flip_vertical();
+        let actions = TileSide::actions_aux(&board);
+        TileSide { board, actions }
     }
 }
 

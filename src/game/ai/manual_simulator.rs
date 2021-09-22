@@ -4,7 +4,7 @@ use std::io::Read;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use crate::game::ai::ai_move::ArtificialPlayer;
+use crate::game::ai::player::ArtificialPlayer;
 use crate::game::ai::heuristic_ai::HeuristicAi;
 use crate::game::ai::heuristics::Heuristics;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
@@ -53,7 +53,7 @@ fn go_aux(turn_count: i32, max_depth: usize, print: bool, wait_for_input: bool) 
 }
 
 pub fn go_main() {
-    go_aux(-1, 1, true, true);
+    go_aux(3, 3, false, false);
 }
 
 #[cfg(test)]

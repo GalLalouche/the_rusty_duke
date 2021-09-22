@@ -11,8 +11,8 @@ pub struct Coordinates {
 impl Coordinates {
     /// `panic`s if src isn't on a linear (horizontal, vertical, or bishop-like diagonal to `dst`,
     /// or if `src == dst`.
-    pub fn linear_path_to(self, dst: Coordinates) -> Vec<Coordinates> {
-        assert_ne!(self, dst, "{}", f!("Can't take linear path from {dst:?} to itself"));
+    pub fn linear_path_to(&self, dst: Coordinates) -> Vec<Coordinates> {
+        debug_assert_ne!(*self, dst, "{}", f!("Can't take linear path from {dst:?} to itself"));
         // TODO use macros to avoid this ugly ass duplication
         if self.x == dst.x {
             macro_rules! collect_y {
@@ -56,10 +56,75 @@ impl Coordinates {
         panic!("{:?} isn't linear to {:?}", self, dst);
     }
 
-    pub fn is_linear_to(self, dst: Coordinates) -> bool {
+    pub fn is_straight_line_to(self, dst: Coordinates) -> bool {
         self.x == dst.x ||
             self.y == dst.y ||
             self.x.distance_to(dst.x) == self.y.distance_to(dst.y)
+    }
+
+    // TODO deduplicate
+    pub fn on_the_linear_path_to(&self, dst: Coordinates, p: impl Fn(u16, u16) -> bool) -> bool {
+        debug_assert_ne!(*self, dst, "{}", f!("Can't take linear path from {dst:?} to itself"));
+        // TODO use macros to avoid this ugly ass duplication
+        if self.x == dst.x {
+            macro_rules! collect_y {
+                ($i: expr) => {{
+                    for y in $i {
+                        if p(self.x, y) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }}
+            }
+            if self.y < dst.y {
+                collect_y!(self.y + 1..dst.y)
+            } else {
+                collect_y!((dst.y + 1..self.y).rev())
+            };
+        }
+        if self.y == dst.y {
+            macro_rules! collect_x {
+                ($i: expr) => {{
+                    for x in $i {
+                        if p(x, self.y) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }}
+            }
+            if self.x < dst.x {
+                collect_x!(self.x + 1..dst.x)
+            } else {
+                collect_x!((dst.x + 1..self.x).rev())
+            };
+        }
+        if self.x.distance_to(dst.x) == self.y.distance_to(dst.y) {
+            macro_rules! collect {
+                ($m: tt, $c: expr, $x_op: tt, $y_op: tt) => {{
+                    for d in 1..self.x.distance_to(dst.x) {
+                        if p($c.x $x_op d, $c.y $y_op d) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }}
+            match (self.x < dst.x, self.y < dst.y) {
+                (true, true) => collect!(fuse, self, +, +),
+                (false, false) => collect!(rev, dst, +, +),
+                (true, false) => collect!(fuse, self, +, -),
+                (false, true) => collect!(rev, dst, +, -),
+            };
+        }
+        panic!("{:?} isn't linear to {:?}", self, dst);
+    }
+
+    #[inline(always)]
+    pub fn is_near(&self, other: Coordinates) -> bool {
+        (self.x + 1 == other.x || self.x == other.x + 1) &&
+            (self.y + 1 == other.y || self.y == other.y + 1)
     }
 }
 

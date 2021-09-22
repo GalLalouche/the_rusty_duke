@@ -1,4 +1,3 @@
-use minimax_alpha_beta::strategy::Strategy;
 use rand::Rng;
 
 use crate::common::coordinates::Coordinates;
@@ -21,7 +20,7 @@ pub(super) struct ArtificialStrategy<'a> {
 
 
 #[derive(Debug, Clone)]
-pub(super) enum AiMove {
+pub enum AiMove {
     // FIXME Pulling is random, but the library doesn't suppose that stuff yet...
     // so just take the random value pulled.
     PullTileFormBagAndPlay(DukeOffset, Owner),
@@ -64,63 +63,5 @@ impl Into<AiMove> for &PossibleMove {
             PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } =>
                 AiMove::ApplyNonCommandTileAction { src: *src, dst: *dst, capturing: capturing.clone() },
         }
-    }
-}
-
-impl<'a> Strategy for ArtificialStrategy<'a> {
-    type Player = Owner;
-    // A hack to make undoing a bit easier
-    type Move = AiMove;
-    type Board = GameState;
-
-    fn evaluate(&self) -> f64 {
-        self.evaluator.evaluate(self.get_board())
-    }
-
-    fn get_winner(&self) -> Self::Player {
-        self.state.winner().expect("I think(?!) this shouldn't be called if there's no winner")
-    }
-
-    fn is_game_tied(&self) -> bool {
-        false
-    }
-
-    fn is_game_complete(&self) -> bool {
-        self.state.is_over()
-    }
-
-    fn get_available_moves(&self) -> Vec<Self::Move> {
-        self.state.all_valid_game_moves_for_current_player().iter().map(|e| e.into()).collect()
-    }
-
-    fn play(&mut self, mv: &Self::Move, maximizer: bool) {
-        match &mv {
-            AiMove::PullTileFormBagAndPlay(o, _) =>
-                self.state.make_a_move(GameMove::PullAndPlay(*o)),
-            AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
-                self.state.make_a_move(GameMove::ApplyNonCommandTileAction {
-                    src: *src,
-                    dst: *dst,
-                }),
-            AiMove::Sentinel => {}
-        }
-    }
-
-    fn clear(&mut self, mv: &Self::Move) {
-        if let Some(um) = mv.to_undo_move() {
-            self.state.undo(um)
-        }
-    }
-
-    fn get_board(&self) -> &Self::Board {
-        &self.state
-    }
-
-    fn is_a_valid_move(&self, _mv: &Self::Move) -> bool {
-        true // get_available moves already filters this
-    }
-
-    fn get_a_sentinel_move(&self) -> Self::Move {
-        AiMove::Sentinel
     }
 }

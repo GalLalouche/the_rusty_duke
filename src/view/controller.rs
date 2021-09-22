@@ -3,7 +3,7 @@ use std::borrow::BorrowMut;
 use rand::thread_rng;
 
 use crate::common::coordinates::Coordinates;
-use crate::game::ai::ai_move::ArtificialPlayer;
+use crate::game::ai::player::ArtificialPlayer;
 use crate::game::tile::Owner;
 use crate::view::controller::Error::*;
 use crate::view::move_view::MoveView;

@@ -2,6 +2,7 @@ use std::mem;
 
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::{Rectangular, Square};
+use crate::time_it_macro;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board<A> {
@@ -25,9 +26,11 @@ impl<A> Board<A> {
         }
     }
     pub fn square(side: u16) -> Board<A> { Board::rect(Square::new(side)) }
+    #[inline(always)]
     fn verify_bounds(&self, c: Coordinates) -> () {
-        assert!(self.is_in_bounds(c), "Coordinate {:?} is out of bounds", c)
+        debug_assert!(self.is_in_bounds(c), "Coordinate {:?} is out of bounds", c)
     }
+    #[inline(always)]
     fn to_vec_index(&self, c: Coordinates) -> usize { (self.width * c.y + c.x) as usize }
     fn place(&mut self, c: Coordinates, a: Option<A>) -> Option<A> {
         self.verify_bounds(c);
@@ -37,6 +40,7 @@ impl<A> Board<A> {
     pub fn put(&mut self, c: Coordinates, a: A) -> Option<A> {
         self.place(c, Some(a))
     }
+    #[inline(always)]
     pub fn get(&self, c: Coordinates) -> Option<&A> {
         self.verify_bounds(c);
         self.board[self.to_vec_index(c)].as_ref()
@@ -63,24 +67,21 @@ impl<A> Board<A> {
         self.get(c).is_none()
     }
 
-    pub fn coordinates(&self) -> Vec<Coordinates> {
-        (0..self.width)
-            .flat_map(move |x| (0..self.height).map(move |y| Coordinates { x, y }))
-            .collect()
+    fn coordinates(&self) -> impl Iterator<Item=Coordinates> + '_ {
+        (0..self.width).flat_map(move |x| (0..self.height).map(move |y| Coordinates { x, y }))
     }
 
     pub fn all_coordinated_values(&self) -> Vec<(Coordinates, Option<&A>)> {
         self.coordinates().into_iter().map(|c| (c, self.get(c))).collect()
     }
-    pub fn active_coordinates(&self) -> Vec<(Coordinates, &A)> {
+    pub fn active_coordinates(&self) -> impl Iterator<Item=(Coordinates, &A)> + '_ {
         self.coordinates()
             .into_iter()
-            .filter_map(|c| self.get(c).map(|e| (c, e)))
-            .collect()
+            .filter_map(move |c| self.get(c).map(|e| (c, e)))
     }
 
     pub fn find<P>(&self, predicate: P) -> Option<Coordinates> where P: Fn(&A) -> bool {
-        self.active_coordinates().iter().find(|(_, a)| predicate(a)).map(|(c, _)| c).cloned()
+        self.active_coordinates().find(|(_, a)| predicate(a)).map(|(c, _)| c)
     }
 }
 

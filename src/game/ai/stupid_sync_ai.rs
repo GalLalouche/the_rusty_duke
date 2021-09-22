@@ -3,7 +3,7 @@ use std::borrow::BorrowMut;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::game::ai::ai_move::ArtificialPlayer;
+use crate::game::ai::player::ArtificialPlayer;
 use crate::game::state::GameState;
 
 pub struct StupidSyncAi {}

@@ -89,7 +89,7 @@ pub(super) fn render_board_tile(
     let inside_border = with_title_maybe.inner(area);
     with_title_maybe.render(area, buf);
     if let Some(o) = o {
-        for (c, t) in o.get_current_side().get_board().all_coordinated_values() {
+        for (c, t) in o.get_current_side().board().all_coordinated_values() {
             let normalized_c: Coordinates = c.into();
             buf.set_string(
                 inside_border.x + normalized_c.x as u16,
