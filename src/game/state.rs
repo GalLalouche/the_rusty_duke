@@ -8,7 +8,7 @@ use crate::game::{board_setup, units};
 use crate::game::bag::{DiscardBag, TileBag};
 use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNewTiles};
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
-use crate::game::dumb_printer::print_state;
+use crate::game::dumb_printer::{double_char_print_state, single_char_print_state};
 use crate::game::tile::{CurrentSide, Owner, Ownership, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
 
@@ -250,7 +250,11 @@ impl GameState {
     }
 
     pub fn as_string(&self) -> String {
-        print_state(&self)
+        single_char_print_state(&self)
+    }
+
+    pub fn as_double_string(&self) -> String {
+        double_char_print_state(&self)
     }
 
     pub fn bag_for_current_player(&self) -> &TileBag {

@@ -2,7 +2,6 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::common::coordinates::Coordinates;
-use crate::time_it_macro;
 use crate::game::tile_side::{TileAction, TileSide};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]

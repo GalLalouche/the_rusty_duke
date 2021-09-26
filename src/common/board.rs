@@ -2,7 +2,6 @@ use std::mem;
 
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::{Rectangular, Square};
-use crate::time_it_macro;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board<A> {

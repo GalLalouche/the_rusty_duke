@@ -1,7 +1,7 @@
-use crate::time_it_macro;
 use crate::game::ai::player::{AiMove, ArtificialStrategy};
 use crate::game::state::{GameMove, GameState};
 use crate::game::tile::Owner;
+use crate::time_it_macro;
 
 impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     type Player = Owner;
@@ -9,13 +9,13 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     type Board = GameState;
 
     fn evaluate(&self) -> f64 {
-        time_it_macro!("evaluate", {
+        time_it_macro!("alpha_beta: evaluate", {
             self.evaluator.evaluate(self.get_board())
         })
     }
 
     fn get_winner(&self) -> Self::Player {
-        time_it_macro!("get_winner", {
+        time_it_macro!("alpha_beta: get_winner", {
             self.state.winner().expect("I think(?!) this shouldn't be called if there's no winner")
         })
     }
@@ -25,19 +25,19 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     }
 
     fn is_game_complete(&self) -> bool {
-        time_it_macro!("is_game_complete", {
+        time_it_macro!("alpha_beta: is_game_complete", {
             self.state.is_over()
         })
     }
 
     fn get_available_moves(&self) -> Vec<Self::Move> {
-        time_it_macro!("get_available_moves", {
+        time_it_macro!("alpha_beta: get_available_moves", {
             self.state.all_valid_game_moves_for_current_player().iter().map(|e| e.into()).collect()
         })
     }
 
     fn play(&mut self, mv: &Self::Move, _maximizer: bool) {
-        time_it_macro!("play", {
+        time_it_macro!("alpha_beta: play", {
             match &mv {
                 AiMove::PullTileFormBagAndPlay(o, _) =>
                     self.state.make_a_move(GameMove::PullAndPlay(*o)),
@@ -52,7 +52,7 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     }
 
     fn clear(&mut self, mv: &Self::Move) {
-        time_it_macro!("clear", {
+        time_it_macro!("alpha_beta: clear", {
             if let Some(um) = mv.to_undo_move() {
                 self.state.undo(um)
             }

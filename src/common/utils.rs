@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 #[macro_export]
 macro_rules! assert_not {
     ($cond: expr) => {assert!(!$cond)};
@@ -46,39 +48,64 @@ impl<A: ToString> MkString for Vec<A> {
     }
 }
 
-// TODO: this should work for all iterables
 pub trait Vectors<A: Clone> {
+    fn intercalate_every_n(&mut self, start: A, a: A, end: A, n: usize) -> ();
     fn intercalate_full(&mut self, start: A, a: A, end: A) -> ();
     fn intercalate(&mut self, a: A) -> ();
 }
 
-fn intercalate_aux<A: Clone>(v: &mut Vec<A>, a: A, starting_index: usize) -> () {
-    if v.len() - starting_index == 0 {
+
+fn intercalate_aux<A: Clone>(v: &mut Vec<A>, a: A, starting_index: usize, n: usize) -> () {
+    // Basic idea of algorithm: push the required number of elements (new_items_count). Then,
+    // starting from the left most new element, bubble it backwards until it has reached its
+    // position. This method is used instead of creating a new vector because we want to avoid
+    // cloning the original elements (since we're modifying anyway, no real reason for it).
+    // This *does* mean, however that the implementation take O(n^2) instead of O(n), which is bad.
+    // TODO create an immutable version of the above, which does this in O(n) but using more clones.
+    let len = v.len();
+    if len - starting_index == 0 {
         return;
     }
-    let new_items_count = v.len() - 1 - starting_index;
+    let new_items_count = (len - starting_index) / n - 1;
+    let updated_len = len + new_items_count;
     (0..new_items_count).for_each(|_| v.push(a.clone()));
-    (2 + starting_index..v.len()).step_by(2).rev().for_each(|i| v.swap(i / 2 + starting_index, i));
+    let mut reverse_bubble = |i: usize| {
+        let distance_from_end = updated_len - i;
+        let target_index = i - distance_from_end * n;
+        for j in (target_index..i).rev() {
+            v.swap(j + 1, j);
+        }
+    };
+    for i in len..updated_len {
+        reverse_bubble(i);
+    }
 }
 
-fn reserved_length_for_intercalated_items<T>(v: &Vec<T>) -> usize {
+fn reserved_length_for_intercalated_items<T>(v: &Vec<T>, n: usize) -> usize {
     if v.is_empty() {
         0
     } else {
-        v.len() - 1
+        v.len() / n - 1
     }
 }
 
+// TODO: this should work for all iterables
 impl<A: Clone> Vectors<A> for Vec<A> {
-    fn intercalate_full(&mut self, start: A, a: A, end: A) -> () {
-        self.reserve(2 + reserved_length_for_intercalated_items(self));
+    fn intercalate_every_n(&mut self, start: A, a: A, end: A, n: usize) -> () {
+        self.reserve(2 + reserved_length_for_intercalated_items(self, n));
         self.insert(0, start);
-        intercalate_aux(self, a, 1);
+        intercalate_aux(self, a, 1, n);
+        self.push(end);
+    }
+    fn intercalate_full(&mut self, start: A, a: A, end: A) -> () {
+        self.reserve(2 + reserved_length_for_intercalated_items(self, 1));
+        self.insert(0, start);
+        intercalate_aux(self, a, 1, 1);
         self.push(end);
     }
     fn intercalate(&mut self, a: A) -> () {
-        self.reserve(reserved_length_for_intercalated_items(self));
-        intercalate_aux(self, a, 0);
+        self.reserve(reserved_length_for_intercalated_items(self, 1));
+        intercalate_aux(self, a, 0, 1);
     }
 }
 
@@ -161,6 +188,44 @@ mod test {
             vec![10, 1, 42, 2, 42, 3, 42, 4, 42, 5, 20],
             v,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intercalate() {
+        let expected = vec![1, 10, 2, 10, 3];
+        let mut actual = vec![1, 2, 3];
+        actual.intercalate(10);
+        assert_eq!(
+            expected,
+            actual,
+        )
+    }
+
+    #[test]
+    fn intercalate_full() {
+        let expected = vec![10, 1, 20, 2, 20, 3, 30];
+        let mut actual = vec![1, 2, 3];
+        actual.intercalate_full(10, 20, 30);
+        assert_eq!(
+            expected,
+            actual,
+        )
+    }
+
+    #[test]
+    fn intercalate_every_n() {
+        let expected = vec![10, 1, 2, 20, 3, 4, 20, 5, 6, 30];
+        let mut actual = vec![1, 2, 3, 4, 5, 6];
+        actual.intercalate_every_n(10, 20, 30, 2);
+        assert_eq!(
+            expected,
+            actual,
+        )
     }
 }
 
