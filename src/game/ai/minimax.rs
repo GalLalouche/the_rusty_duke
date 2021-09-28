@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::convert::TryInto;
 
 use minimax::{Evaluation, Game, Winner};
@@ -31,8 +32,7 @@ impl minimax::Game for GameState {
         time_it_macro!("generate_moves", {
             moves.append(&mut state
                 .all_valid_game_moves_for_current_player()
-                .iter()
-                .map(|e| e.into())
+                .map(|e| e.borrow().into())
                 .collect()
             );
         })

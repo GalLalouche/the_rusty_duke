@@ -28,7 +28,7 @@ impl Heuristic for Heuristics {
             Heuristics::TotalTilesOnBoard =>
                 gs.get_tiles_for_owner(o).len() as f64,
             Heuristics::TotalMovementOptions =>
-                gs.all_valid_game_moves_for(o).len() as f64,
+                gs.all_valid_game_moves_for(o).count() as f64,
         }
     }
 }

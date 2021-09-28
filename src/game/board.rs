@@ -9,7 +9,7 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
-use crate::game::dumb_printer::{double_char_print_board, single_char_print_board, single_char_print_state};
+use crate::game::dumb_printer::{double_char_print_board, single_char_print_board};
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::tile::{Owner, Ownership, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
@@ -312,6 +312,7 @@ impl GameBoard {
         }
     }
 
+    // TODO should also return an iterator
     pub fn get_tiles_for(&self, o: Owner) -> Vec<(Coordinates, &PlacedTile)> {
         self.board
             .active_coordinates()
@@ -405,34 +406,37 @@ impl GameBoard {
         }
     }
 
-    pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
-        let mut result: Vec<PossibleMove> = self
+    pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
+        let result = self
             .get_tiles_for(owner)
-            .iter()
+            .into_iter()
             .map(|e| e.0)
-            .flat_map(|src| self
+            .flat_map(move |src| self
                 .get_legal_moves(src)
                 .iter()
-                .map(|e| e.0)
-                .map(|dst| PossibleMove::ApplyNonCommandTileAction {
+                .map(move |e| e.0)
+                .map(move |dst| PossibleMove::ApplyNonCommandTileAction {
                     src,
                     dst,
                     capturing: self.board.get(dst).cloned(),
                 })
-                .collect::<Vec<PossibleMove>>()
-            )
-            .collect();
+                .collect::<Vec<_>>()
+            );
+
+
         if let WithNewTiles(true) = new_tiles {
-            result.extend(
-                DukeOffset::iter().filter_map(|offset|
+            Box::new(result.chain(
+                DukeOffset::iter().filter_map(move |offset|
                     if self.is_valid_placement(owner, offset) {
                         Some(PossibleMove::PlaceNewTile(offset, owner))
                     } else {
                         None
                     })
-            );
+            )
+            )
+        } else {
+            Box::new(result)
         }
-        result
     }
 
     pub fn as_single_string(&self) -> String { single_char_print_board(&self.board) }

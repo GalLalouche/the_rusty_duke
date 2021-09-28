@@ -227,7 +227,7 @@ impl GameState {
     }
 
     pub fn is_over(&self) -> bool {
-        self.all_valid_game_moves_for_current_player().is_empty()
+        self.all_valid_game_moves_for_current_player().next().is_none()
     }
 
     pub fn winner(&self) -> Option<Owner> {
@@ -240,10 +240,10 @@ impl GameState {
 
     // Except commands for now
     // TODO this should return an iterator
-    pub fn all_valid_game_moves_for_current_player(&self) -> Vec<PossibleMove> {
+    pub fn all_valid_game_moves_for_current_player(&self) -> impl Iterator<Item=PossibleMove> + '_ {
         self.all_valid_game_moves_for(self.current_player_turn)
     }
-    pub fn all_valid_game_moves_for(&self, o: Owner) -> Vec<PossibleMove> {
+    pub fn all_valid_game_moves_for(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
         self.board.all_valid_moves(
             o,
             WithNewTiles(self.bag_for_current_player().non_empty()),

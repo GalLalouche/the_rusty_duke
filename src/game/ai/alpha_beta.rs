@@ -1,4 +1,5 @@
-use std::cmp::Ordering;
+use std::borrow::Borrow;
+
 use crate::game::ai::player::{AiMove, ArtificialStrategy};
 use crate::game::state::{GameMove, GameState};
 use crate::game::tile::Owner;
@@ -40,8 +41,7 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     fn get_available_moves(&self) -> Vec<Self::Move> {
         self.state
             .all_valid_game_moves_for_current_player()
-            .iter()
-            .map(|e| e.into())
+            .map(|e| e.borrow().into())
             .collect()
     }
 
