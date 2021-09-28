@@ -5,7 +5,6 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::game::ai::heuristic_ai::HeuristicAi;
-use crate::game::ai::heuristics::Heuristics;
 use crate::game::ai::player::ArtificialPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
@@ -14,7 +13,7 @@ use crate::game::state::GameState;
 use crate::game::tile::{Owner, TileRef};
 use crate::game::units;
 
-fn go_aux(turn_count: i32, max_depth: usize, print: bool, wait_for_input: bool) {
+fn go_aux(turn_count: u32, max_depth: u32, print: bool, wait_for_input: bool) {
     let mut gs = GameState::new(
         &TileBag::new(vec!(
             TileRef::new(units::footman()),
@@ -27,14 +26,8 @@ fn go_aux(turn_count: i32, max_depth: usize, print: bool, wait_for_input: bool) 
     );
 
     let dumb_ai = StupidSyncAi {};
-    let smart_ai = HeuristicAi::new(
-        Owner::BottomPlayer,
+    let smart_ai = HeuristicAi::create(
         max_depth,
-        vec!(
-            Box::new(Heuristics::DukeMovementOptions),
-            Box::new(Heuristics::TotalTilesOnBoard),
-            Box::new(Heuristics::TotalMovementOptions),
-        ),
     );
 
     let mut std_gen = StdRng::seed_from_u64(0);

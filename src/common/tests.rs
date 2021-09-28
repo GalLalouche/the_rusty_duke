@@ -3,7 +3,10 @@ use std::hash::Hash;
 use std::fmt::Debug;
 
 #[macro_export] macro_rules! assert_empty {
-    ($e: expr) => {assert!($e.is_empty())}
+    ($e: expr) => {
+        let x = $e;
+        assert!(x.is_empty(), "expected empty, got {:?}", &x)
+    }
 }
 #[macro_export] macro_rules! assert_none {
     ($e: expr) => {assert_eq!(None, $e)}

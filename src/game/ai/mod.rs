@@ -7,3 +7,4 @@ pub mod stupid_sync_ai;
 mod alpha_beta;
 mod minimax;
 mod my_negamax;
+mod test;

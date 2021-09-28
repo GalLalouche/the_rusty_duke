@@ -1,7 +1,16 @@
+use std::cmp::Ordering;
 use crate::game::ai::player::{AiMove, ArtificialStrategy};
 use crate::game::state::{GameMove, GameState};
 use crate::game::tile::Owner;
 use crate::time_it_macro;
+
+struct OrdFloat(f64);
+
+impl PartialEq for OrdFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     type Player = Owner;
@@ -9,31 +18,31 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     type Board = GameState;
 
     fn evaluate(&self) -> f64 {
-        time_it_macro!("alpha_beta: evaluate", {
-            self.evaluator.evaluate(self.get_board())
-        })
+        if self.state.is_over() {
+            f64::INFINITY
+        } else {
+            self.evaluator.evaluate(&self.state)
+        }
     }
 
     fn get_winner(&self) -> Self::Player {
-        time_it_macro!("alpha_beta: get_winner", {
-            self.state.winner().expect("I think(?!) this shouldn't be called if there's no winner")
-        })
+        unimplemented!("Because this lib is stupid.")
     }
 
     fn is_game_tied(&self) -> bool {
-        false
+        unimplemented!("Because this lib is stupid.")
     }
 
     fn is_game_complete(&self) -> bool {
-        time_it_macro!("alpha_beta: is_game_complete", {
-            self.state.is_over()
-        })
+        self.state.is_over()
     }
 
     fn get_available_moves(&self) -> Vec<Self::Move> {
-        time_it_macro!("alpha_beta: get_available_moves", {
-            self.state.all_valid_game_moves_for_current_player().iter().map(|e| e.into()).collect()
-        })
+        self.state
+            .all_valid_game_moves_for_current_player()
+            .iter()
+            .map(|e| e.into())
+            .collect()
     }
 
     fn play(&mut self, mv: &Self::Move, _maximizer: bool) {

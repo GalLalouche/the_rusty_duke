@@ -1,6 +1,7 @@
+use std::fmt::Debug;
+
 use crate::game::state::GameState;
 use crate::game::tile::Owner;
-use std::fmt::Debug;
 
 pub trait Heuristic: Debug {
     fn evaluate_for_owner(&self, o: Owner, gs: &GameState) -> f64;
@@ -25,7 +26,7 @@ impl Heuristic for Heuristics {
             Heuristics::DukeMovementOptions =>
                 gs.get_legal_moves(gs.duke_coordinate(o)).len() as f64,
             Heuristics::TotalTilesOnBoard =>
-                gs.get_tiles_for_owner(o).len() as f64 * 100.0,
+                gs.get_tiles_for_owner(o).len() as f64,
             Heuristics::TotalMovementOptions =>
                 gs.all_valid_game_moves_for(o).len() as f64,
         }

@@ -9,6 +9,7 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
+use crate::game::dumb_printer::{double_char_print_board, single_char_print_board, single_char_print_state};
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::tile::{Owner, Ownership, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
@@ -326,111 +327,30 @@ impl GameBoard {
 
     fn get_legal_moves_aux(
         &self, src: Coordinates, cfg: CheckForGuard) -> Box<dyn Iterator<Item=(Coordinates, TileAction)> + '_> {
-        // time_it_macro!("get_legal_moves_aux", {
         let tile = self.get(src).unwrap();
         let owner = tile.owner;
         let tile_side = tile.get_current_side();
         let center_offset = tile_side.center_offset();
-        // TODO unhardcode name
-        // time_it_macro!("glma sanity: actions", {
-        //         tile_side.actions()
-        //             .iter()
-        //             .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-        //             // TODO deduplicate
-        //             .flat_map(|o| self
-        //                 .target_coordinates(src, o.0, o.1, center_offset)
-        //                 .into_iter()
-        //                 .map(move |c| (c, o.1))
-        //             )
-        //             .filter(|o| self.can_apply_action(src, o.0, o.1))
-        //     .collect::<Vec<_>>()
-        // });
-        // time_it_macro!("glma sanity: actions 1", {
-        //         tile_side.actions()
-        //             .iter()
-        //             .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-        //             // TODO deduplicate
-        //     .collect::<Vec<_>>()
-        // });
-        // {
-        //     let x: Vec<_> = tile_side.actions()
-        //         .iter()
-        //         .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-        //         .collect();
-        //     time_it_macro!("glma sanity: actions 2", {
-        //             x
-        //         .iter()
-        //             .flat_map(|o| self
-        //                 .target_coordinates(src, o.0, o.1, center_offset)
-        //                 .into_iter()
-        //                 .map(move |c| (c, o.1))
-        //             )
-        //     .collect::<Vec<_>>()
-        // });
-        // }
-        // {
-        //     let x: Vec<_> = tile_side.actions()
-        //         .iter()
-        //         .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-        //         .flat_map(|o| self
-        //             .target_coordinates(src, o.0, o.1, center_offset)
-        //             .into_iter()
-        //             .map(move |c| (c, o.1))
-        //         )
-        //         .collect();
-        //     time_it_macro!("glma sanity: actions 3", {
-        //             x
-        //         .iter()
-        //             .filter(|o| self.can_apply_action(src, o.0, o.1))
-        //     .collect::<Vec<_>>()
-        // });
-        // }
-        if tile.tile.get_name() == "Duke" {
-            Box::new(
-                tile_side.actions()
-                    .iter()
-                    .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-                    // TODO deduplicate
-                    .flat_map(move |o| self
-                        .target_coordinates(src, o.0, o.1, center_offset)
-                        .into_iter()
-                        .map(move |c| (c, o.1))
-                    )
-                    .filter(move |o| self.can_apply_action(src, o.0, o.1))
-                    .filter(move |o| match cfg {
-                        CheckForGuard::True =>
-                            self.does_not_put_in_guard(
-                                BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
-                                owner,
-                            ),
-                        CheckForGuard::False => true,
-                    })
+        Box::new(
+            tile_side.actions()
+                .iter()
+                .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
+                .flat_map(move |o| self
+                    .target_coordinates(src, o.0, o.1, center_offset)
                     .into_iter()
-            )
-        } else {
-            let puts_in_guard = match cfg {
-                CheckForGuard::True => {
-                    let mut clone = self.clone();
-                    clone.board.remove(src);
-                    clone.is_guard(owner)
-                }
-                CheckForGuard::False => false,
-            };
-            Box::new(
-                tile_side.actions()
-                    .iter()
-                    .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-                    .filter(move |e| if puts_in_guard { e.1 == TileAction::Strike } else { true })
-                    .flat_map(move |o| self
-                        .target_coordinates(src, o.0, o.1, center_offset)
-                        .into_iter()
-                        .map(move |c| (c, o.1))
-                    )
-                    .filter(move |o| self.can_apply_action(src, o.0, o.1))
-                    .into_iter()
-            )
-        }
-        // })
+                    .map(move |c| (c, o.1))
+                )
+                .filter(move |o| self.can_apply_action(src, o.0, o.1))
+                .filter(move |o| match cfg {
+                    CheckForGuard::True =>
+                        self.does_not_put_in_guard(
+                            BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
+                            owner,
+                        ),
+                    CheckForGuard::False => true,
+                })
+                .into_iter()
+        )
     }
 
     pub fn is_guard(&self, owner: Owner) -> bool {
@@ -454,7 +374,7 @@ impl GameBoard {
     }
 
     // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,
-// undoing the action would remove the new tile from the board.
+    // undoing the action would remove the new tile from the board.
     pub fn undo(&mut self, mv: PossibleMove) -> Option<PlacedTile> {
         match mv {
             PossibleMove::PlaceNewTile(offset, owner) => {
@@ -514,6 +434,10 @@ impl GameBoard {
         }
         result
     }
+
+    pub fn as_single_string(&self) -> String { single_char_print_board(&self.board) }
+    pub fn as_double_string(&self) -> String { double_char_print_board(&self.board) }
+    pub fn debug_double(&self) { println!("{}", self.as_double_string()); }
 }
 
 impl Rectangular for GameBoard {
@@ -528,7 +452,7 @@ impl Rectangular for GameBoard {
 
 #[cfg(test)]
 mod test {
-    use crate::{assert_eq_set, assert_not};
+    use crate::{assert_empty, assert_eq_set, assert_not};
 
     use super::*;
 
@@ -647,6 +571,16 @@ mod test {
         );
     }
 
+    #[test]
+    fn is_guard_takes_strikes_into_account() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        let coordinates = Coordinates { x: 1, y: 2 };
+        board.place(coordinates, units::place_tile(Owner::BottomPlayer, units::pikeman));
+        board.flip(coordinates);
+        assert!(board.is_guard(Owner::TopPlayer));
+    }
+
     // make_a_move
     #[test]
     fn make_a_move() {
@@ -670,5 +604,36 @@ mod test {
         board.place(c2, units::place_tile(Owner::BottomPlayer, units::footman));
         board.flip(c2);
         assert_not!(board.is_valid_placement(Owner::TopPlayer, DukeOffset::Right));
+    }
+
+    #[test]
+    fn get_legal_moves_can_block_guard() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        let mut footman = PlacedTile::new(Owner::TopPlayer, units::footman());
+        footman.flip();
+        let footman_coordinates = Coordinates { x: 4, y: 5 };
+        board.place(footman_coordinates, footman);
+        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        op_duke.flip();
+        board.place(Coordinates { x: 5, y: 0 }, op_duke);
+
+        // TopPlayer can still play a footman move
+        assert_eq!(
+            board.get_legal_moves(footman_coordinates),
+            vec![(Coordinates { x: 5, y: 4 }, TileAction::Move)],
+        )
+    }
+
+    #[test]
+    fn get_legal_moves_does_not_allow_placing_duke_in_strike() {
+        let mut board = GameBoard::empty();
+        let duke_coordinates = Coordinates { x: 0, y: 0 };
+        board.place(duke_coordinates, units::place_tile(Owner::TopPlayer, units::duke));
+        let pikeman_coordinates = Coordinates { x: 2, y: 2 };
+        board.place(pikeman_coordinates, units::place_tile(Owner::BottomPlayer, units::pikeman));
+        board.flip(pikeman_coordinates);
+        board.place(Coordinates { x: 1, y: 0 }, units::place_tile(Owner::BottomPlayer, units::footman));
+        assert_empty!(board.get_legal_moves(duke_coordinates));
     }
 }

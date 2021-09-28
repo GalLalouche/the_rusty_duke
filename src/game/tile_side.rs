@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 
 use crate::assert_none;
@@ -20,6 +21,11 @@ pub enum TileAction {
     Strike,
 }
 
+impl Display for TileAction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
 impl TileAction {
     pub fn is_movement(&self) -> bool {
         match self {

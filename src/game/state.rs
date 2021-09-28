@@ -9,7 +9,7 @@ use crate::game::bag::{DiscardBag, TileBag};
 use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNewTiles};
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::dumb_printer::{double_char_print_state, single_char_print_state};
-use crate::game::tile::{CurrentSide, Owner, Ownership, PlacedTile, TileRef};
+use crate::game::tile::{CurrentSide, Owner, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,14 +63,14 @@ impl GameState {
     pub fn player_2_discard(&self) -> &DiscardBag { &self.player_2_discard }
 
     #[cfg(test)]
-    fn from_board(board: GameBoard) -> GameState {
-        GameState::from_board_with_bag(board, TileBag::empty())
+    pub(super) fn from_board(board: GameBoard, owner: Owner) -> GameState {
+        GameState::from_board_with_bag(board, owner, TileBag::empty())
     }
     #[cfg(test)]
-    fn from_board_with_bag(board: GameBoard, bag: TileBag) -> GameState {
+    pub(super) fn from_board_with_bag(board: GameBoard, owner: Owner, bag: TileBag) -> GameState {
         GameState {
             board,
-            current_player_turn: Owner::TopPlayer,
+            current_player_turn: owner,
             pulled_tile: None,
             top_player_bag: bag.clone(),
             player_1_discard: DiscardBag::empty(),
@@ -239,6 +239,7 @@ impl GameState {
     }
 
     // Except commands for now
+    // TODO this should return an iterator
     pub fn all_valid_game_moves_for_current_player(&self) -> Vec<PossibleMove> {
         self.all_valid_game_moves_for(self.current_player_turn)
     }
@@ -249,7 +250,7 @@ impl GameState {
         )
     }
 
-    pub fn as_string(&self) -> String {
+    pub fn as_single_string(&self) -> String {
         single_char_print_state(&self)
     }
 
@@ -309,7 +310,7 @@ impl Rectangular for GameState {
 
 #[cfg(test)]
 mod tests {
-    use crate::{assert_empty, assert_eq_set};
+    use crate::{assert_empty, assert_eq_set, assert_none, assert_some};
     use crate::game::units;
 
     use super::*;
@@ -322,7 +323,7 @@ mod tests {
         board.place(footman_coordinates, PlacedTile::new(Owner::TopPlayer, units::footman()));
         board.place(Coordinates { x: 0, y: 1 }, PlacedTile::new(Owner::BottomPlayer, units::footman()));
 
-        assert_empty!(GameState::from_board(board).get_legal_moves(footman_coordinates));
+        assert_empty!(GameState::from_board(board, Owner::TopPlayer).get_legal_moves(footman_coordinates));
     }
 
     #[test]
@@ -339,7 +340,7 @@ mod tests {
                 (Coordinates { x: 4, y: 0 }, TileAction::Slide),
                 (Coordinates { x: 5, y: 0 }, TileAction::Slide),
             ),
-            GameState::from_board(board).get_legal_moves(duke_coordinates),
+            GameState::from_board(board, Owner::TopPlayer).get_legal_moves(duke_coordinates),
         );
     }
 
@@ -352,7 +353,7 @@ mod tests {
             Coordinates { x: 3, y: 1 },
             units::place_tile(Owner::BottomPlayer, units::footman),
         );
-        let state = GameState::from_board(board);
+        let state = GameState::from_board(board, Owner::TopPlayer);
         assert_not!(state.can_make_a_move(
             &GameMove::ApplyNonCommandTileAction { src: duke_coordinates, dst: Coordinates { x: 3, y: 0 }}));
     }
@@ -370,7 +371,7 @@ mod tests {
 
         assert_eq!(
             CanPullNewTileResult::DukeAlwaysInGuard,
-            GameState::from_board_with_bag(board, bag).can_pull_tile_from_bag(),
+            GameState::from_board_with_bag(board, Owner::TopPlayer, bag).can_pull_tile_from_bag(),
         );
     }
 
@@ -387,7 +388,7 @@ mod tests {
 
         assert_eq!(
             CanPullNewTileResult::DukeAlwaysInGuard,
-            GameState::from_board_with_bag(board, bag).can_pull_tile_from_bag(),
+            GameState::from_board_with_bag(board, Owner::TopPlayer, bag).can_pull_tile_from_bag(),
         );
     }
 
@@ -401,7 +402,7 @@ mod tests {
         opposite_duke.flip();
         board.place(Coordinates { x: 0, y: 5 }, opposite_duke);
 
-        let mut state = GameState::from_board_with_bag(board, bag);
+        let mut state = GameState::from_board_with_bag(board, Owner::TopPlayer, bag);
         assert_eq!( // Place in general is allowed...
                     CanPullNewTileResult::OK,
                     state.can_pull_tile_from_bag(),
@@ -426,7 +427,7 @@ mod tests {
         opposite_duke.flip();
         board.place(Coordinates { x: 0, y: 5 }, opposite_duke);
 
-        let mut state = GameState::from_board_with_bag(board, bag);
+        let mut state = GameState::from_board_with_bag(board, Owner::TopPlayer, bag);
         assert_eq!( // Place in general is allowed...
                     CanPullNewTileResult::OK,
                     state.can_pull_tile_from_bag(),
@@ -453,7 +454,7 @@ mod tests {
         opposite_duke.flip();
         board.place(Coordinates { x: 0, y: 5 }, opposite_duke);
 
-        let state = GameState::from_board_with_bag(board, bag);
+        let state = GameState::from_board_with_bag(board, Owner::TopPlayer, bag);
         assert_eq_set!(
             vec!(
                 PossibleMove::PlaceNewTile(DukeOffset::Right, Owner::TopPlayer),
@@ -541,13 +542,50 @@ mod tests {
         board.place(Coordinates { x: 1, y: 0 }, pikeman);
         let footman_coordinates = Coordinates { x: 2, y: 2 };
         board.place(footman_coordinates, PlacedTile::new(Owner::BottomPlayer, units::footman()));
-        let gs = GameState::from_board(board);
+        let gs = GameState::from_board(board, Owner::TopPlayer);
         test_undo_move(
             gs,
             GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 1, y: 0 },
                 dst: footman_coordinates,
             },
+        );
+    }
+
+    #[test]
+    fn winner_should_return_none_if_no_winner() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::BottomPlayer, units::duke()));
+        assert_none!(GameState::from_board(board, Owner::TopPlayer).winner());
+    }
+
+    #[test]
+    fn winner_should_return_none_if_other_player_still_has_moves() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        let mut footman = PlacedTile::new(Owner::TopPlayer, units::footman());
+        footman.flip();
+        board.place(Coordinates { x: 4, y: 5 }, footman);
+        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        op_duke.flip();
+        board.place(Coordinates { x: 5, y: 0 }, op_duke);
+        // TopPlayer can still play a footman move
+        assert_none!(GameState::from_board(board, Owner::TopPlayer).winner());
+    }
+
+    #[test]
+    fn winner_should_return_some_on_winner() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        let mut footman = PlacedTile::new(Owner::TopPlayer, units::footman());
+        board.place(Coordinates { x: 4, y: 5 }, footman);
+        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        op_duke.flip();
+        board.place(Coordinates { x: 5, y: 0 }, op_duke);
+        assert_some!(
+            Owner::BottomPlayer,
+            GameState::from_board(board, Owner::TopPlayer).winner(),
         );
     }
 }

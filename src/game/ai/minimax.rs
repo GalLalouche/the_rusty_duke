@@ -1,3 +1,5 @@
+use std::convert::TryInto;
+
 use minimax::{Evaluation, Game, Winner};
 
 use crate::game::ai::my_negamax::Negamax;
@@ -9,9 +11,9 @@ impl minimax::Move for AiMove {
     type G = GameState;
 
     fn apply(&self, state: &mut <Self::G as Game>::S) {
-        time_it_macro!("apply", {
-            state.make_a_move(self.to_game_move().unwrap());
-        })
+        time_it_macro!("minimax: apply", {
+            state.make_a_move(self.try_into().unwrap());
+        });
     }
 
     fn undo(&self, state: &mut <Self::G as Game>::S) {

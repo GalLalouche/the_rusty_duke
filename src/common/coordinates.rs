@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use fstrings::*;
 
 use crate::common::utils::Distance;
@@ -6,6 +7,12 @@ use crate::common::utils::Distance;
 pub struct Coordinates {
     pub x: u16,
     pub y: u16,
+}
+
+impl Display for Coordinates {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Coordinates ({}, {})", self.x, self.y)
+    }
 }
 
 impl Coordinates {

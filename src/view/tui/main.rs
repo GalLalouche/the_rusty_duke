@@ -76,7 +76,6 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.clear()?;
     let dumb_ai = StupidSyncAi {};
     let smart_ai = HeuristicAi::new(
-        Owner::BottomPlayer,
         1,
         todo!(),
         // vec!(

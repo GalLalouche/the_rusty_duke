@@ -48,12 +48,11 @@ impl<A: ToString> MkString for Vec<A> {
     }
 }
 
-pub trait Vectors<A: Clone> {
+pub trait CloneVectors<A: Clone> {
     fn intercalate_every_n(&mut self, start: A, a: A, end: A, n: usize) -> ();
     fn intercalate_full(&mut self, start: A, a: A, end: A) -> ();
     fn intercalate(&mut self, a: A) -> ();
 }
-
 
 fn intercalate_aux<A: Clone>(v: &mut Vec<A>, a: A, starting_index: usize, n: usize) -> () {
     // Basic idea of algorithm: push the required number of elements (new_items_count). Then,
@@ -90,7 +89,7 @@ fn reserved_length_for_intercalated_items<T>(v: &Vec<T>, n: usize) -> usize {
 }
 
 // TODO: this should work for all iterables
-impl<A: Clone> Vectors<A> for Vec<A> {
+impl<A: Clone> CloneVectors<A> for Vec<A> {
     fn intercalate_every_n(&mut self, start: A, a: A, end: A, n: usize) -> () {
         self.reserve(2 + reserved_length_for_intercalated_items(self, n));
         self.insert(0, start);

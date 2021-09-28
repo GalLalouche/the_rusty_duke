@@ -1,5 +1,5 @@
 use crate::common::board::Board;
-use crate::common::utils::{MkString, Vectors};
+use crate::common::utils::{MkString, CloneVectors};
 use crate::game::state::GameState;
 use crate::game::tile::{CurrentSide, Owner, PlacedTile};
 

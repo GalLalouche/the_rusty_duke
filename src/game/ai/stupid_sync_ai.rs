@@ -3,16 +3,20 @@ use std::borrow::BorrowMut;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::game::ai::player::ArtificialPlayer;
+use crate::game::ai::player::{AiMove, ArtificialPlayer};
 use crate::game::state::GameState;
+use crate::game::tile::Owner;
 
 pub struct StupidSyncAi {}
 
 impl ArtificialPlayer for StupidSyncAi {
-    fn play_next_move<R>(&self, rng: &mut R, gs: &mut GameState) -> () where R: Rng {
+    fn get_next_move<R>(&self, rng: &mut R, gs: &GameState) -> AiMove where R: Rng {
         let pms = gs.all_valid_game_moves_for_current_player();
         // From https://stackoverflow.com/a/34215930/736508
-        let pm = pms.choose(rng.borrow_mut());
-        gs.make_a_move(pm.expect("Cannot find a simple dumb move... is the game over? :(").into());
+        pms.choose(rng.borrow_mut()).unwrap().into()
+    }
+
+    fn create(max_depth: u32) -> Self {
+        StupidSyncAi {}
     }
 }
