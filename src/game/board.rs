@@ -41,7 +41,7 @@ pub(super) struct GameBoard {
 pub(super) struct WithNewTiles(pub bool);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckForGuard { True, False }
+struct CheckForGuard(pub bool);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
@@ -323,7 +323,7 @@ impl GameBoard {
 
     // Except commands.
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
-        self.get_legal_moves_aux(src, CheckForGuard::True).collect()
+        self.get_legal_moves_aux(src, CheckForGuard(true)).collect()
     }
 
     fn get_legal_moves_aux(
@@ -342,14 +342,13 @@ impl GameBoard {
                     .map(move |c| (c, o.1))
                 )
                 .filter(move |o| self.can_apply_action(src, o.0, o.1))
-                .filter(move |o| match cfg {
-                    CheckForGuard::True =>
-                        self.does_not_put_in_guard(
-                            BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
-                            owner,
-                        ),
-                    CheckForGuard::False => true,
-                })
+                .filter(move |o| !cfg.0 || {
+                    self.does_not_put_in_guard(
+                        BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
+                        owner,
+                    )
+                }
+                )
                 .into_iter()
         )
     }
@@ -362,7 +361,7 @@ impl GameBoard {
                 .filter(|e| e.1.owner.different_team(owner))
                 .any(|other_tile|
                     self
-                        .get_legal_moves_aux(other_tile.0, CheckForGuard::False)
+                        .get_legal_moves_aux(other_tile.0, CheckForGuard(false))
                         .any(|other_move| other_move.0 == c)
                 )
         })
