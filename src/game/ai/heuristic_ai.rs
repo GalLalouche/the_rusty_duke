@@ -4,7 +4,6 @@ use rand::Rng;
 use crate::game::ai::heuristics::{Heuristic, Heuristics};
 use crate::game::ai::player::{AiMove, ArtificialPlayer, ArtificialStrategy, EvaluatingPlayer};
 use crate::game::state::GameState;
-use crate::time_it_macro;
 
 pub struct HeuristicAi {
     max_depth: u32,
@@ -19,10 +18,15 @@ impl HeuristicAi {
 
 impl EvaluatingPlayer for HeuristicAi {
     fn evaluate(&self, gs: &GameState) -> f64 {
-        self.heuristics.iter().map(|h| {
-            h.difference(gs.current_player_turn(), gs)
-        }
-        ).sum()
+        self.heuristics.iter()
+            .map(|h| h.difference(gs.current_player_turn(), gs))
+            .sum()
+    }
+
+    fn cheap_evaluate(&self, gs: &GameState) -> f64 {
+        self.heuristics.iter()
+            .map(|h| h.approx_difference(gs.current_player_turn(), gs))
+            .sum()
     }
 }
 

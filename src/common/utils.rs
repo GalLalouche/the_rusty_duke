@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt::Debug;
 
 #[macro_export]
@@ -105,6 +106,21 @@ impl<A: Clone> CloneVectors<A> for Vec<A> {
     fn intercalate(&mut self, a: A) -> () {
         self.reserve(reserved_length_for_intercalated_items(self, 1));
         intercalate_aux(self, a, 0, 1);
+    }
+}
+
+pub trait Vectors<A> {
+    // Excepts PartialOrd and caches the function result.
+    fn better_sort_by_key<B>(self, f: impl Fn(&A) -> B) -> Vec<A> where B: PartialOrd;
+}
+
+impl<A> Vectors<A> for Vec<A> {
+    fn better_sort_by_key<B>(self, f: impl Fn(&A) -> B) -> Vec<A> where B: PartialOrd {
+        let mut res = self.into_iter()
+            .map(|e| (f(&e), e))
+            .collect::<Vec<_>>();
+        res.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(Ordering::Equal));
+        res.into_iter().map(|e| e.1).collect()
     }
 }
 
@@ -224,6 +240,14 @@ mod tests {
         assert_eq!(
             expected,
             actual,
+        )
+    }
+
+    #[test]
+    fn better_sort_by_key() {
+        assert_eq!(
+            vec!["my", "name", "moo", "isn't"].better_sort_by_key(|e| e.len()),
+            vec!["my", "moo", "name", "isn't"],
         )
     }
 }

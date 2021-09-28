@@ -43,6 +43,12 @@ pub(super) struct WithNewTiles(pub bool);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CheckForGuard(pub bool);
 
+impl CheckForGuard {
+    pub fn if_check(&self, f: impl FnOnce() -> bool) -> bool {
+        !self.0 || f()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
 
@@ -255,17 +261,23 @@ impl GameBoard {
     }
 
     pub fn is_valid_placement(&self, owner: Owner, offset: DukeOffset) -> bool {
+        self.is_valid_placement_aux(owner, offset, CheckForGuard(true))
+    }
+
+    fn is_valid_placement_aux(&self, owner: Owner, offset: DukeOffset, cfg: CheckForGuard) -> bool {
         match self.absolute_duke_offset(offset, self.duke_coordinates(owner)) {
             None => false,
             Some(c) =>
                 if self.board.is_occupied(c) {
                     false
                 } else {
-                    // Cannot use does_not_put_in_guard as that will cause an infinite recursion.
-                    // TODO cache this footman, stop cloning for guard checks.
-                    let mut clone = self.clone();
-                    clone.place(c, PlacedTile::new(owner, units::footman()));
-                    !clone.is_guard(owner)
+                    cfg.if_check(|| {
+                        // Cannot use does_not_put_in_guard as that will cause an infinite recursion.
+                        // TODO cache this footman, stop cloning for guard checks.
+                        let mut clone = self.clone();
+                        clone.place(c, PlacedTile::new(owner, units::footman()));
+                        !clone.is_guard(owner)
+                    })
                 }
         }
     }
@@ -326,6 +338,10 @@ impl GameBoard {
         self.get_legal_moves_aux(src, CheckForGuard(true)).collect()
     }
 
+    pub fn get_legal_moves_ignoring_guard(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
+        self.get_legal_moves_aux(src, CheckForGuard(false)).collect()
+    }
+
     fn get_legal_moves_aux(
         &self, src: Coordinates, cfg: CheckForGuard) -> Box<dyn Iterator<Item=(Coordinates, TileAction)> + '_> {
         let tile = self.get(src).unwrap();
@@ -342,13 +358,12 @@ impl GameBoard {
                     .map(move |c| (c, o.1))
                 )
                 .filter(move |o| self.can_apply_action(src, o.0, o.1))
-                .filter(move |o| !cfg.0 || {
+                .filter(move |o| cfg.if_check(||
                     self.does_not_put_in_guard(
                         BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
                         owner,
                     )
-                }
-                )
+                ))
                 .into_iter()
         )
     }
@@ -406,13 +421,25 @@ impl GameBoard {
     }
 
     pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
+        self.all_valid_moves_aux(owner, new_tiles, CheckForGuard(true))
+    }
+
+    pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
+        self.all_valid_moves_aux(owner, new_tiles, CheckForGuard(false))
+    }
+
+    fn all_valid_moves_aux(
+        &self,
+        owner: Owner,
+        new_tiles: WithNewTiles,
+        cfg: CheckForGuard,
+    ) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
         let result = self
             .get_tiles_for(owner)
             .into_iter()
             .map(|e| e.0)
             .flat_map(move |src| self
-                .get_legal_moves(src)
-                .iter()
+                .get_legal_moves_aux(src, cfg)
                 .map(move |e| e.0)
                 .map(move |dst| PossibleMove::ApplyNonCommandTileAction {
                     src,
@@ -422,11 +449,10 @@ impl GameBoard {
                 .collect::<Vec<_>>()
             );
 
-
         if let WithNewTiles(true) = new_tiles {
             Box::new(result.chain(
                 DukeOffset::iter().filter_map(move |offset|
-                    if self.is_valid_placement(owner, offset) {
+                    if self.is_valid_placement_aux(owner, offset, cfg) {
                         Some(PossibleMove::PlaceNewTile(offset, owner))
                     } else {
                         None
@@ -438,8 +464,11 @@ impl GameBoard {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_single_string(&self) -> String { single_char_print_board(&self.board) }
+    #[allow(dead_code)]
     pub fn as_double_string(&self) -> String { double_char_print_board(&self.board) }
+    #[allow(dead_code)]
     pub fn debug_double(&self) { println!("{}", self.as_double_string()); }
 }
 

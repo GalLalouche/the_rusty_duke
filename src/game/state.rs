@@ -186,9 +186,7 @@ impl GameState {
                 BoardMove::ApplyNonCommandTileAction { src: *src, dst: *dst },
             // GameMove::CommandAnotherTile { commander_src, unit_src, unit_dst } =>
             //     BoardMove::CommandAnotherTile { commander_src, unit_src, unit_dst },
-            GameMove::PullAndPlay(o) => {
-                todo!();
-            }
+            GameMove::PullAndPlay(_) => todo!(),
         }
     }
 
@@ -203,6 +201,11 @@ impl GameState {
     // Except commands
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         self.board.get_legal_moves(src)
+    }
+
+    // Except commands
+    pub fn get_legal_moves_ignoring_guard(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
+        self.board.get_legal_moves_ignoring_guard(src)
     }
 
     pub fn current_duke_coordinate(&self) -> Coordinates {
@@ -245,6 +248,12 @@ impl GameState {
     }
     pub fn all_valid_game_moves_for(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
         self.board.all_valid_moves(
+            o,
+            WithNewTiles(self.bag_for_current_player().non_empty()),
+        )
+    }
+    pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
+        self.board.all_valid_moves_ignoring_guard(
             o,
             WithNewTiles(self.bag_for_current_player().non_empty()),
         )

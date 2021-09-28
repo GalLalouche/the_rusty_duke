@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 
+use crate::common::utils::Vectors;
 use crate::game::ai::player::{AiMove, ArtificialStrategy};
 use crate::game::state::{GameMove, GameState};
 use crate::game::tile::Owner;
@@ -11,6 +12,21 @@ impl PartialEq for OrdFloat {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
+}
+
+fn play_aux(mv: &AiMove, state: &mut GameState) {
+    time_it_macro!("alpha_beta: play", {
+            match &mv {
+                AiMove::PullTileFormBagAndPlay(o, _) =>
+                    state.make_a_move(GameMove::PullAndPlay(*o)),
+                AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
+                    state.make_a_move(GameMove::ApplyNonCommandTileAction {
+                        src: *src,
+                        dst: *dst,
+                    }),
+                AiMove::Sentinel => {}
+            }
+        })
 }
 
 impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
@@ -39,25 +55,25 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     }
 
     fn get_available_moves(&self) -> Vec<Self::Move> {
+        let mut clone = self.state.clone();
+        let mut result = Vec::new();
         self.state
             .all_valid_game_moves_for_current_player()
             .map(|e| e.borrow().into())
-            .collect()
+            .for_each(|mv: AiMove| {
+                play_aux(&mv, &mut clone);
+                let res = self.evaluator.cheap_evaluate(&clone);
+                // TODO reduce duplication with below
+                if let Some(um) = mv.to_undo_move() {
+                    clone.undo(um)
+                }
+                result.push((mv, res))
+            });
+        result.better_sort_by_key(|e| -e.1).into_iter().map(|e| e.0).collect()
     }
 
     fn play(&mut self, mv: &Self::Move, _maximizer: bool) {
-        time_it_macro!("alpha_beta: play", {
-            match &mv {
-                AiMove::PullTileFormBagAndPlay(o, _) =>
-                    self.state.make_a_move(GameMove::PullAndPlay(*o)),
-                AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
-                    self.state.make_a_move(GameMove::ApplyNonCommandTileAction {
-                        src: *src,
-                        dst: *dst,
-                    }),
-                AiMove::Sentinel => {}
-            }
-        })
+        play_aux(mv, &mut self.state);
     }
 
     fn clear(&mut self, mv: &Self::Move) {

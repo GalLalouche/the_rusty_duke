@@ -19,6 +19,9 @@ pub trait ArtificialPlayer {
 
 pub trait EvaluatingPlayer {
     fn evaluate(&self, gs: &GameState) -> f64;
+    // A cheaper version of the above, that might not be entirely accurate.
+    // For example, it might consider illegal moves.
+    fn cheap_evaluate(&self, gs: &GameState) -> f64;
 }
 
 pub(super) struct ArtificialStrategy<'a> {

@@ -3,7 +3,6 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 
 use crate::assert_none;
-use crate::time_it_macro;
 use crate::assert_not;
 use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
