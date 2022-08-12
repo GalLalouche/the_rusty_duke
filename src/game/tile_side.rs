@@ -194,10 +194,11 @@ impl TileSide {
             None
         }
     }
-    /// `panic`s if `dst` is out of bounds, unless a [TileAction::Slide] can be applied.
-    // TODO: Should this really panic?
+    /// Returns ```None``` if `dst` is out of bounds, unless a [TileAction::Slide] can be applied.
     // TODO: Handle jump slides
-    pub fn get_action_from_coordinates(&self, src: Coordinates, dst: Coordinates) -> Option<TileAction> {
+    pub fn get_action_from_coordinates(
+        &self, src: Coordinates, dst: Coordinates
+    ) -> Option<TileAction> {
         if let Some(near_offset) = TileSide::near_diagonal_offset(src, dst) {
             if self.board.get(near_offset.into()).has(&&TileAction::Slide) {
                 return Some(TileAction::Slide);
@@ -207,27 +208,27 @@ impl TileSide {
         let x_offset = {
             let x_diff = i32::from(dst.x) - i32::from(src.x);
             match x_diff {
-                -2 => HorizontalOffset::FarLeft,
-                -1 => HorizontalOffset::Left,
-                0 => HorizontalOffset::Center,
-                1 => HorizontalOffset::Right,
-                2 => HorizontalOffset::FarRight,
-                _ => panic!("Out of bounds"),
+                -2 => Some(HorizontalOffset::FarLeft),
+                -1 => Some(HorizontalOffset::Left),
+                0 => Some(HorizontalOffset::Center),
+                1 => Some(HorizontalOffset::Right),
+                2 => Some(HorizontalOffset::FarRight),
+                _ => None
             }
-        };
+        }?;
 
         let y_offset = {
             let y_base = i32::from(self.center_offset().to_index() - 2);
             let y_diff = y_base + i32::from(dst.y) - i32::from(src.y);
             match y_diff {
-                -2 => VerticalOffset::FarTop,
-                -1 => VerticalOffset::Top,
-                0 => VerticalOffset::Center,
-                1 => VerticalOffset::Bottom,
-                2 => VerticalOffset::FarBottom,
-                _ => panic!("Out of bounds"),
+                -2 => Some(VerticalOffset::FarTop),
+                -1 => Some(VerticalOffset::Top),
+                0 => Some(VerticalOffset::Center),
+                1 => Some(VerticalOffset::Bottom),
+                2 => Some(VerticalOffset::FarBottom),
+                _ => None
             }
-        };
+        }?;
 
         self.board.get(Offsets::new(x_offset, y_offset).into()).cloned()
     }
@@ -248,12 +249,14 @@ mod test {
     use super::*;
 
     #[test]
-    #[should_panic]
-    fn get_action_panics_if_dst_if_out_of_bounds() {
+    fn get_action_returns_none() {
         let tile = TileSide::new(vec![
             (&FourWaySymmetric::NearStraight, TileAction::Move)
         ]);
-        tile.get_action_from_coordinates(Coordinates { x: 0, y: 0 }, Coordinates { x: 0, y: 3 });
+        assert_none!(tile.get_action_from_coordinates(
+            Coordinates { x: 0, y: 0 },
+            Coordinates { x: 0, y: 3 },
+        ));
     }
 
     #[test]

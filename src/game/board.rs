@@ -570,6 +570,14 @@ mod test {
     }
 
     #[test]
+    fn can_move_returns_false_for_movement_out_of_scope() {
+        let mut board = GameBoard::empty();
+        let c = Coordinates { x: 2, y: 2 };
+        board.place(c, units::place_tile(Owner::TopPlayer, units::footman));
+        assert_not!(board.can_move(c, Coordinates { x: 5, y: 5 }));
+    }
+
+    #[test]
     fn can_move_returns_false_for_empty_strike() {
         let mut board = GameBoard::empty();
         let c = Coordinates { x: 0, y: 0 };
