@@ -10,11 +10,7 @@ use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
 use crate::game::tile::PlacedTile;
 use crate::game::tile_side::TileSide;
-use crate::view::tui::tile_renderer::{render_board_tile, RenderBoardTileConfig, RenderBoardTileHighlight, RenderTileConfig};
-
-fn tile_width() -> u16 { TileSide::SIDE + 2 }
-
-fn tile_height() -> u16 { TileSide::SIDE + 2 }
+use crate::view::tui::tile_renderer::{render_board_tile, RenderBoardTileConfig, RenderBoardTileHighlight, RenderTileConfig, TILE_HEIGHT, TILE_WIDTH};
 
 fn board_area(area: Rect, board_height: u16, board_width: u16) -> Rect {
     let width = TileSide::SIDE + 2;
@@ -66,10 +62,10 @@ pub fn render_board(
                 }
             ),
             Rect {
-                x: inner_area.x + tile_width() * c.x as u16,
-                y: inner_area.y + tile_height() * c.y as u16,
-                width: tile_width(),
-                height: tile_height(),
+                x: inner_area.x + TILE_WIDTH * c.x as u16,
+                y: inner_area.y + TILE_HEIGHT * c.y as u16,
+                width: TILE_WIDTH,
+                height: TILE_HEIGHT,
             },
             buf,
         );
@@ -77,10 +73,10 @@ pub fn render_board(
 
     if let Some(tile) = hightlighting.and_then(|c| board.get(c)) {
         let tile_info_block_position = Rect {
-            y: game_board_area.y + game_board_area.height - tile_height() - 1 - 1,
+            y: game_board_area.y + game_board_area.height - TILE_HEIGHT - 1 - 1,
             x: game_board_area.x + game_board_area.width + 1,
-            width: tile_width() * 2 + 2,
-            height: tile_height() + 2,
+            width: TILE_WIDTH * 2 + 2,
+            height: TILE_HEIGHT + 2,
         };
         let b = Block::default()
             .title(tile.tile.get_name().clone() + " info")
@@ -93,8 +89,8 @@ pub fn render_board(
         let current_position = Rect {
             x: inner.x,
             y: inner.y,
-            width: tile_width(),
-            height: tile_height(),
+            width: TILE_WIDTH,
+            height: TILE_HEIGHT,
         };
         render_board_tile(
             Some(tile),
@@ -105,9 +101,9 @@ pub fn render_board(
 
         let flipped_position = Rect {
             y: inner.y,
-            x: inner.x + tile_width(),
-            width: tile_width(),
-            height: tile_height(),
+            x: inner.x + TILE_WIDTH,
+            width: TILE_WIDTH,
+            height: TILE_HEIGHT,
         };
         // TODO Yuck!
         let mut flipped_tile = tile.clone();

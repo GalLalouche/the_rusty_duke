@@ -1,14 +1,16 @@
-use crossterm::style::Stylize;
 use tui::buffer::Buffer;
 use tui::layout::Rect;
-use tui::style::{Color, Modifier, Style};
+use tui::style::{Color, Style};
 use tui::widgets::{Block, Borders, BorderType, Widget};
 
 use crate::common::coordinates::Coordinates;
 use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::tile::{CurrentSide, Owner, PlacedTile};
 use crate::game::tile::Owner::TopPlayer;
-use crate::game::tile_side::TileAction;
+use crate::game::tile_side::{TileAction, TileSide};
+
+pub const TILE_WIDTH: u16 = TileSide::SIDE + 2;
+pub const TILE_HEIGHT: u16 = TileSide::SIDE + 2;
 
 fn to_char(c: Coordinates, t: Option<TileAction>, side: CurrentSide) -> char {
     match t {
