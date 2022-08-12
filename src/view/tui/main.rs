@@ -112,6 +112,29 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        let winner = controller.borrow().is_over();
+        if let Some(w) = winner {
+            controller.borrow_mut().add_info(format!("{} Won! Game is over!\nPress any key to quit", w).as_str());
+            // TODO reduce duplication with above
+            terminal.draw(|rect| {
+                let size = rect.size();
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(2)
+                    .constraints(
+                        [
+                            Constraint::Length(100),
+                            Constraint::Length(3),
+                            Constraint::Min(2),
+                            Constraint::Length(3),
+                        ]
+                            .as_ref(),
+                    )
+                    .split(size);
+
+                rect.render_widget(controller.borrow(), chunks[0]);
+            })?;
+        }
         match rx.recv()? {
             Event::Input(event) => match event.code {
                 KeyCode::Char('q') => break,

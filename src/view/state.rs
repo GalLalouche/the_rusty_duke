@@ -2,8 +2,9 @@ use std::borrow::Borrow;
 use std::mem;
 
 use crate::common::coordinates::Coordinates;
-use crate::game::state::{CanPullNewTileResult, GameState};
+use crate::game::state::GameState;
 use crate::game::state::GameMove;
+use crate::game::tile::Owner;
 use crate::view::move_view::MoveView;
 
 #[derive(Debug, Clone)]
@@ -207,5 +208,9 @@ impl ViewState {
                 self.game_state.make_a_move(GameMove::PlaceNewTile(p.into())),
             e => panic!("ASSERTION_ERROR: Invalid view position for placing: {:?}", e),
         };
+    }
+
+    pub fn winner(&self) -> Option<Owner> {
+        self.game_state.winner()
     }
 }

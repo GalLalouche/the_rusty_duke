@@ -163,6 +163,10 @@ impl Controller {
         let mut rng = thread_rng();
         ai.play_next_move(rng.borrow_mut(), self.state.get_game_state_mut());
     }
+
+    pub fn is_over(&self) -> Option<Owner> {
+        self.state.winner()
+    }
 }
 
 #[cfg(test)]
