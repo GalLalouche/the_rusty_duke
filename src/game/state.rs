@@ -274,6 +274,13 @@ impl GameState {
         }
     }
 
+    pub fn bag_for_other_player(&self) -> &TileBag {
+        match self.current_player_turn {
+            Owner::TopPlayer => &self.bottom_player_bag,
+            Owner::BottomPlayer => &self.top_player_bag,
+        }
+    }
+
     pub fn to_undo(&self, mv: &GameMove) -> PossibleMove {
         match mv {
             GameMove::PlaceNewTile(o) => PossibleMove::PlaceNewTile(*o, self.current_player_turn),
