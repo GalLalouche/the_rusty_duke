@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -75,6 +76,12 @@ pub type TileRef = Rc<Tile>;
 pub enum Owner {
     TopPlayer,
     BottomPlayer,
+}
+
+impl Display for Owner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl Owner {
