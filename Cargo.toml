@@ -11,12 +11,15 @@ strum = "*"
 strum_macros = "*"
 
 log = "*"
+backtrace = "*"
 
 minimax-alpha-beta = "*"
 minimax = "*"
 
 crossterm = "*"
 tui = { version = "*", default-features = false, features = ['crossterm'] }
+
+
 
 [profile.release]
 debug = true
