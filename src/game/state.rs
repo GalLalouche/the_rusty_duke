@@ -144,7 +144,6 @@ impl GameState {
             GameMove::ApplyNonCommandTileAction { src, dst } =>
                 self.board.can_move(*src, *dst) &&
                     self.board.does_not_put_in_guard(self.to_board_move(&game_move), self.current_player_turn),
-            // GameMove::CommandAnotherTile { .. } => unimplemented!(),
         }
     }
     pub fn make_a_move(&mut self, game_move: GameMove) -> () {

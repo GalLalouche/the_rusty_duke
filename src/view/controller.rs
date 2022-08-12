@@ -4,6 +4,7 @@ use rand::thread_rng;
 
 use crate::common::coordinates::Coordinates;
 use crate::game::ai::player::ArtificialPlayer;
+use crate::game::board::{DukeOffset, PossibleMove};
 use crate::game::tile::Owner;
 use crate::view::controller::Error::*;
 use crate::view::move_view::MoveView;
@@ -38,6 +39,9 @@ pub enum ControllerCommand {
     // When zoomed-in, e.g., viewing the bag contents, zooms out, i.e., gets back to the main board.
     // When trying to move a unit, escape will cancel the selection.
     Escape,
+
+    // When trying to move a unit, escape will cancel the selection.
+    Undo,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -56,6 +60,8 @@ pub enum Error {
     CannotMoveInGuard,
     DoesNotMoveOutOfGuard,
 
+    EmptyUndoStack,
+
     // Catch-all error for when a specific command is not possible due to the current state.
     InvalidCommand,
 }
@@ -73,6 +79,7 @@ impl Error {
             CannotEscapeFromPlacing => "Cannot escape from placing, cheater!".to_owned(),
             CannotMoveInGuard => "Cannot move to a position that would put your duke in guard".to_owned(),
             DoesNotMoveOutOfGuard => "Your duke is still under guard".to_owned(),
+            EmptyUndoStack => "Cannot undo since stack is empty".to_owned(),
             InvalidCommand => "Invalid command".to_owned(),
         }
     }
@@ -80,6 +87,7 @@ impl Error {
 
 pub struct Controller {
     state: ViewState,
+    moves: Vec<PossibleMove>,
 }
 
 impl Controller {
@@ -89,9 +97,7 @@ impl Controller {
     pub fn add_info(&mut self, str: &str) -> () {
         self.state.info(str)
     }
-    pub fn new(state: ViewState) -> Controller {
-        Controller { state }
-    }
+    pub fn new(state: ViewState) -> Controller { Controller { state, moves: Vec::new() } }
     pub(super) fn get_view_state(&self) -> &ViewState {
         &self.state
     }
@@ -123,6 +129,14 @@ impl Controller {
                     Some(InvalidCommand)
                 }
             }
+            ControllerCommand::Undo =>
+                match self.moves.pop() {
+                    None => Some(EmptyUndoStack),
+                    Some(mv) => {
+                        self.state.undo(mv);
+                        None
+                    }
+                }
         }
     }
 
@@ -159,13 +173,16 @@ impl Controller {
                     Some(CannotSelect(c))
                 }
             ViewStateMode::MovingSelection { src, target } =>
-                if self.state.move_selected() {
-                    None
-                } else {
-                    Some(CannotMove(src, target))
+                match self.state.move_selected() {
+                    Some(pm) => {
+                        self.moves.push(pm);
+                        None
+                    }
+                    None => Some(CannotMove(src, target))
                 }
-            ViewStateMode::Placing(_) => {
-                self.state.place();
+            ViewStateMode::Placing { .. } => {
+                let possible_move = self.state.place();
+                self.moves.push(possible_move);
                 None
             }
             ViewStateMode::ShowCurrentBag | ViewStateMode::ShowOtherBag => Some(InvalidCommand)
@@ -174,7 +191,8 @@ impl Controller {
 
     pub fn ai_move<AI>(&mut self, ai: &AI) where AI: ArtificialPlayer {
         let mut rng = thread_rng();
-        ai.play_next_move(rng.borrow_mut(), self.state.get_game_state_mut());
+        let pm = ai.play_next_move(rng.borrow_mut(), self.state.get_game_state_mut());
+        self.moves.push(pm)
     }
 
     pub fn is_over(&self) -> Option<Owner> {

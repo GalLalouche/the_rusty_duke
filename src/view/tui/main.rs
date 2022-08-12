@@ -148,9 +148,7 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Char('p') => wrap!(controller, ControllerCommand::PullFromBag),
                 KeyCode::Char('b') => wrap!(controller, ControllerCommand::CurrentOwnerBag),
                 KeyCode::Char('B') => wrap!(controller, ControllerCommand::OtherOwnerBag),
-                KeyCode::Char('u') => {
-                    unimplemented!("Undo is not supported");
-                }
+                KeyCode::Char('u') => wrap!(controller, ControllerCommand::Undo),
                 KeyCode::Enter => wrap!(controller, ControllerCommand::Select),
                 KeyCode::Esc => wrap!(controller, ControllerCommand::Escape),
                 KeyCode::Char('n') => {

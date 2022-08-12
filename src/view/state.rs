@@ -3,6 +3,7 @@ use std::mem;
 
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
+use crate::game::board::PossibleMove;
 use crate::game::state::GameMove;
 use crate::game::state::GameState;
 use crate::game::tile::Owner;
@@ -163,16 +164,19 @@ impl ViewState {
         }
     }
 
-    pub fn move_selected(&mut self) -> bool {
+    pub fn move_selected(&mut self) -> Option<PossibleMove> {
         match self.current_state() {
             ViewStateMode::MovingSelection { src, target } => {
                 let game_move = GameMove::ApplyNonCommandTileAction { src: target, dst: src };
+                let pm = self.game_state.to_undo(&game_move);
                 let result = self.game_state.can_make_a_move(&game_move);
                 if result {
                     self.game_state.make_a_move(game_move);
                     self.unselect();
+                    Some(pm)
+                } else {
+                    None
                 }
-                result
             }
             e => panic!("Invalid state for moving selected: {:?}", e),
         }
@@ -228,12 +232,15 @@ impl ViewState {
 
     // place always succeeds (short of panic), since we don't allow the view state to enter an
     // invalid placement state to begin with.
-    pub fn place(&mut self) -> () {
+    pub fn place(&mut self) -> PossibleMove {
         assert!(self.is_placing());
-        let p = match self.current_state() {
+        let (p, mv) = match self.current_state() {
             ViewStateMode::Placing(p) => {
                 let duke_coordinate = self.game_state.current_duke_coordinate();
-                self.relative_to_absolute_panicking(duke_coordinate, p)
+                (
+                    self.relative_to_absolute_panicking(duke_coordinate, p),
+                    PossibleMove::PlaceNewTile(p.into(), self.game_state.current_player_turn()),
+                )
             }
             e => panic!("Invalid view position for placing: {:?}", e),
         };
@@ -246,6 +253,11 @@ impl ViewState {
                 self.game_state.make_a_move(GameMove::PlaceNewTile(p.into())),
             e => panic!("ASSERTION_ERROR: Invalid view position for placing: {:?}", e),
         };
+        mv
+    }
+
+    pub fn undo(&mut self, mv: PossibleMove) {
+        self.game_state.undo(mv)
     }
 
     pub fn winner(&self) -> Option<Owner> {

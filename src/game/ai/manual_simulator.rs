@@ -41,7 +41,7 @@ fn go_aux(turn_count: u32, max_depth: u32, print: bool, wait_for_input: bool) {
         match gs.current_player_turn() {
             Owner::TopPlayer => dumb_ai.play_next_move(&mut std_gen, &mut gs),
             Owner::BottomPlayer => smart_ai.play_next_move(&mut std_gen, &mut gs)
-        }
+        };
     }
 }
 
