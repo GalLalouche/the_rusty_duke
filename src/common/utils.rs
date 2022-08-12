@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::cmp::{min, Ordering};
 use std::fmt::Debug;
 
 #[macro_export]
@@ -112,6 +112,7 @@ impl<A: Clone> CloneVectors<A> for Vec<A> {
 pub trait Vectors<A> {
     // Excepts PartialOrd and caches the function result.
     fn better_sort_by_key<B>(self, f: impl Fn(&A) -> B) -> Vec<A> where B: PartialOrd;
+    fn grouped(&self, n: usize) -> Vec<&[A]>;
 }
 
 impl<A> Vectors<A> for Vec<A> {
@@ -121,6 +122,14 @@ impl<A> Vectors<A> for Vec<A> {
             .collect::<Vec<_>>();
         res.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(Ordering::Equal));
         res.into_iter().map(|e| e.1).collect()
+    }
+    fn grouped(&self, n: usize) -> Vec<&[A]> {
+        let groups = self.len() / n + if self.len() % n > 0 { 1 } else { 0 };
+        let mut result = Vec::with_capacity(groups);
+        for i in 0..groups {
+            result.push(&self[i * n..min(self.len(), i * n + n)])
+        }
+        result
     }
 }
 
@@ -208,6 +217,7 @@ mod test {
 
 #[cfg(test)]
 mod tests {
+    use crate::assert_empty;
     use super::*;
 
     #[test]
@@ -248,6 +258,36 @@ mod tests {
         assert_eq!(
             vec!["my", "name", "moo", "isn't"].better_sort_by_key(|e| e.len()),
             vec!["my", "moo", "name", "isn't"],
+        )
+    }
+
+    #[test]
+    fn grouped_on_empty() {
+        let x = Vec::<usize>::new();
+        assert_empty!(x.grouped(42));
+    }
+
+    #[test]
+    fn grouped_on_exact_1() {
+        assert_eq!(
+            vec![1, 2, 3].grouped(3),
+            vec![vec![1, 2, 3]],
+        )
+    }
+
+    #[test]
+    fn grouped_on_exact_2() {
+        assert_eq!(
+            vec![1, 2, 3, 4, 5, 6].grouped(3),
+            vec![vec![1, 2, 3], vec![4, 5, 6]],
+        )
+    }
+
+    #[test]
+    fn grouped_with_extra_element() {
+        assert_eq!(
+            vec![1, 2, 3, 4, 5, 6, 7].grouped(2),
+            vec![vec![1, 2], vec![3, 4], vec![5, 6], vec![7]],
         )
     }
 }
