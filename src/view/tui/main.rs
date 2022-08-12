@@ -2,11 +2,15 @@ extern crate fstrings;
 
 use std::{io, thread};
 use std::borrow::{Borrow, BorrowMut};
+use std::io::Stdout;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use tui::Frame;
+use tui::layout::Rect;
 
 use crate::game::ai::heuristic_ai::HeuristicAi;
 use crate::game::ai::heuristics;
+use crate::game::ai::player::ArtificialPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
@@ -39,6 +43,13 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
             TileRef::new(units::footman()),
             TileRef::new(units::pikeman()),
             TileRef::new(units::pikeman()),
+            TileRef::new(units::knight()),
+            TileRef::new(units::champion()),
+            TileRef::new(units::bowman()),
+            TileRef::new(units::priest()),
+            TileRef::new(units::wizard()),
+            // TileRef::new(units::marshall()),
+            // TileRef::new(units::general()),
         )),
         (DukeInitialLocation::Left, FootmenSetup::Left),
         (DukeInitialLocation::Right, FootmenSetup::Right),
@@ -75,17 +86,9 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let dumb_ai = StupidSyncAi {};
-    let smart_ai = HeuristicAi::new(
-        1,
-        todo!(),
-        // vec!(
-        //     Heuristics::duke_movement_options(),
-        //     heuristics::total_tiles_on_board(),
-        // ),
-    );
+    let smart_ai = HeuristicAi::create(2);
     loop {
         // TODO some kind of logging mechanism
-        // TODO some kind of info/warning mechanism (e.g., cannot unplace tile)
         terminal.draw(|rect| {
             let size = rect.size();
             let chunks = Layout::default()
@@ -143,6 +146,8 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Char('k') => wrap!(controller, ControllerCommand::Up),
                 KeyCode::Char('l') => wrap!(controller, ControllerCommand::Right),
                 KeyCode::Char('p') => wrap!(controller, ControllerCommand::PullFromBag),
+                KeyCode::Char('b') => wrap!(controller, ControllerCommand::CurrentOwnerBag),
+                KeyCode::Char('B') => wrap!(controller, ControllerCommand::OtherOwnerBag),
                 KeyCode::Char('u') => {
                     unimplemented!("Undo is not supported");
                 }

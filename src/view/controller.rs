@@ -30,6 +30,12 @@ pub enum ControllerCommand {
     // Will pull random tile from when possible.
     PullFromBag,
 
+    // Displays the current owner's remaining units.
+    CurrentOwnerBag,
+    // Displays the other owner's remaining units.
+    OtherOwnerBag,
+
+    // When zoomed-in, e.g., viewing the bag contents, zooms out, i.e., gets back to the main board.
     // When trying to move a unit, escape will cancel the selection.
     Escape,
 }
@@ -104,8 +110,13 @@ impl Controller {
                     Some(InvalidCommand)
                 }
 
+            ControllerCommand::CurrentOwnerBag => self.state.show_current_owner_bag(),
+            ControllerCommand::OtherOwnerBag => self.state.show_other_owner_bag(),
             ControllerCommand::Escape => {
-                if self.state.can_unselect() {
+                if self.state.is_zoomed_in() {
+                    self.state.zoom_out();
+                    None
+                } else if self.state.can_unselect() {
                     self.state.unselect();
                     None
                 } else {
@@ -121,20 +132,21 @@ impl Controller {
                 if self.state.move_view_position(mv) {
                     None
                 } else {
-                    Some(Error::MoveOutOfBoard(mv))
+                    Some(MoveOutOfBoard(mv))
                 },
-            ViewStateMode::MovingSelection(_, _) =>
+            ViewStateMode::MovingSelection { .. } =>
                 if self.state.move_view_position(mv) {
                     None
                 } else {
-                    Some(Error::MoveOutOfBoard(mv))
+                    Some(MoveOutOfBoard(mv))
                 },
             ViewStateMode::Placing(_) =>
                 if self.state.move_placement(mv) {
                     None
                 } else {
-                    Some(Error::CannotPlace(mv))
+                    Some(CannotPlace(mv))
                 },
+            ViewStateMode::ShowCurrentBag | ViewStateMode::ShowOtherBag => Some(InvalidCommand)
         }
     }
 
@@ -144,18 +156,19 @@ impl Controller {
                 if self.state.select_for_movement() {
                     None
                 } else {
-                    Some(Error::CannotSelect(c))
+                    Some(CannotSelect(c))
                 }
-            ViewStateMode::MovingSelection(c1, c2) =>
+            ViewStateMode::MovingSelection { src, target } =>
                 if self.state.move_selected() {
                     None
                 } else {
-                    Some(Error::CannotMove(c1, c2))
+                    Some(CannotMove(src, target))
                 }
             ViewStateMode::Placing(_) => {
                 self.state.place();
                 None
             }
+            ViewStateMode::ShowCurrentBag | ViewStateMode::ShowOtherBag => Some(InvalidCommand)
         }
     }
 

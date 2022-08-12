@@ -25,6 +25,7 @@ impl Display for TileAction {
         write!(f, "{:?}", self)
     }
 }
+
 impl TileAction {
     pub fn is_movement(&self) -> bool {
         match self {
