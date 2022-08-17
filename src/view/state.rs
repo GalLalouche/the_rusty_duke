@@ -4,9 +4,8 @@ use std::mem;
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
 use crate::game::board::PossibleMove;
-use crate::game::state::GameMove;
+use crate::game::state::{GameMove, GameResult};
 use crate::game::state::GameState;
-use crate::game::tile::Owner;
 use crate::view::controller::Error;
 use crate::view::move_view::MoveView;
 
@@ -260,7 +259,7 @@ impl ViewState {
         self.game_state.undo(mv)
     }
 
-    pub fn winner(&self) -> Option<Owner> {
-        self.game_state.winner()
+    pub fn game_result(&self) -> GameResult {
+        self.game_state.game_result()
     }
 }

@@ -5,6 +5,7 @@ use rand::thread_rng;
 use crate::common::coordinates::Coordinates;
 use crate::game::ai::player::ArtificialPlayer;
 use crate::game::board::{DukeOffset, PossibleMove};
+use crate::game::state::GameResult;
 use crate::game::tile::Owner;
 use crate::view::controller::Error::*;
 use crate::view::move_view::MoveView;
@@ -195,8 +196,8 @@ impl Controller {
         self.moves.push(pm)
     }
 
-    pub fn is_over(&self) -> Option<Owner> {
-        self.state.winner()
+    pub fn game_result(&self) -> GameResult {
+        self.state.game_result()
     }
 }
 

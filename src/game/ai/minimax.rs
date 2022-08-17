@@ -6,6 +6,7 @@ use minimax::{Evaluation, Game, Winner};
 use crate::game::ai::my_negamax::Negamax;
 use crate::game::ai::player::{AiMove, ArtificialStrategy};
 use crate::game::state::GameState;
+use crate::game::state::GameResult;
 use crate::time_it_macro;
 
 impl minimax::Move for AiMove {
@@ -40,12 +41,15 @@ impl minimax::Game for GameState {
 
     fn get_winner(state: &Self::S) -> Option<Winner> {
         time_it_macro!("get_winner", {
-            state.winner().map(|o|
-                if o == state.current_player_turn() {
-                    Winner::PlayerToMove
-                } else {
-                    Winner::PlayerJustMoved
-                })
+            match state.game_result() {
+                GameResult::Won(o) => Some(
+                    if o == state.current_player_turn() {
+                        Winner::PlayerToMove
+                    } else {
+                        Winner::PlayerJustMoved
+                    }),
+                _ => None
+            }
         })
     }
 }

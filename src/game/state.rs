@@ -12,6 +12,9 @@ use crate::game::dumb_printer::{double_char_print_state, single_char_print_state
 use crate::game::tile::{CurrentSide, Owner, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
 
+// Technically not part of the base game rules, but it makes it easier for the AI
+pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 50;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
     // Shouldn't really be pub, breaks Demeter. At the very not be mutable...
@@ -19,13 +22,15 @@ pub struct GameState {
     pulled_tile: Option<TileRef>,
     current_player_turn: Owner,
     top_player_bag: TileBag,
-    player_1_discard: DiscardBag,
+    top_player_discard: DiscardBag,
     bottom_player_bag: TileBag,
-    player_2_discard: DiscardBag,
+    bottom_player_discard: DiscardBag,
+    moves_without_capture_or_placement_stack: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum GameMove {
+    // TODO document how you can place without pulling...
     PlaceNewTile(DukeOffset),
     PullAndPlay(DukeOffset),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates },
@@ -52,30 +57,39 @@ pub enum CanPullNewTileResult {
     OK,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum GameResult {
+    Tie,
+    Ongoing,
+    Won(Owner),
+}
+
 impl GameState {
     pub fn board(&self) -> &Board<PlacedTile> { self.board.get_board() }
 
     pub fn pulled_tile(&self) -> &Option<TileRef> { &self.pulled_tile }
     pub fn current_player_turn(&self) -> Owner { self.current_player_turn }
     pub fn top_player_bag(&self) -> &TileBag { &self.top_player_bag }
-    pub fn player_1_discard(&self) -> &DiscardBag { &self.player_1_discard }
+    pub fn player_1_discard(&self) -> &DiscardBag { &self.top_player_discard }
     pub fn bottom_player_bag(&self) -> &TileBag { &self.bottom_player_bag }
-    pub fn player_2_discard(&self) -> &DiscardBag { &self.player_2_discard }
+    pub fn player_2_discard(&self) -> &DiscardBag { &self.bottom_player_discard }
 
     #[cfg(test)]
-    pub(super) fn from_board(board: GameBoard, owner: Owner) -> GameState {
-        GameState::from_board_with_bag(board, owner, TileBag::empty())
+    pub(super) fn from_board(board: GameBoard, current_player: Owner) -> GameState {
+        GameState::from_board_with_bag(board, current_player, TileBag::empty())
     }
     #[cfg(test)]
-    pub(super) fn from_board_with_bag(board: GameBoard, owner: Owner, bag: TileBag) -> GameState {
+    pub(super) fn from_board_with_bag(
+        board: GameBoard, current_player_turn: Owner, bag: TileBag) -> GameState {
         GameState {
             board,
-            current_player_turn: owner,
+            current_player_turn,
             pulled_tile: None,
             top_player_bag: bag.clone(),
-            player_1_discard: DiscardBag::empty(),
+            top_player_discard: DiscardBag::empty(),
             bottom_player_bag: bag,
-            player_2_discard: DiscardBag::empty(),
+            bottom_player_discard: DiscardBag::empty(),
+            moves_without_capture_or_placement_stack: vec![0],
         }
     }
     pub fn new(
@@ -90,9 +104,10 @@ impl GameState {
             current_player_turn: Owner::TopPlayer,
             pulled_tile: None,
             top_player_bag: base_bag.clone(),
-            player_1_discard: DiscardBag::empty(),
+            top_player_discard: DiscardBag::empty(),
             bottom_player_bag: base_bag.clone(),
-            player_2_discard: DiscardBag::empty(),
+            bottom_player_discard: DiscardBag::empty(),
+            moves_without_capture_or_placement_stack: vec![0],
         }
     }
 
@@ -147,6 +162,16 @@ impl GameState {
         }
     }
     pub fn make_a_move(&mut self, game_move: GameMove) -> () {
+        match game_move {
+            GameMove::PlaceNewTile(_) | GameMove::PullAndPlay(_) =>
+                self.moves_without_capture_or_placement_stack.push(0),
+            GameMove::ApplyNonCommandTileAction { src, dst } =>
+                if self.board.can_move(src, dst) && self.board.get(dst).is_some() {
+                    self.moves_without_capture_or_placement_stack.push(0)
+                } else {
+                    *self.moves_without_capture_or_placement_stack.last_mut().unwrap() += 1
+                },
+        };
         if let GameMove::PlaceNewTile(_) = game_move {
             assert!(self.is_waiting_for_tile_placement(), "Invalid state for placing a new tile");
         } else {
@@ -228,29 +253,37 @@ impl GameState {
             )
     }
 
+    pub fn is_tie(&self) -> bool {
+        self.moves_without_capture_or_placement_stack.last().unwrap() >=
+            &MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT
+    }
     pub fn is_over(&self) -> bool {
-        self.all_valid_game_moves_for_current_player().next().is_none()
+        self.all_valid_game_moves_for_current_player().next().is_none() || self.is_tie()
     }
 
-    pub fn winner(&self) -> Option<Owner> {
-        if self.is_over() {
-            Some(self.current_player_turn.next_player())
+    pub fn game_result(&self) -> GameResult {
+        if self.is_tie() {
+            GameResult::Tie
+        } else if self.is_over() {
+            GameResult::Won(self.current_player_turn.next_player())
         } else {
-            None
+            GameResult::Ongoing
         }
     }
 
     // Except commands for now
-    // TODO this should return an iterator
+// TODO this should return an iterator
     pub fn all_valid_game_moves_for_current_player(&self) -> impl Iterator<Item=PossibleMove> + '_ {
         self.all_valid_game_moves_for(self.current_player_turn)
     }
+
     pub fn all_valid_game_moves_for(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
         self.board.all_valid_moves(
             o,
             WithNewTiles(self.bag_for_current_player().non_empty()),
         )
     }
+
     pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
         self.board.all_valid_moves_ignoring_guard(
             o,
@@ -264,6 +297,13 @@ impl GameState {
 
     pub fn as_double_string(&self) -> String {
         double_char_print_state(&self)
+    }
+
+    pub fn discard_bag_for(&self, o: Owner) -> &DiscardBag {
+        match o {
+            Owner::TopPlayer => &self.top_player_discard,
+            Owner::BottomPlayer => &self.bottom_player_discard,
+        }
     }
 
     pub fn bag_for_current_player(&self) -> &TileBag {
@@ -295,9 +335,27 @@ impl GameState {
             }
         }
     }
+
+    fn pop_moves_stack(&mut self) -> () {
+        assert!(self.moves_without_capture_or_placement_stack.len() >= 2);
+        self.moves_without_capture_or_placement_stack.pop();
+    }
     pub fn undo(&mut self, mv: PossibleMove) -> () {
         self.current_player_turn = self.current_player_turn.next_player();
+        match &mv {
+            PossibleMove::PlaceNewTile(_, _) => self.pop_moves_stack(),
+            PossibleMove::ApplyNonCommandTileAction { capturing, .. } => {
+                if capturing.is_some() {
+                    self.pop_moves_stack()
+                } else {
+                    let moves = self.moves_without_capture_or_placement_stack.last_mut().unwrap();
+                    assert!(*moves >= 1);
+                    *moves -= 1;
+                }
+            }
+        }
         if let Some(t) = self.board.undo(mv) {
+            self.pop_moves_stack(); // TODO document why the hell this needs to happen twice o_O.
             let bag = match self.current_player_turn {
                 Owner::TopPlayer => &mut self.top_player_bag,
                 Owner::BottomPlayer => &mut self.bottom_player_bag,
@@ -325,7 +383,7 @@ impl Rectangular for GameState {
 
 #[cfg(test)]
 mod tests {
-    use crate::{assert_empty, assert_eq_set, assert_none, assert_some};
+    use crate::{assert_empty, assert_eq_set};
     use crate::game::units;
 
     use super::*;
@@ -568,15 +626,18 @@ mod tests {
     }
 
     #[test]
-    fn winner_should_return_none_if_no_winner() {
+    fn game_result_should_return_ongoing_if_no_winner_nor_tie() {
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
         board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::BottomPlayer, units::duke()));
-        assert_none!(GameState::from_board(board, Owner::TopPlayer).winner());
+        assert_eq!(
+            GameState::from_board(board, Owner::TopPlayer).game_result(),
+            GameResult::Ongoing,
+        );
     }
 
     #[test]
-    fn winner_should_return_none_if_other_player_still_has_moves() {
+    fn game_result_should_return_ongoing_if_other_player_still_has_moves() {
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
         let mut footman = PlacedTile::new(Owner::TopPlayer, units::footman());
@@ -586,21 +647,67 @@ mod tests {
         op_duke.flip();
         board.place(Coordinates { x: 5, y: 0 }, op_duke);
         // TopPlayer can still play a footman move
-        assert_none!(GameState::from_board(board, Owner::TopPlayer).winner());
+        assert_eq!(
+            GameState::from_board(board, Owner::TopPlayer).game_result(),
+            GameResult::Ongoing,
+        );
     }
 
     #[test]
-    fn winner_should_return_some_on_winner() {
+    fn game_result_should_return_some_on_winner() {
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let mut footman = PlacedTile::new(Owner::TopPlayer, units::footman());
+        let footman = PlacedTile::new(Owner::TopPlayer, units::footman());
         board.place(Coordinates { x: 4, y: 5 }, footman);
         let mut op_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
         op_duke.flip();
         board.place(Coordinates { x: 5, y: 0 }, op_duke);
-        assert_some!(
-            Owner::BottomPlayer,
-            GameState::from_board(board, Owner::TopPlayer).winner(),
+        assert_eq!(
+            GameState::from_board(board, Owner::TopPlayer).game_result(),
+            GameResult::Won(Owner::BottomPlayer),
         );
+    }
+
+    #[test]
+    fn game_result_should_return_tie_after_enough_consecutive_moves_with_no_capture_or_placement() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, units::duke()));
+        let mut gs = GameState::from_board(board, Owner::TopPlayer);
+        for _ in 0..7 {
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 0, y: 0 },
+                dst: Coordinates { x: 5, y: 0 },
+            });
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 5, y: 5 },
+                dst: Coordinates { x: 0, y: 5 },
+            });
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 5, y: 0 },
+                dst: Coordinates { x: 5, y: 5 },
+            });
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 0, y: 5 },
+                dst: Coordinates { x: 0, y: 0 },
+            });
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 5, y: 5 },
+                dst: Coordinates { x: 0, y: 5 },
+            });
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 0, y: 0 },
+                dst: Coordinates { x: 5, y: 0 },
+            });
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 0, y: 5 },
+                dst: Coordinates { x: 0, y: 0 },
+            });
+            gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+                src: Coordinates { x: 5, y: 0 },
+                dst: Coordinates { x: 5, y: 5 },
+            });
+        }
+        assert_eq!(gs.game_result(), GameResult::Tie)
     }
 }

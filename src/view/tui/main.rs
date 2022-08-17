@@ -14,7 +14,7 @@ use crate::game::ai::player::ArtificialPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
-use crate::game::state::GameState;
+use crate::game::state::{GameResult, GameState};
 use crate::game::tile::{Owner, TileRef};
 use crate::game::units;
 use crate::view::controller::{Controller, ControllerCommand};
@@ -115,9 +115,14 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        let winner = controller.borrow().is_over();
-        if let Some(w) = winner {
-            controller.borrow_mut().add_info(format!("{} Won! Game is over!\nPress any key to quit", w).as_str());
+        let winner = controller.borrow().game_result();
+        let message = match winner {
+            GameResult::Tie => Some("The game ended in a tie!\nPress any key to quit".to_owned()),
+            GameResult::Ongoing => None,
+            GameResult::Won(w) => Some(format!("{} Won! Game is over!\nPress any key to quit", w)),
+        };
+        if let Some(msg) = message {
+            controller.borrow_mut().add_info(msg.as_str());
             // TODO reduce duplication with above
             terminal.draw(|rect| {
                 let size = rect.size();
