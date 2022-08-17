@@ -63,4 +63,6 @@ impl DiscardBag {
     pub fn existing(&self) -> &Vec<TileRef> {
         &self.bag
     }
+
+    pub fn len(&self) -> usize { self.bag.len() }
 }
