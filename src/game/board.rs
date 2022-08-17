@@ -570,6 +570,26 @@ mod test {
     }
 
     #[test]
+    fn can_move_returns_true_for_capture() {
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 2, y: 4 };
+        let dst = Coordinates { x: 2, y: 5 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::footman));
+        board.place(dst, units::place_tile(Owner::BottomPlayer, units::footman));
+        assert!(board.can_move(src, dst));
+    }
+
+    #[test]
+    fn can_move_returns_false_for_occupied_with_same() {
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 2, y: 4 };
+        let dst = Coordinates { x: 2, y: 5 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::footman));
+        board.place(dst, units::place_tile(Owner::TopPlayer, units::footman));
+        assert_not!(board.can_move(src, dst));
+    }
+
+    #[test]
     fn can_move_returns_false_for_movement_out_of_scope() {
         let mut board = GameBoard::empty();
         let c = Coordinates { x: 2, y: 2 };
