@@ -1,5 +1,4 @@
 use std::cmp::{min, Ordering};
-use std::fmt::Debug;
 
 #[macro_export]
 macro_rules! assert_not {
@@ -218,6 +217,7 @@ mod test {
 #[cfg(test)]
 mod tests {
     use crate::assert_empty;
+
     use super::*;
 
     #[test]
@@ -314,5 +314,26 @@ impl<A> Folding<A> for Option<A> {
             None => true,
             Some(s) => p(s),
         }
+    }
+}
+
+pub trait IteratorOps {
+    fn length(self) -> usize;
+}
+
+impl<T, A: Iterator<Item=T>> IteratorOps for A {
+    fn length(self) -> usize { self.fold(0, |x, _| x + 1) }
+}
+
+#[cfg(test)]
+mod iterator_tests {
+    use super::*;
+
+    #[test]
+    fn length() {
+        assert_eq!(
+            vec![1, 2, 3].into_iter().length(),
+            3,
+        )
     }
 }
