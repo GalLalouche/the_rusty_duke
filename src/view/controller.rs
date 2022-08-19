@@ -4,7 +4,7 @@ use rand::thread_rng;
 
 use crate::common::coordinates::Coordinates;
 use crate::game::ai::player::ArtificialPlayer;
-use crate::game::board::{DukeOffset, PossibleMove};
+use crate::game::board::PossibleMove;
 use crate::game::state::GameResult;
 use crate::game::tile::Owner;
 use crate::view::controller::Error::*;
@@ -190,7 +190,7 @@ impl Controller {
         }
     }
 
-    pub fn ai_move<AI>(&mut self, ai: &AI) where AI: ArtificialPlayer {
+    pub fn ai_move<AI: ArtificialPlayer>(&mut self, ai: &AI) {
         let mut rng = thread_rng();
         let pm = ai.play_next_move(rng.borrow_mut(), self.state.get_game_state_mut());
         self.moves.push(pm)

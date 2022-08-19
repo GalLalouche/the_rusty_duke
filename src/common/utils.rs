@@ -110,12 +110,12 @@ impl<A: Clone> CloneVectors<A> for Vec<A> {
 
 pub trait Vectors<A> {
     // Excepts PartialOrd and caches the function result.
-    fn better_sort_by_key<B>(self, f: impl Fn(&A) -> B) -> Vec<A> where B: PartialOrd;
+    fn better_sort_by_key<B: PartialOrd>(self, f: impl Fn(&A) -> B) -> Vec<A> where B: PartialOrd;
     fn grouped(&self, n: usize) -> Vec<&[A]>;
 }
 
 impl<A> Vectors<A> for Vec<A> {
-    fn better_sort_by_key<B>(self, f: impl Fn(&A) -> B) -> Vec<A> where B: PartialOrd {
+    fn better_sort_by_key<B: PartialOrd>(self, f: impl Fn(&A) -> B) -> Vec<A> {
         let mut res = self.into_iter()
             .map(|e| (f(&e), e))
             .collect::<Vec<_>>();

@@ -5,8 +5,6 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use crate::game::ai::alpha_beta::HeuristicAlphaBetaPlayer;
 
-use crate::game::ai::heuristic_ai::HeuristicAi;
-use crate::game::ai::heuristics::Heuristics;
 use crate::game::ai::player::ArtificialPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;

@@ -1,13 +1,10 @@
 #![feature(backtrace)]
 extern crate fstrings;
 
-use std::borrow::Borrow;
-use std::collections::HashMap;
 use std::panic;
 
 use backtrace::Backtrace;
 
-use common::timer::GLOBAL_TIMERS;
 
 mod common;
 mod game;

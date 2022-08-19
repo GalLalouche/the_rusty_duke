@@ -1,5 +1,5 @@
 use crate::game::ai::heuristics::Heuristic;
-use crate::game::ai::player::{ArtificialPlayer, EvaluatingPlayer};
+use crate::game::ai::player::EvaluatingPlayer;
 use crate::game::state::GameState;
 
 pub struct HeuristicAi {

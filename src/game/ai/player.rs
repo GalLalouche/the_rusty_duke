@@ -10,12 +10,12 @@ use crate::game::state::{GameMove, GameState};
 use crate::game::tile::{Owner, PlacedTile};
 
 pub trait ArtificialPlayer {
-    fn play_next_move<R>(&self, rng: &mut R, gs: &mut GameState) -> PossibleMove where R: Rng {
+    fn play_next_move<R: Rng>(&self, rng: &mut R, gs: &mut GameState) -> PossibleMove {
         let mv = self.get_next_move(rng, gs);
         gs.make_a_move(mv.borrow().try_into().unwrap());
         mv.to_undo_move().expect("AI moved should have been playable")
     }
-    fn get_next_move<R>(&self, rng: &mut R, gs: &GameState) -> AiMove where R: Rng;
+    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &GameState) -> AiMove;
 }
 
 pub trait EvaluatingPlayer {

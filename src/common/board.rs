@@ -91,7 +91,7 @@ impl <A: Hash> Hash for Board<A> {
     }
 }
 
-impl<A> Board<A> where A: Clone {
+impl<A: Clone> Board<A> {
     pub fn flip_vertical(&self) -> Board<A> {
         let mut res = Vec::with_capacity(self.area() as usize);
         for y in (0..self.height).rev() {

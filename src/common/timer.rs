@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 thread_local!(pub static GLOBAL_TIMERS: RefCell<HashMap<&'static str, i64>> = RefCell::new(HashMap::new()));
 

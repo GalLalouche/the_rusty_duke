@@ -67,7 +67,7 @@ impl ViewState {
             ViewPosition::Zoomed(_, Zoomed::ShowOtherBag) => ViewStateMode::ShowOtherBag,
         }
     }
-    pub fn info<S>(&mut self, str: S) -> () where S: Borrow<str> {
+    pub fn info<S: Borrow<str>>(&mut self, str: S) -> () {
         self.info = Some(str.borrow().to_owned())
     }
     pub fn is_zoomed_in(&self) -> bool {

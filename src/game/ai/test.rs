@@ -10,7 +10,7 @@ pub mod tests {
     use crate::game::tile::{Owner, PlacedTile};
     use crate::game::units;
 
-    pub fn can_find_winning_move<A>(a: A) where A: ArtificialPlayer {
+    pub fn can_find_winning_move<A: ArtificialPlayer>(a: A) {
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
         board.place(Coordinates { x: 1, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::footman()));
@@ -29,7 +29,7 @@ pub mod tests {
         );
     }
 
-    pub fn can_find_winning_move_with_lookahead_2<A>(a: A) where A: ArtificialPlayer {
+    pub fn can_find_winning_move_with_lookahead_2<A: ArtificialPlayer>(a: A) {
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::BottomPlayer, units::duke()));
         // Extra tile to allow an empty move

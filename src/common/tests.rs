@@ -14,7 +14,9 @@ use std::fmt::Debug;
 #[macro_export] macro_rules! assert_some {
     ($s: expr, $e: expr $(,)?) => {assert_eq!(Some($s), $e)}
 }
-pub fn eq_set_msg<A>(expected: HashSet<A>, actual: HashSet<A>) -> Option<String> where A: Eq + Hash + Debug + Clone {
+pub fn eq_set_msg<A: Eq + Hash + Debug + Clone>(
+    expected: HashSet<A>, actual: HashSet<A>,
+) -> Option<String> {
     if expected == actual {
         return None;
     }
