@@ -89,6 +89,19 @@ impl AiMove {
     }
 
 
+    pub fn play(&self, state: &mut GameState) {
+        match &self {
+            AiMove::PullTileFormBagAndPlay(o, _) =>
+                state.make_a_move(GameMove::PullAndPlay(*o)),
+            AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
+                state.make_a_move(GameMove::ApplyNonCommandTileAction {
+                    src: *src,
+                    dst: *dst,
+                }),
+            AiMove::Sentinel => {}
+        }
+    }
+
     pub fn all_moves(gs: &GameState) -> impl Iterator<Item=AiMove> + '_ {
         gs.all_valid_game_moves_for_current_player().map(|e| e.borrow().into())
     }

@@ -11,7 +11,7 @@ impl minimax::Move for AiMove {
 
     fn apply(&self, state: &mut <Self::G as minimax::Game>::S) {
         time_it_macro!("minimax: apply", {
-            state.make_a_move(self.try_into().unwrap());
+            self.play(state);
         });
     }
 
