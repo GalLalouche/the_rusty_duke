@@ -5,7 +5,7 @@ use std::borrow::{Borrow, BorrowMut};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::game::ai::alpha_beta::HeuristicAlphaBetaPlayer;
+use crate::game::ai::alpha_beta_min_max::HeuristicAlphaBetaPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};

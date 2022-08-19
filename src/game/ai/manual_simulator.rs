@@ -3,7 +3,7 @@ use std::io::Read;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use crate::game::ai::alpha_beta::HeuristicAlphaBetaPlayer;
+use crate::game::ai::alpha_beta_min_max::HeuristicAlphaBetaPlayer;
 
 use crate::game::ai::player::ArtificialPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
