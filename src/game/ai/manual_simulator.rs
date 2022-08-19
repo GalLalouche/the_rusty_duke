@@ -3,8 +3,10 @@ use std::io::Read;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use crate::game::ai::alpha_beta::HeuristicAlphaBetaPlayer;
 
 use crate::game::ai::heuristic_ai::HeuristicAi;
+use crate::game::ai::heuristics::Heuristics;
 use crate::game::ai::player::ArtificialPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
@@ -26,9 +28,7 @@ fn go_aux(turn_count: u32, max_depth: u32, print: bool, wait_for_input: bool) {
     );
 
     let dumb_ai = StupidSyncAi {};
-    let smart_ai = HeuristicAi::create(
-        max_depth,
-    );
+    let smart_ai = HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(max_depth);
 
     let mut std_gen = StdRng::seed_from_u64(0);
     for _ in 0..(if turn_count > 0 { turn_count } else { 10000000 }) {

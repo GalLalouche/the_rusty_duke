@@ -2,15 +2,10 @@ extern crate fstrings;
 
 use std::{io, thread};
 use std::borrow::{Borrow, BorrowMut};
-use std::io::Stdout;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use tui::Frame;
-use tui::layout::Rect;
 
-use crate::game::ai::heuristic_ai::HeuristicAi;
-use crate::game::ai::heuristics;
-use crate::game::ai::player::ArtificialPlayer;
+use crate::game::ai::alpha_beta::HeuristicAlphaBetaPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
@@ -86,7 +81,7 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let dumb_ai = StupidSyncAi {};
-    let smart_ai = HeuristicAi::create(2);
+    let smart_ai = HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(2);
     loop {
         // TODO some kind of logging mechanism
         terminal.draw(|rect| {

@@ -1,7 +1,10 @@
-use std::borrow::Borrow;
+use minimax_alpha_beta::strategy::AlphaBetaMiniMaxStrategy;
+use rand::Rng;
 
 use crate::common::utils::Vectors;
-use crate::game::ai::player::{AiMove, ArtificialStrategy};
+use crate::game::ai::heuristic_ai::HeuristicAi;
+use crate::game::ai::heuristics::Heuristics;
+use crate::game::ai::player::{AiMove, ArtificialPlayer, EvaluatingPlayer};
 use crate::game::state::{GameMove, GameState};
 use crate::game::tile::Owner;
 use crate::time_it_macro;
@@ -29,7 +32,40 @@ fn play_aux(mv: &AiMove, state: &mut GameState) {
         })
 }
 
-impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
+pub struct HeuristicAlphaBetaPlayer {
+    pub(super) evaluator: Box<dyn EvaluatingPlayer>,
+    pub max_depth: u32,
+}
+
+impl HeuristicAlphaBetaPlayer {
+    pub fn all_heuristics_with_max_depth(max_depth: u32) -> Self {
+        HeuristicAlphaBetaPlayer {
+            evaluator: Box::new(HeuristicAi::new(
+                vec![
+                    Box::new(Heuristics::DukeMovementOptions),
+                    Box::new(Heuristics::TotalTilesOnBoard),
+                    Box::new(Heuristics::TotalMovementOptions),
+                    Box::new(Heuristics::DiscardedUnits),
+                ]
+            )),
+            max_depth,
+        }
+    }
+}
+
+pub(super) struct HeuristicAlphaBetaPlayerStrategy<'a> {
+    pub state: GameState,
+    pub player: &'a HeuristicAlphaBetaPlayer,
+}
+
+impl ArtificialPlayer for HeuristicAlphaBetaPlayer {
+    fn get_next_move<R: Rng>(&self, _rng: &mut R, gs: &GameState) -> AiMove {
+        HeuristicAlphaBetaPlayerStrategy { state: gs.clone(), player: self }
+            .get_best_move(self.max_depth as i64, false)
+    }
+}
+
+impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStrategy<'a> {
     type Player = Owner;
     type Move = AiMove;
     type Board = GameState;
@@ -38,7 +74,7 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
         if self.state.is_over() {
             f64::INFINITY
         } else {
-            self.evaluator.evaluate(&self.state)
+            self.player.evaluator.evaluate(&self.state)
         }
     }
 
@@ -57,12 +93,10 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     fn get_available_moves(&self) -> Vec<Self::Move> {
         let mut clone = self.state.clone();
         let mut result = Vec::new();
-        let len = self.state.all_valid_game_moves_for_current_player().length();
-        // println!("{}", len);
         AiMove::all_moves(&self.state)
             .for_each(|mv: AiMove| {
                 play_aux(&mv, &mut clone);
-                let res = self.evaluator.cheap_evaluate(&clone);
+                let res = self.player.evaluator.cheap_evaluate(&clone);
                 // TODO reduce duplication with below
                 if let Some(um) = mv.to_undo_move() {
                     clone.undo(um)
@@ -94,5 +128,24 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
 
     fn get_a_sentinel_move(&self) -> Self::Move {
         AiMove::Sentinel
+    }
+}
+
+// TODO fixtures
+#[cfg(test)]
+mod tests {
+    use crate::game::ai::alpha_beta::HeuristicAlphaBetaPlayer;
+    use crate::game::ai::test::tests::{can_find_winning_move, can_find_winning_move_with_lookahead_2};
+
+    use super::*;
+
+    #[test]
+    fn win_in_1() {
+        can_find_winning_move(HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(1))
+    }
+
+    #[test]
+    fn win_in_2() {
+        can_find_winning_move_with_lookahead_2(HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(2))
     }
 }

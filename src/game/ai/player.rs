@@ -16,26 +16,17 @@ pub trait ArtificialPlayer {
         mv.to_undo_move().expect("AI moved should have been playable")
     }
     fn get_next_move<R>(&self, rng: &mut R, gs: &GameState) -> AiMove where R: Rng;
-    fn create(max_depth: u32) -> Self;
 }
 
 pub trait EvaluatingPlayer {
     fn evaluate(&self, gs: &GameState) -> f64;
-    // A cheaper version of the above, that might not be entirely accurate.
+    // A faster version of the above, that might not be entirely accurate.
     // For example, it might consider illegal moves.
     fn cheap_evaluate(&self, gs: &GameState) -> f64;
 }
 
-pub(super) struct ArtificialStrategy<'a> {
-    pub state: GameState,
-    pub evaluator: Box<&'a dyn EvaluatingPlayer>,
-}
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiMove {
-    // FIXME Pulling is random, but the library doesn't suppose that stuff yet...
-    // so just take the random value pulled.
     PullTileFormBagAndPlay(DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
     Sentinel,

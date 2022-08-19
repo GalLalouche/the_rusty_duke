@@ -14,8 +14,4 @@ impl ArtificialPlayer for StupidSyncAi {
         // From https://stackoverflow.com/a/34215930/736508
         pms.choose(rng.borrow_mut()).unwrap().into()
     }
-
-    fn create(_max_depth: u32) -> Self {
-        StupidSyncAi {}
-    }
 }

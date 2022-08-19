@@ -1,9 +1,7 @@
-use std::convert::TryInto;
-
-use crate::game::ai::my_negamax::Negamax;
-use crate::game::ai::player::{AiMove, ArtificialStrategy};
-use crate::game::state::GameState;
+use crate::game::ai::alpha_beta::HeuristicAlphaBetaPlayerStrategy;
+use crate::game::ai::player::AiMove;
 use crate::game::state::GameResult;
+use crate::game::state::GameState;
 use crate::time_it_macro;
 
 impl minimax::Move for AiMove {
@@ -47,16 +45,12 @@ impl minimax::Game for GameState {
     }
 }
 
-impl minimax::Evaluator for ArtificialStrategy<'_> {
+impl minimax::Evaluator for HeuristicAlphaBetaPlayerStrategy<'_> {
     type G = GameState;
 
     fn evaluate(&self, s: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
         time_it_macro!("evaluate", {
-            self.evaluator.evaluate(s) as i32
+            self.player.evaluator.evaluate(s) as i32
         })
     }
-}
-
-pub(super) fn negamax(ai: ArtificialStrategy, max_depth: usize) -> Negamax<ArtificialStrategy> {
-    Negamax::new(ai, max_depth)
 }
