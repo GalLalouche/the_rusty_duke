@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::convert::{TryFrom, TryInto};
+use std::fmt::{Display, Formatter};
 
 use rand::Rng;
 
@@ -38,6 +39,23 @@ pub enum AiMove {
     PullTileFormBagAndPlay(DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
     Sentinel,
+}
+
+impl Display for AiMove {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AiMove::Sentinel | AiMove::PullTileFormBagAndPlay { .. } => write!(f, "{:?}", self),
+            AiMove::ApplyNonCommandTileAction { src, dst, capturing } =>
+                write!(f, "ApplyNonCommandTileAction {{ src: {:?}, dst: {:?}{}}}",
+                       src,
+                       dst,
+                       match &capturing {
+                           None => "".to_owned(),
+                           Some(t) => format!("capturing: {}", t.tile.get_name()),
+                       }
+                )
+        }
+    }
 }
 
 impl TryFrom<&AiMove> for GameMove {
