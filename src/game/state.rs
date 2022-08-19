@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use strum::IntoEnumIterator;
 
 use crate::assert_not;
@@ -17,7 +18,6 @@ pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
-    // Shouldn't really be pub, breaks Demeter. At the very not be mutable...
     board: GameBoard,
     pulled_tile: Option<TileRef>,
     current_player_turn: Owner,
@@ -368,6 +368,12 @@ impl GameState {
 
     pub fn get(&self, c: Coordinates) -> Option<&PlacedTile> {
         self.board.get(c)
+    }
+}
+
+impl Hash for GameState {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.board.get_board().hash(state)
     }
 }
 

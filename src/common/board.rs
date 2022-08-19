@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use std::mem;
 
 use crate::common::coordinates::Coordinates;
@@ -81,6 +82,12 @@ impl<A> Board<A> {
 
     pub fn find<P>(&self, predicate: P) -> Option<Coordinates> where P: Fn(&A) -> bool {
         self.active_coordinates().find(|(_, a)| predicate(a)).map(|(c, _)| c)
+    }
+}
+
+impl <A: Hash> Hash for Board<A> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.board.hash(state)
     }
 }
 
