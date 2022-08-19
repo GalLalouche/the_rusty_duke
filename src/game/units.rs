@@ -260,3 +260,9 @@ mod test {
 pub fn place_tile<U>(o: Owner, ctor: U) -> PlacedTile where U: Fn() -> Tile {
     PlacedTile::new(o, ctor())
 }
+
+pub fn place_tile_flipped<U>(o: Owner, ctor: U) -> PlacedTile where U: Fn() -> Tile {
+    let mut result = PlacedTile::new(o, ctor());
+    result.flip();
+    result
+}

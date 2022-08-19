@@ -547,8 +547,7 @@ mod test {
     fn get_legal_moves_vertical_slides() {
         let mut board = GameBoard::empty();
         let c = Coordinates { x: 2, y: 4 };
-        board.place(c, units::place_tile(Owner::TopPlayer, units::duke));
-        board.flip(c);
+        board.place(c, units::place_tile_flipped(Owner::TopPlayer, units::duke));
         assert_eq_set!(
             vec![
                 (Coordinates { x: 2, y: 0 }, TileAction::Slide),
@@ -636,8 +635,7 @@ mod test {
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
         let coordinates = Coordinates { x: 1, y: 2 };
-        board.place(coordinates, units::place_tile(Owner::BottomPlayer, units::pikeman));
-        board.flip(coordinates);
+        board.place(coordinates, units::place_tile_flipped(Owner::BottomPlayer, units::pikeman));
         assert!(board.is_guard(Owner::TopPlayer));
     }
 
@@ -661,8 +659,7 @@ mod test {
         let c = Coordinates { x: 0, y: 0 };
         board.place(c, units::place_tile(Owner::TopPlayer, units::duke));
         let c2 = Coordinates { x: 0, y: 2 };
-        board.place(c2, units::place_tile(Owner::BottomPlayer, units::footman));
-        board.flip(c2);
+        board.place(c2, units::place_tile_flipped(Owner::BottomPlayer, units::footman));
         assert_not!(board.is_valid_placement(Owner::TopPlayer, DukeOffset::Right));
     }
 
@@ -691,8 +688,7 @@ mod test {
         let duke_coordinates = Coordinates { x: 0, y: 0 };
         board.place(duke_coordinates, units::place_tile(Owner::TopPlayer, units::duke));
         let pikeman_coordinates = Coordinates { x: 2, y: 2 };
-        board.place(pikeman_coordinates, units::place_tile(Owner::BottomPlayer, units::pikeman));
-        board.flip(pikeman_coordinates);
+        board.place(pikeman_coordinates, units::place_tile_flipped(Owner::BottomPlayer, units::pikeman));
         board.place(Coordinates { x: 1, y: 0 }, units::place_tile(Owner::BottomPlayer, units::footman));
         assert_empty!(board.get_legal_moves(duke_coordinates));
     }
