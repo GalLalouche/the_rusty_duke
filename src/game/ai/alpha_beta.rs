@@ -57,9 +57,9 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for ArtificialStrategy<'a> {
     fn get_available_moves(&self) -> Vec<Self::Move> {
         let mut clone = self.state.clone();
         let mut result = Vec::new();
-        self.state
-            .all_valid_game_moves_for_current_player()
-            .map(|e| e.borrow().into())
+        let len = self.state.all_valid_game_moves_for_current_player().length();
+        // println!("{}", len);
+        AiMove::all_moves(&self.state)
             .for_each(|mv: AiMove| {
                 play_aux(&mv, &mut clone);
                 let res = self.evaluator.cheap_evaluate(&clone);

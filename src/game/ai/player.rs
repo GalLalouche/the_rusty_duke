@@ -69,6 +69,11 @@ impl AiMove {
             AiMove::Sentinel => None,
         }
     }
+
+
+    pub fn all_moves(gs: &GameState) -> impl Iterator<Item=AiMove> + '_ {
+        gs.all_valid_game_moves_for_current_player().map(|e| e.borrow().into())
+    }
 }
 
 impl From<&PossibleMove> for AiMove {
