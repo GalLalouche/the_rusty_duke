@@ -163,20 +163,20 @@ impl PlacedTile {
 }
 
 pub trait Ownership: Sized {
-    fn same_team(self, other: Self) -> bool;
-    fn different_team(self, other: Self) -> bool {
+    fn same_team(&self, other: &Self) -> bool;
+    fn different_team(&self, other: &Self) -> bool {
         !self.same_team(other)
     }
 }
 
 impl Ownership for Owner {
-    fn same_team(self, other: Self) -> bool {
+    fn same_team(&self, other: &Self) -> bool {
         self == other
     }
 }
 
 impl Ownership for &PlacedTile {
-    fn same_team(self, other: Self) -> bool {
+    fn same_team(&self, other: &Self) -> bool {
         self.owner == other.owner
     }
 }

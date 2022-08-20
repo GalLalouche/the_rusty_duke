@@ -210,7 +210,7 @@ impl GameBoard {
             TileAction::Slide => self.unobstructed(src, dst),
             TileAction::Command => panic!("Commands shouldn't have been used here"),
             TileAction::JumpSlide => todo!(),
-            TileAction::Strike => self.get(dst).exists(|o| o.different_team(self.get(src).unwrap())),
+            TileAction::Strike => self.get(dst).exists(|o| o.different_team(&self.get(src).unwrap())),
         }
     }
 
@@ -329,7 +329,7 @@ impl GameBoard {
         self.board
             .active_coordinates()
             .into_iter()
-            .filter(|e| e.1.owner.same_team(o))
+            .filter(|e| e.1.owner.same_team(&o))
             .collect()
     }
 
@@ -373,7 +373,7 @@ impl GameBoard {
             let c = self.duke_coordinates(owner);
             self.get_board()
                 .active_coordinates()
-                .filter(|e| e.1.owner.different_team(owner))
+                .filter(|e| e.1.owner.different_team(&owner))
                 .any(|other_tile|
                     self
                         .get_legal_moves_aux(other_tile.0, CheckForGuard(false))
