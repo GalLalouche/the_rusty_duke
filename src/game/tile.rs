@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::common::coordinates::Coordinates;
 use crate::game::tile_side::{TileAction, TileSide};
@@ -70,7 +70,7 @@ impl Tile {
 //     pub tile: Rc<Tile>,
 // }
 
-pub type TileRef = Rc<Tile>;
+pub type TileRef = Arc<Tile>;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Owner {
@@ -110,6 +110,12 @@ pub struct PlacedTile {
     pub owner: Owner,
 }
 
+impl Display for PlacedTile {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({}, {:?})", self.tile.name, self.owner, self.current_side)
+    }
+}
+
 impl Clone for PlacedTile {
     fn clone(&self) -> Self {
         PlacedTile {
@@ -126,11 +132,11 @@ impl PlacedTile {
             Owner::TopPlayer => tile.flip_vertical(),
             Owner::BottomPlayer => tile,
         };
-        PlacedTile { owner, tile: Rc::new(maybe_flipped_tile), current_side: CurrentSide::Initial }
+        PlacedTile { owner, tile: Arc::new(maybe_flipped_tile), current_side: CurrentSide::Initial }
     }
     pub fn new_from_ref(owner: Owner, tile: TileRef) -> PlacedTile {
         let maybe_flipped_tile = match owner {
-            Owner::TopPlayer => Rc::new(tile.flip_vertical()),
+            Owner::TopPlayer => Arc::new(tile.flip_vertical()),
             Owner::BottomPlayer => tile,
         };
         PlacedTile { owner, tile: maybe_flipped_tile, current_side: CurrentSide::Initial }
