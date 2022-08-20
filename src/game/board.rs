@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::convert::TryFrom;
+use std::fmt::{Display, Formatter};
 use std::ops::Range;
 
 use strum::IntoEnumIterator;
@@ -30,6 +31,23 @@ pub(super) enum BoardMove {
 pub enum PossibleMove {
     PlaceNewTile(DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
+}
+
+impl Display for PossibleMove {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PossibleMove::PlaceNewTile { .. } => write!(f, "{:?}", self),
+            PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } =>
+                write!(f, "ApplyNonCommandTileAction {{ src: {:?}, dst: {:?}{}}}",
+                       src,
+                       dst,
+                       match &capturing {
+                           None => "".to_owned(),
+                           Some(t) => format!("capturing: {}", t.tile.get_name()),
+                       }
+                )
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
