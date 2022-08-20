@@ -182,7 +182,7 @@ impl GameState {
             self.make_a_move(GameMove::PlaceNewTile(*o));
             return;
         }
-        if let GameMove::ApplyNonCommandTileAction { src, .. } = game_move {
+        if let GameMove::ApplyNonCommandTileAction { src, dst } = game_move {
             let tile = self.board.get(src).expect("Cannot move from an empty tile");
             assert_eq!(
                 tile.owner,
@@ -190,8 +190,10 @@ impl GameState {
                 "Cannot move unowned tile in {:?}",
                 src
             );
+            assert!(self.board.can_move(src, dst))
         }
         self.board.make_a_move(self.to_board_move(&game_move));
+        assert_not!(self.board.is_guard(self.current_player_turn));
         self.current_player_turn = self.current_player_turn.next_player();
         if self.is_waiting_for_tile_placement() {
             self.pulled_tile = None
@@ -715,5 +717,23 @@ mod tests {
             });
         }
         assert_eq!(gs.game_result(), GameResult::Tie)
+    }
+
+    #[test]
+    #[should_panic]
+    fn regression_moving_a_duke_in_footman_attack_panics() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        board.place(
+            Coordinates { x: 2, y: 1 },
+            units::place_tile_flipped(Owner::TopPlayer, units::footman),
+        );
+        let duke_coordinates = Coordinates { x: 1, y: 5 };
+        board.place(duke_coordinates, units::place_tile_flipped(Owner::BottomPlayer, units::duke));
+        let mut gs = GameState::from_board(board, Owner::BottomPlayer);
+        gs.make_a_move(GameMove::ApplyNonCommandTileAction {
+            src: duke_coordinates,
+            dst: Coordinates { x: 1, y: 2 },
+        });
     }
 }

@@ -192,11 +192,7 @@ impl GameBoard {
     }
 
     fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
-        if src.is_near(dst) {
-            self.board.is_empty(dst)
-        } else {
-            !src.on_the_linear_path_to(dst, |x, y| self.board.is_occupied(Coordinates { x, y }))
-        }
+        !src.on_the_linear_path_to(dst, |x, y| self.board.is_occupied(Coordinates { x, y }))
     }
 
     pub fn can_place_new_tile_near_duke(&self, o: Owner) -> bool {
@@ -305,7 +301,7 @@ impl GameBoard {
             BoardMove::PlaceNewTile(tile, duke_offset, owner) => {
                 let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(owner))
                     .expect("Request duke location is out of bounds");
-                assert!(self.is_valid_placement(owner, duke_offset));
+                debug_assert!(self.is_valid_placement(owner, duke_offset));
                 self.place(c, PlacedTile::new_from_ref(owner, tile));
             }
             BoardMove::ApplyNonCommandTileAction { src, dst } => {
@@ -319,7 +315,7 @@ impl GameBoard {
                         self.board.remove(dst);
                     }
                     AppliedPubAction::Invalid =>
-                        panic!("Cannot move unit in {:?} to {:?}", &src, &dst)
+                        panic!("Cannot move unit in {:?} to {:?} (invalid action)", &src, &dst)
                 }
             }
 
@@ -709,5 +705,70 @@ mod test {
         board.place(pikeman_coordinates, units::place_tile_flipped(Owner::BottomPlayer, units::pikeman));
         board.place(Coordinates { x: 1, y: 0 }, units::place_tile(Owner::BottomPlayer, units::footman));
         assert_empty!(board.get_legal_moves(duke_coordinates));
+    }
+
+    #[test]
+    fn unobstructed_near_straight() {
+        test_unobstructed(
+            units::place_tile(Owner::TopPlayer, units::footman),
+            vec![
+                Coordinates { x: 0, y: 1 },
+                Coordinates { x: 2, y: 1 },
+                Coordinates { x: 1, y: 0 },
+                Coordinates { x: 1, y: 2 },
+            ],
+        )
+    }
+
+    #[test]
+    fn unobstructed_near_diagonal() {
+        test_unobstructed(
+            units::place_tile_flipped(Owner::TopPlayer, units::footman),
+            vec![
+                Coordinates { x: 0, y: 0 },
+                Coordinates { x: 2, y: 2 },
+                Coordinates { x: 0, y: 2 },
+                Coordinates { x: 2, y: 0 },
+            ],
+        )
+    }
+
+    fn test_unobstructed(placed_tile: PlacedTile, dsts: Vec<Coordinates>) {
+        let mut board = GameBoard::empty();
+        let c = Coordinates { x: 1, y: 1 };
+        board.place(c, placed_tile);
+        let board = board;
+        for dst in dsts {
+            let mut b = board.clone();
+            b.place(dst, units::place_tile(Owner::BottomPlayer, units::duke));
+            assert!(board.can_move(c, dst), "Can't move from {} to {}", c, dst)
+        }
+    }
+
+
+    #[test]
+    fn sanity_guard1() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        board.place(
+            Coordinates { x: 2, y: 1 },
+            units::place_tile(Owner::TopPlayer, units::footman),
+        );
+        let duke_coordinates = Coordinates { x: 2, y: 2 };
+        board.place(duke_coordinates, units::place_tile_flipped(Owner::BottomPlayer, units::duke));
+        assert!(board.is_guard(Owner::BottomPlayer))
+    }
+
+    #[test]
+    fn sanity_guard2() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        board.place(
+            Coordinates { x: 2, y: 1 },
+            units::place_tile_flipped(Owner::TopPlayer, units::footman),
+        );
+        let duke_coordinates = Coordinates { x: 1, y: 2 };
+        board.place(duke_coordinates, units::place_tile(Owner::BottomPlayer, units::duke));
+        assert!(board.is_guard(Owner::BottomPlayer))
     }
 }

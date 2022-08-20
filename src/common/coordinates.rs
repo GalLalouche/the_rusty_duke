@@ -129,7 +129,7 @@ impl Coordinates {
     }
 
     #[inline(always)]
-    pub fn is_near(&self, other: Coordinates) -> bool {
+    pub fn is_near_diagonal(&self, other: Coordinates) -> bool {
         (self.x + 1 == other.x || self.x == other.x + 1) &&
             (self.y + 1 == other.y || self.y == other.y + 1)
     }
