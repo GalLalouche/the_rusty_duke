@@ -1,10 +1,14 @@
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use rand::seq::SliceRandom;
+use rand::Rng;
 use strum::IntoEnumIterator;
 
 use crate::assert_not;
 use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
+use crate::common::percentage::Percentage;
 use crate::game::{board_setup, units};
 use crate::game::bag::{DiscardBag, TileBag};
 use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNewTiles};
@@ -158,7 +162,8 @@ impl GameState {
                 self.can_pull_tile_from_bag_bool() && self.is_valid_placement(*o),
             GameMove::ApplyNonCommandTileAction { src, dst } =>
                 self.board.can_move(*src, *dst) &&
-                    self.board.does_not_put_in_guard(self.to_board_move(&game_move), self.current_player_turn),
+                    self.board.does_not_put_in_guard(
+                        self.game_move_to_board_move(&game_move), self.current_player_turn),
         }
     }
     pub fn make_a_move(&mut self, game_move: GameMove) -> () {
@@ -192,7 +197,7 @@ impl GameState {
             );
             assert!(self.board.can_move(src, dst))
         }
-        self.board.make_a_move(self.to_board_move(&game_move));
+        self.board.make_a_move(self.game_move_to_board_move(&game_move));
         assert_not!(self.board.is_guard(self.current_player_turn));
         self.current_player_turn = self.current_player_turn.next_player();
         if self.is_waiting_for_tile_placement() {
@@ -200,7 +205,7 @@ impl GameState {
         }
     }
 
-    fn to_board_move(&self, gm: &GameMove) -> BoardMove {
+    fn game_move_to_board_move(&self, gm: &GameMove) -> BoardMove {
         match gm {
             GameMove::PlaceNewTile(offset) =>
                 BoardMove::PlaceNewTile(
@@ -215,6 +220,20 @@ impl GameState {
             GameMove::PullAndPlay(_) => todo!(),
         }
     }
+
+    fn unit_stub() -> TileRef { Arc::new(units::footman()) }
+    fn possible_move_to_board_move(&self, pm: &PossibleMove) -> BoardMove {
+        match pm {
+            PossibleMove::PlaceNewTile(offset, owner) => BoardMove::PlaceNewTile(
+                GameState::unit_stub(),
+                *offset,
+                *owner,
+            ),
+            PossibleMove::ApplyNonCommandTileAction { src, dst, .. } =>
+                BoardMove::ApplyNonCommandTileAction { src: *src, dst: *dst },
+        }
+    }
+
 
     pub fn get_tiles_for_current_owner(&self) -> Vec<(Coordinates, &PlacedTile)> {
         self.get_tiles_for_owner(self.current_player_turn)
@@ -274,9 +293,58 @@ impl GameState {
     }
 
     // Except commands for now
-// TODO this should return an iterator
     pub fn all_valid_game_moves_for_current_player(&self) -> impl Iterator<Item=PossibleMove> + '_ {
         self.all_valid_game_moves_for(self.current_player_turn)
+    }
+
+    // Faster than collecting the above, since it avoid some validations.
+    pub fn get_random_move_for_current_player<R>(
+        &self, rng: &mut R, new_tile_boost: Percentage,
+    ) -> Option<PossibleMove> where R: Rng {
+        let only_place = new_tile_boost.roll(rng);
+        if self.is_over() {
+            return None;
+        }
+        // Gist of the algorithm: get all moves, legal or otherwise. Shuffle all moves and find the
+        // first legal move, i.e., one that does not put into guard.
+        let mut moves: Vec<PossibleMove> = self.board.all_valid_moves_ignoring_guard(
+            self.current_player_turn,
+            WithNewTiles(self.bag_for_current_player().non_empty()),
+        ).collect();
+        moves.shuffle(rng);
+        let moves = moves;
+        assert_not!(moves.is_empty());
+        Some(
+            self.get_random_move_for_current_player_aux(only_place, &moves)
+                .or_else(|| self.get_random_move_for_current_player_aux(false, &moves))
+                .expect("No moves found")
+        )
+    }
+
+    fn get_random_move_for_current_player_aux(
+        &self, only_place: bool, moves: &Vec<PossibleMove>,
+    ) -> Option<PossibleMove> {
+        for mv in moves {
+            if only_place && (match &mv {
+                PossibleMove::PlaceNewTile { .. } => false,
+                _ => true,
+            }) {
+                continue;
+            }
+            let is_valid = match mv {
+                PossibleMove::PlaceNewTile(o, _) => self.is_valid_placement(*o),
+                PossibleMove::ApplyNonCommandTileAction { .. } => {
+                    self.board.does_not_put_in_guard(
+                        self.possible_move_to_board_move(&mv),
+                        self.current_player_turn,
+                    )
+                }
+            };
+            if is_valid {
+                return Some(mv.clone());
+            }
+        }
+        None
     }
 
     pub fn all_valid_game_moves_for(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
@@ -682,6 +750,7 @@ mod tests {
         board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
         board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, units::duke()));
         let mut gs = GameState::from_board(board, Owner::TopPlayer);
+        // TODO base this count on the maximum const
         for _ in 0..7 {
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 0, y: 0 },
