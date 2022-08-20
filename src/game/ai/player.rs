@@ -12,7 +12,7 @@ use crate::game::tile::{Owner, PlacedTile};
 pub trait ArtificialPlayer {
     fn play_next_move<R: Rng>(&self, rng: &mut R, gs: &mut GameState) -> PossibleMove {
         let mv = self.get_next_move(rng, gs);
-        gs.make_a_move(mv.borrow().try_into().unwrap());
+        gs.make_a_move(mv.borrow().try_into().unwrap(), rng);
         mv.to_undo_move().expect("AI moved should have been playable")
     }
     fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &GameState) -> AiMove;
@@ -80,15 +80,15 @@ impl AiMove {
     }
 
 
-    pub fn play(&self, state: &mut GameState) {
+    pub fn play<R: Rng>(&self, state: &mut GameState, rng: &mut R) {
         match &self {
             AiMove::PullTileFormBagAndPlay(o, _) =>
-                state.make_a_move(GameMove::PullAndPlay(*o)),
+                state.make_a_move(GameMove::PullAndPlay(*o), rng),
             AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
                 state.make_a_move(GameMove::ApplyNonCommandTileAction {
                     src: *src,
                     dst: *dst,
-                }),
+                }, rng),
             AiMove::Sentinel => {}
         }
     }

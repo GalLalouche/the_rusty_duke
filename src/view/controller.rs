@@ -1,6 +1,6 @@
 use std::borrow::BorrowMut;
 
-use rand::thread_rng;
+use rand::{Rng, thread_rng};
 
 use crate::common::coordinates::Coordinates;
 use crate::game::ai::player::ArtificialPlayer;
@@ -102,7 +102,7 @@ impl Controller {
     pub(super) fn get_view_state(&self) -> &ViewState {
         &self.state
     }
-    pub fn apply(&mut self, cm: ControllerCommand) -> Option<Error> {
+    pub fn apply<R: Rng>(&mut self, cm: ControllerCommand, rng: &mut R) -> Option<Error> {
         match cm {
             ControllerCommand::Left => self.mv(MoveView::Left),
             ControllerCommand::Right => self.mv(MoveView::Right),
@@ -111,7 +111,7 @@ impl Controller {
             ControllerCommand::Select => self.select(),
             ControllerCommand::PullFromBag =>
                 if self.state.can_pull_token_from_bag() {
-                    self.state.pull_token_from_bag();
+                    self.state.pull_token_from_bag(rng);
                     None
                 } else {
                     Some(InvalidCommand)
@@ -210,6 +210,7 @@ mod tests {
     use crate::game::state::GameState;
     use crate::game::tile::TileRef;
     use crate::game::units;
+    use crate::common::utils::test_rng;
 
     use super::*;
 
@@ -229,13 +230,13 @@ mod tests {
     fn check_commands(commands: Vec<ControllerCommand>) -> () {
         let mut controller = setup();
         for command in commands {
-            assert_none!(controller.apply(command));
+            assert_none!(controller.apply(command, &mut test_rng()));
         }
     }
 
     fn check_commands_for(controller: &mut Controller, commands: Vec<ControllerCommand>) -> () {
         for command in commands {
-            assert_none!(controller.apply(command));
+            assert_none!(controller.apply(command, &mut test_rng()));
         }
     }
 
@@ -300,7 +301,7 @@ mod tests {
         // Try to move second duke will fail
         assert_some!(
             Error::CannotMove(Coordinates {x: 2, y: 5}, Coordinates{x: 3, y: 5}),
-            controller.apply(ControllerCommand::Select),
+            controller.apply(ControllerCommand::Select, &mut test_rng()),
         )
     }
 }

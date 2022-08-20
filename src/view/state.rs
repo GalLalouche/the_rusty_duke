@@ -1,8 +1,10 @@
 use std::borrow::Borrow;
 use std::mem;
+use rand::Rng;
 
 use crate::assert_not;
 use crate::common::coordinates::Coordinates;
+use crate::common::utils::test_rng;
 use crate::game::board::PossibleMove;
 use crate::game::state::{GameMove, GameResult};
 use crate::game::state::GameState;
@@ -170,7 +172,8 @@ impl ViewState {
                 let pm = self.game_state.to_undo(&game_move);
                 let result = self.game_state.can_make_a_move(&game_move);
                 if result {
-                    self.game_state.make_a_move(game_move);
+                    // HACK shouldn't be used anyway, but this is still a shitty pattern
+                    self.game_state.make_a_move(game_move, &mut test_rng());
                     self.unselect();
                     Some(pm)
                 } else {
@@ -197,9 +200,9 @@ impl ViewState {
         }
     }
 
-    pub fn pull_token_from_bag(&mut self) -> () {
+    pub fn pull_token_from_bag<R: Rng>(&mut self, rng: &mut R) -> () {
         assert!(self.can_pull_token_from_bag());
-        self.game_state.pull_tile_from_bag();
+        self.game_state.pull_tile_from_bag(rng);
         self.view_position = ViewPosition::Basic(
             Basic::Placing(
                 MoveView::relative_direction(
@@ -249,7 +252,8 @@ impl ViewState {
         );
         match old {
             ViewPosition::Basic(Basic::Placing(p)) =>
-                self.game_state.make_a_move(GameMove::PlaceNewTile(p.into())),
+                // HACK, unused
+                self.game_state.make_a_move(GameMove::PlaceNewTile(p.into()), &mut test_rng()),
             e => panic!("ASSERTION_ERROR: Invalid view position for placing: {:?}", e),
         };
         mv

@@ -1,5 +1,8 @@
 use std::cmp::{min, Ordering};
 
+use rand::prelude::StdRng;
+use rand::SeedableRng;
+
 #[macro_export]
 macro_rules! assert_not {
     ($cond: expr) => {assert!(!$cond)};
@@ -337,3 +340,5 @@ mod iterator_tests {
         )
     }
 }
+
+pub fn test_rng() -> StdRng { StdRng::seed_from_u64(42) }

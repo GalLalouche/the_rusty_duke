@@ -137,7 +137,7 @@ impl GameState {
         self.can_pull_tile_from_bag() == CanPullNewTileResult::OK
     }
 
-    pub fn pull_tile_from_bag(&mut self) -> () {
+    pub fn pull_tile_from_bag<R: Rng>(&mut self, rng: &mut R) -> () {
         let can_pull = self.can_pull_tile_from_bag();
         assert_eq!(
             can_pull, CanPullNewTileResult::OK, "Cannot pull new tile from bag: {:?}", can_pull);
@@ -146,7 +146,7 @@ impl GameState {
             Owner::BottomPlayer => &mut self.bottom_player_bag,
         };
         let result =
-            bag.pull().expect("Assertion Error: bag should not have been empty by this point");
+            bag.pull(rng).expect("Assertion Error: bag should not have been empty by this point");
         self.pulled_tile = Some(result);
     }
 
@@ -166,7 +166,7 @@ impl GameState {
                         self.game_move_to_board_move(&game_move), self.current_player_turn),
         }
     }
-    pub fn make_a_move(&mut self, game_move: GameMove) -> () {
+    pub fn make_a_move<R: Rng>(&mut self, game_move: GameMove, rng: &mut R) -> () {
         match game_move {
             GameMove::PlaceNewTile(_) | GameMove::PullAndPlay(_) =>
                 self.moves_without_capture_or_placement_stack.push(0),
@@ -183,8 +183,8 @@ impl GameState {
             assert_not!(self.is_waiting_for_tile_placement(), "Waiting for a new tile placement");
         }
         if let GameMove::PullAndPlay(o) = &game_move {
-            self.pull_tile_from_bag();
-            self.make_a_move(GameMove::PlaceNewTile(*o));
+            self.pull_tile_from_bag(rng);
+            self.make_a_move(GameMove::PlaceNewTile(*o), rng);
             return;
         }
         if let GameMove::ApplyNonCommandTileAction { src, dst } = game_move {
@@ -460,6 +460,7 @@ impl Rectangular for GameState {
 #[cfg(test)]
 mod tests {
     use crate::{assert_empty, assert_eq_set};
+    use crate::common::utils::test_rng;
     use crate::game::units;
 
     use super::*;
@@ -557,7 +558,7 @@ mod tests {
                     state.can_pull_tile_from_bag(),
         );
 
-        state.pull_tile_from_bag();
+        state.pull_tile_from_bag(&mut test_rng());
         assert_not!( // But only below the current duke, since the current duke is in guard.
             state.is_valid_placement(DukeOffset::Right)
         );
@@ -582,7 +583,7 @@ mod tests {
                     state.can_pull_tile_from_bag(),
         );
 
-        state.pull_tile_from_bag();
+        state.pull_tile_from_bag(&mut test_rng());
         assert_not!( // But only below the current duke, since the current duke is in guard.
             state.is_valid_placement(DukeOffset::Right)
         );
@@ -629,7 +630,7 @@ mod tests {
     fn test_undo_move(mut state: GameState, mv: GameMove) {
         let undo = state.to_undo(&mv);
         let expected = state.clone();
-        state.make_a_move(mv);
+        state.make_a_move(mv, &mut test_rng());
         state.undo(undo);
         assert_eq!(
             expected,
@@ -755,35 +756,35 @@ mod tests {
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 0, y: 0 },
                 dst: Coordinates { x: 5, y: 0 },
-            });
+            }, &mut test_rng());
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 5, y: 5 },
                 dst: Coordinates { x: 0, y: 5 },
-            });
+            }, &mut test_rng());
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 5, y: 0 },
                 dst: Coordinates { x: 5, y: 5 },
-            });
+            }, &mut test_rng());
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 0, y: 5 },
                 dst: Coordinates { x: 0, y: 0 },
-            });
+            }, &mut test_rng());
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 5, y: 5 },
                 dst: Coordinates { x: 0, y: 5 },
-            });
+            }, &mut test_rng());
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 0, y: 0 },
                 dst: Coordinates { x: 5, y: 0 },
-            });
+            }, &mut test_rng());
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 0, y: 5 },
                 dst: Coordinates { x: 0, y: 0 },
-            });
+            }, &mut test_rng());
             gs.make_a_move(GameMove::ApplyNonCommandTileAction {
                 src: Coordinates { x: 5, y: 0 },
                 dst: Coordinates { x: 5, y: 5 },
-            });
+            }, &mut test_rng());
         }
         assert_eq!(gs.game_result(), GameResult::Tie)
     }
@@ -803,6 +804,6 @@ mod tests {
         gs.make_a_move(GameMove::ApplyNonCommandTileAction {
             src: duke_coordinates,
             dst: Coordinates { x: 1, y: 2 },
-        });
+        }, &mut test_rng());
     }
 }

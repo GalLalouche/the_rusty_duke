@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::game::ai::alpha_beta_min_max::HeuristicAlphaBetaPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
+use rand::{Rng, thread_rng};
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::state::{GameResult, GameState};
 use crate::game::tile::{Owner, TileRef};
@@ -104,7 +105,7 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
         macro_rules! wrap {
             ($controller: ident, $command: expr) => {
-                match $controller.apply($command) {
+                match $controller.apply($command, &mut thread_rng()) {
                     None => (),
                     Some(e) => $controller.add_info(e.error_msg().as_str()),
                 }

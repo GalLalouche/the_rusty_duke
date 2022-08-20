@@ -16,19 +16,14 @@ impl TileBag {
         TileBag { bag }
     }
 
-    pub fn pull(&mut self) -> Option<TileRef> {
+    pub fn pull<R: Rng>(&mut self, rng: &mut R) -> Option<TileRef> {
         if self.bag.is_empty() {
             None
         } else {
-            let mut rng = rand::thread_rng();
             let index = rng.gen_range(0..self.bag.len());
             Some(self.bag.remove(index))
         }
     }
-
-    // pub(super) fn pull_index(&mut self, x: usize) -> TileRef {
-    //     self.bag.remove(x)
-    // }
 
     pub fn remaining(&self) -> &Vec<TileRef> {
         &self.bag

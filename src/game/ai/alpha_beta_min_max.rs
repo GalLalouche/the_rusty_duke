@@ -1,5 +1,6 @@
 use minimax_alpha_beta::strategy::AlphaBetaMiniMaxStrategy;
-use rand::Rng;
+use rand::{Rng, RngCore, SeedableRng, thread_rng};
+use rand::rngs::StdRng;
 
 use crate::common::utils::Vectors;
 use crate::game::ai::heuristics::HeuristicAi;
@@ -17,16 +18,16 @@ impl PartialEq for OrdFloat {
     }
 }
 
-fn play_aux(mv: &AiMove, state: &mut GameState) {
+fn play_aux<R: Rng>(mv: &AiMove, state: &mut GameState, rng: &mut R) {
     time_it_macro!("alpha_beta: play", {
             match &mv {
                 AiMove::PullTileFormBagAndPlay(o, _) =>
-                    state.make_a_move(GameMove::PullAndPlay(*o)),
+                    state.make_a_move(GameMove::PullAndPlay(*o), rng),
                 AiMove::ApplyNonCommandTileAction { src, dst, .. } =>
                     state.make_a_move(GameMove::ApplyNonCommandTileAction {
                         src: *src,
                         dst: *dst,
-                    }),
+                    }, rng),
                 AiMove::Sentinel => {}
             }
         })
@@ -56,11 +57,13 @@ impl HeuristicAlphaBetaPlayer {
 pub(super) struct HeuristicAlphaBetaPlayerStrategy<'a> {
     pub state: GameState,
     pub player: &'a HeuristicAlphaBetaPlayer,
+    rng: Box<dyn RngCore>
 }
 
 impl ArtificialPlayer for HeuristicAlphaBetaPlayer {
-    fn get_next_move<R: Rng>(&self, _rng: &mut R, gs: &GameState) -> AiMove {
-        HeuristicAlphaBetaPlayerStrategy { state: gs.clone(), player: self }
+    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &GameState) -> AiMove {
+        let split = StdRng::seed_from_u64(rng.gen());
+        HeuristicAlphaBetaPlayerStrategy { state: gs.clone(), player: self, rng: Box::new(split) }
             .get_best_move(self.max_depth as i64, false)
     }
 }
@@ -95,7 +98,7 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStra
         let mut result = Vec::new();
         AiMove::all_moves(&self.state)
             .for_each(|mv: AiMove| {
-                play_aux(&mv, &mut clone);
+                play_aux(&mv, &mut clone, &mut thread_rng());
                 let res = self.player.evaluator.cheap_evaluate(&clone);
                 // TODO reduce duplication with below
                 if let Some(um) = mv.to_undo_move() {
@@ -107,7 +110,7 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStra
     }
 
     fn play(&mut self, mv: &Self::Move, _maximizer: bool) {
-        play_aux(mv, &mut self.state);
+        play_aux(mv, &mut self.state, &mut self.rng);
     }
 
     fn clear(&mut self, mv: &Self::Move) {
@@ -157,7 +160,7 @@ impl minimax::Move for AiMove {
 
     fn apply(&self, state: &mut <Self::G as minimax::Game>::S) {
         time_it_macro!("minimax: apply", {
-            self.play(state);
+            self.play(state, &mut thread_rng());
         });
     }
 
