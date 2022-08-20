@@ -2,7 +2,7 @@ use minimax_alpha_beta::strategy::AlphaBetaMiniMaxStrategy;
 use rand::Rng;
 
 use crate::common::utils::Vectors;
-use crate::game::ai::heuristic_ai::HeuristicAi;
+use crate::game::ai::heuristics::HeuristicAi;
 use crate::game::ai::heuristics::Heuristics;
 use crate::game::ai::player::{AiMove, ArtificialPlayer, EvaluatingPlayer};
 use crate::game::state::{GameMove, GameState};

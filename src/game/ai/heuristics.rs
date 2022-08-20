@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use crate::game::ai::player::EvaluatingPlayer;
 use crate::game::state::GameState;
 use crate::game::tile::Owner;
 
@@ -50,5 +51,27 @@ impl Heuristic for Heuristics {
                 gs.get_legal_moves_ignoring_guard(gs.duke_coordinate(o)).len() as f64,
             e => e.evaluate_for_owner(o, gs),
         }
+    }
+}
+
+pub struct HeuristicAi {
+    heuristics: Vec<Box<dyn Heuristic>>,
+}
+
+impl HeuristicAi {
+    pub fn new(heuristics: Vec<Box<dyn Heuristic>>) -> HeuristicAi { HeuristicAi { heuristics } }
+}
+
+impl EvaluatingPlayer for HeuristicAi {
+    fn evaluate(&self, gs: &GameState) -> f64 {
+        self.heuristics.iter()
+            .map(|h| h.difference(gs.current_player_turn(), gs))
+            .sum()
+    }
+
+    fn cheap_evaluate(&self, gs: &GameState) -> f64 {
+        self.heuristics.iter()
+            .map(|h| h.approx_difference(gs.current_player_turn(), gs))
+            .sum()
     }
 }
