@@ -25,7 +25,7 @@ pub trait EvaluatingPlayer {
     fn cheap_evaluate(&self, gs: &GameState) -> f64;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AiMove {
     PullTileFormBagAndPlay(DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates, capturing: Option<PlacedTile> },
