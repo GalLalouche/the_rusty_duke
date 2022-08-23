@@ -2,11 +2,12 @@ use minimax_alpha_beta::strategy::AlphaBetaMiniMaxStrategy;
 use rand::{Rng, RngCore, SeedableRng, thread_rng};
 use rand::rngs::StdRng;
 
-use crate::common::utils::Vectors;
+use crate::common::utils::{split_rng, Vectors};
 use crate::game::ai::heuristics::HeuristicAi;
 use crate::game::ai::heuristics::Heuristics;
 use crate::game::ai::player::{AiMove, ArtificialPlayer, EvaluatingPlayer};
 use crate::game::state::{GameMove, GameState};
+use crate::game::state::GameResult;
 use crate::game::tile::Owner;
 use crate::time_it_macro;
 
@@ -36,10 +37,11 @@ fn play_aux<R: Rng>(mv: &AiMove, state: &mut GameState, rng: &mut R) {
 pub struct HeuristicAlphaBetaPlayer {
     pub(super) evaluator: Box<dyn EvaluatingPlayer>,
     pub max_depth: u32,
+    rng: Box<dyn RngCore>,
 }
 
 impl HeuristicAlphaBetaPlayer {
-    pub fn all_heuristics_with_max_depth(max_depth: u32) -> Self {
+    pub fn all_heuristics_with_max_depth<'a, R: Rng>(max_depth: u32, rng: &'a mut R) -> Self {
         HeuristicAlphaBetaPlayer {
             evaluator: Box::new(HeuristicAi::new(
                 vec![
@@ -50,6 +52,7 @@ impl HeuristicAlphaBetaPlayer {
                 ]
             )),
             max_depth,
+            rng: Box::new(split_rng(rng)),
         }
     }
 }
@@ -57,14 +60,16 @@ impl HeuristicAlphaBetaPlayer {
 pub(super) struct HeuristicAlphaBetaPlayerStrategy<'a> {
     pub state: GameState,
     pub player: &'a HeuristicAlphaBetaPlayer,
-    rng: Box<dyn RngCore>
+    rng: Box<dyn RngCore>,
 }
 
 impl ArtificialPlayer for HeuristicAlphaBetaPlayer {
     fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &GameState) -> AiMove {
-        let split = StdRng::seed_from_u64(rng.gen());
-        HeuristicAlphaBetaPlayerStrategy { state: gs.clone(), player: self, rng: Box::new(split) }
-            .get_best_move(self.max_depth as i64, false)
+        HeuristicAlphaBetaPlayerStrategy {
+            state: gs.clone(),
+            player: self,
+            rng: Box::new(split_rng(rng)),
+        }.get_best_move(self.max_depth as i64, false)
     }
 }
 
@@ -110,7 +115,7 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStra
     }
 
     fn play(&mut self, mv: &Self::Move, _maximizer: bool) {
-        play_aux(mv, &mut self.state, &mut self.rng);
+        mv.play(&mut self.state, &mut self.rng);
     }
 
     fn clear(&mut self, mv: &Self::Move) {
@@ -137,6 +142,7 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStra
 // TODO fixtures
 #[cfg(test)]
 mod tests {
+    use crate::common::utils::test_rng;
     use crate::game::ai::alpha_beta_min_max::HeuristicAlphaBetaPlayer;
     use crate::game::ai::test::tests::{can_find_winning_move, can_find_winning_move_with_lookahead_2};
 
@@ -144,16 +150,22 @@ mod tests {
 
     #[test]
     fn win_in_1() {
-        can_find_winning_move(HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(1))
+        can_find_winning_move(
+            HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(1, &mut test_rng()))
     }
 
     #[test]
     fn win_in_2() {
-        can_find_winning_move_with_lookahead_2(HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(2))
+        can_find_winning_move_with_lookahead_2(
+            HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(2, &mut test_rng()))
+    }
+
+    #[test]
+    fn avoids_loss_in_1() {
+        can_find_winning_move_with_lookahead_2(
+            HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(2, &mut test_rng()))
     }
 }
-
-use crate::game::state::GameResult;
 
 impl minimax::Move for AiMove {
     type G = GameState;

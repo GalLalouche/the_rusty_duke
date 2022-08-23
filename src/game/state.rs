@@ -18,7 +18,7 @@ use crate::game::tile::{CurrentSide, Owner, PlacedTile, TileRef};
 use crate::game::tile_side::TileAction;
 
 // Technically not part of the base game rules, but it makes it easier for the AI
-pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 50;
+pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
@@ -195,7 +195,7 @@ impl GameState {
                 "Cannot move unowned tile in {:?}",
                 src
             );
-            assert!(self.board.can_move(src, dst))
+            assert!(self.board.can_move(src, dst), "Can't move from {} to {}", src, dst)
         }
         self.board.make_a_move(self.game_move_to_board_move(&game_move));
         assert_not!(self.board.is_guard(self.current_player_turn));

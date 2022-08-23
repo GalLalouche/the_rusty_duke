@@ -6,9 +6,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::game::ai::alpha_beta_min_max::HeuristicAlphaBetaPlayer;
+use crate::game::ai::mcts::player::MctsPlayer;
 use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
 use rand::{Rng, thread_rng};
+use crate::common::utils::test_rng;
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::state::{GameResult, GameState};
 use crate::game::tile::{Owner, TileRef};
@@ -82,7 +84,9 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let dumb_ai = StupidSyncAi {};
-    let smart_ai = HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(2);
+    let mut rng = test_rng();
+    let smart_ai = HeuristicAlphaBetaPlayer::all_heuristics_with_max_depth(2, &mut rng);
+    let smart_ai2 = MctsPlayer {playouts: 100, max_depth: None};
     loop {
         // TODO some kind of logging mechanism
         terminal.draw(|rect| {
@@ -156,6 +160,12 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
                     match controller.current_player_turn() {
                         Owner::TopPlayer => controller.ai_move(&dumb_ai),
                         Owner::BottomPlayer => controller.ai_move(&smart_ai),
+                    }
+                }
+                KeyCode::Char('N') => {
+                    match controller.current_player_turn() {
+                        Owner::TopPlayer => controller.ai_move(&dumb_ai),
+                        Owner::BottomPlayer => controller.ai_move(&smart_ai2),
                     }
                 }
                 _ => {}

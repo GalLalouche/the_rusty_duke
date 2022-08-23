@@ -1,12 +1,18 @@
 use std::cmp::{min, Ordering};
 
 use rand::prelude::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 
 #[macro_export]
 macro_rules! assert_not {
     ($cond: expr) => {assert!(!$cond)};
     ($cond: expr, $($arg: tt)+) => {assert! (!$cond, $($arg)*)};
+}
+
+#[macro_export]
+macro_rules! debug_assert_not {
+    ($cond: expr) => {debug_assert!(!$cond)};
+    ($cond: expr, $($arg: tt)+) => {debug_assert! (!$cond, $($arg)*)};
 }
 
 pub trait Distance {
@@ -342,3 +348,4 @@ mod iterator_tests {
 }
 
 pub fn test_rng() -> StdRng { StdRng::seed_from_u64(42) }
+pub fn split_rng<R: Rng>(rng: &mut R) -> StdRng { StdRng::seed_from_u64(rng.gen()) }
