@@ -25,7 +25,7 @@ impl MctsPlayer {
         depth: usize,
     ) -> (Depth, TestResult) {
         debug_assert!(!gs.is_over());
-        if self.max_depth.contains(&depth) {
+        if self.max_depth == Some(depth) {
             panic!();
         }
         time_it_macro!("play", {mv.play(gs, rng)});

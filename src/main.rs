@@ -1,14 +1,18 @@
 #![feature(backtrace)]
-#![feature(option_result_contains)]
 extern crate fstrings;
 
 use std::panic;
 
 use backtrace::Backtrace;
 
+pub use duke_rust::common;
+pub use duke_rust::game;
 
-mod common;
-mod game;
+// Re-export macros so that `crate::assert_not!` etc. still work in the view module
+pub use duke_rust::assert_not;
+pub use duke_rust::assert_none;
+pub use duke_rust::assert_some;
+
 mod view;
 
 fn main() -> () {

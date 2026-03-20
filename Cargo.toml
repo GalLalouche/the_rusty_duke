@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "duke_training"]
+
 [package]
 name = "duke_rust"
 version = "0.1.0"
@@ -13,7 +16,7 @@ strum_macros = "*"
 log = "*"
 backtrace = "*"
 
-minimax-alpha-beta = "*"
+minimax-alpha-beta = "0.1.7"
 minimax = "*"
 
 crossterm = "*"
