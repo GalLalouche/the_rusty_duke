@@ -204,6 +204,22 @@ impl TileSide {
             if self.board.get(near_offset.into()).has(&&TileAction::Slide) {
                 return Some(TileAction::Slide);
             }
+            // Check for JumpSlide at the corresponding far position
+            let far_offset = Offsets::new(
+                match near_offset.x {
+                    HorizontalOffset::Left => HorizontalOffset::FarLeft,
+                    HorizontalOffset::Right => HorizontalOffset::FarRight,
+                    other => other,
+                },
+                match near_offset.y {
+                    VerticalOffset::Top => VerticalOffset::FarTop,
+                    VerticalOffset::Bottom => VerticalOffset::FarBottom,
+                    other => other,
+                },
+            );
+            if self.board.get(far_offset.into()).has(&&TileAction::JumpSlide) {
+                return Some(TileAction::JumpSlide);
+            }
         }
 
         let x_offset = {
@@ -219,8 +235,8 @@ impl TileSide {
         }?;
 
         let y_offset = {
-            let y_base = i32::from(self.center_offset().to_index() - 2);
-            let y_diff = y_base + i32::from(dst.y) - i32::from(src.y);
+            let center_y = i32::from(self.center_offset().to_index()) - 2;
+            let y_diff = i32::from(dst.y) - i32::from(src.y) - center_y;
             match y_diff {
                 -2 => Some(VerticalOffset::FarTop),
                 -1 => Some(VerticalOffset::Top),
@@ -285,9 +301,12 @@ mod test {
             (&(VerticalOffset::FarTop), TileAction::Strike),
             (&(VerticalOffset::Bottom), TileAction::Unit),
         ]);
+        // Unit at Bottom (index 3), Strike at FarTop.
+        // to_absolute_coordinate: y = src.y + (-2) + 1 = src.y - 1
+        // So from (2,4), Strike targets (2,3).
         assert_some!(
             TileAction::Strike,
-            tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, Coordinates{x: 2, y:1}),
+            tile.get_action_from_coordinates(Coordinates{x: 2, y:4}, Coordinates{x: 2, y:3}),
         )
     }
 

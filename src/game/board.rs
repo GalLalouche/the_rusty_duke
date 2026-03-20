@@ -185,7 +185,22 @@ impl GameBoard {
                 }
                 res
             }
-            TileAction::JumpSlide => unimplemented!(),
+            TileAction::JumpSlide => {
+                // JumpSlide acts like Slide but can jump over one adjacent tile.
+                // Map far offset to near offset to determine direction, then reuse Slide logic.
+                let near_x = match offset.x {
+                    HorizontalOffset::FarLeft => HorizontalOffset::Left,
+                    HorizontalOffset::FarRight => HorizontalOffset::Right,
+                    other => other,
+                };
+                let near_y = match offset.y {
+                    VerticalOffset::FarTop => VerticalOffset::Top,
+                    VerticalOffset::FarBottom => VerticalOffset::Bottom,
+                    other => other,
+                };
+                let near_offset = Offsets::new(near_x, near_y);
+                self.target_coordinates(src, near_offset, TileAction::Slide, center)
+            }
             TileAction::Unit => panic!("ASSERTION ERROR"),
             TileAction::Command => panic!("ASSERTION ERROR"),
         }
@@ -219,11 +234,21 @@ impl GameBoard {
         }
         match action {
             TileAction::Unit => panic!("Cannot apply action Unit"),
-            TileAction::Move => self.unobstructed(src, dst),
+            TileAction::Move =>
+                src.is_straight_line_to(dst) && self.unobstructed(src, dst),
             TileAction::Jump => true,
-            TileAction::Slide => self.unobstructed(src, dst),
+            TileAction::Slide =>
+                src.is_straight_line_to(dst) && self.unobstructed(src, dst),
             TileAction::Command => panic!("Commands shouldn't have been used here"),
-            TileAction::JumpSlide => todo!(),
+            TileAction::JumpSlide => {
+                // Like Slide but can jump over one adjacent tile in the direction.
+                // Skip the first intermediate square (adjacent to src) in obstruction check.
+                if !src.is_straight_line_to(dst) {
+                    return false;
+                }
+                let path = src.linear_path_to(dst);
+                path.iter().skip(1).all(|c| self.board.is_empty(*c))
+            }
             TileAction::Strike => self.get(dst).exists(|o| o.different_team(&self.get(src).unwrap())),
         }
     }

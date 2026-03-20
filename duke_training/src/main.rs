@@ -23,7 +23,7 @@ fn main() {
         Arc::new(units::priest()),
         Arc::new(units::wizard()),
         Arc::new(units::dragoon()),
-        Arc::new(units::assassin()),
+        // Assassin excluded: JumpSlide not yet implemented in board logic
         Arc::new(units::general()),
         Arc::new(units::marshall()),
         Arc::new(units::longbowman()),
