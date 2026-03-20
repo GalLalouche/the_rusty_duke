@@ -9,6 +9,7 @@ use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
+use duke_rust::game::tile::Owner;
 use duke_rust::game::units;
 
 fn main() {
@@ -34,30 +35,43 @@ fn main() {
         (DukeInitialLocation::Right, FootmenSetup::Right),
     );
 
-    let ai = StupidSyncAi {};
     let mut rng = StdRng::seed_from_u64(42);
-    let mut turn_count: u32 = 0;
+    let mut completed = 0u32;
+    let mut panicked = 0u32;
+    let total_games = 1000;
 
     let start = Instant::now();
 
-    loop {
-        let result = gs.game_result();
+    for seed in 0..total_games {
+        let mut game = gs.clone();
+        let mut game_rng = StdRng::seed_from_u64(seed);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let ai = StupidSyncAi {};
+            let mut turns = 0u32;
+            loop {
+                match game.game_result() {
+                    GameResult::Ongoing => {
+                        ai.play_next_move(&mut game_rng, &mut game);
+                        turns += 1;
+                    }
+                    GameResult::Won(winner) => return (turns, Some(winner)),
+                    GameResult::Tie => return (turns, None),
+                }
+            }
+        }));
         match result {
-            GameResult::Ongoing => {
-                ai.play_next_move(&mut rng, &mut gs);
-                turn_count += 1;
+            Ok((turns, winner)) => {
+                completed += 1;
+                if seed < 5 {
+                    println!("Game {}: {} turns, winner: {:?}", seed, turns, winner);
+                }
             }
-            GameResult::Won(winner) => {
-                println!("Game over after {} turns. Winner: {:?}", turn_count, winner);
-                break;
-            }
-            GameResult::Tie => {
-                println!("Game over after {} turns. Result: Tie", turn_count);
-                break;
-            }
+            Err(_) => panicked += 1,
         }
     }
 
     let elapsed = start.elapsed();
-    println!("Elapsed time: {:.3?}", elapsed);
+    println!("\n{} games completed, {} panicked (pre-existing bugs)", completed, panicked);
+    println!("Total time: {:.3?}", elapsed);
+    println!("Avg per game: {:.3?}", elapsed / completed);
 }
