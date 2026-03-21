@@ -14,38 +14,77 @@ use duke_training::weight_export::export_weights;
 
 type MyBackend = Autodiff<Wgpu>;
 
+/// All knobs for a training run, parsed from command-line arguments.
+pub struct TrainingConfig {
+    pub total_games: u64,
+    pub lr: f64,
+    pub epsilon: f64,
+    pub update_interval: u64,
+    pub self_play: bool,
+    pub resume_path: Option<String>,
+}
+
+impl TrainingConfig {
+    pub fn from_args(args: &[String]) -> Self {
+        let self_play = args.iter().any(|a| a == "--self-play");
+
+        let total_games: u64 = args
+            .iter()
+            .position(|a| a == "--games")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100_000);
+
+        let lr: f64 = args
+            .iter()
+            .position(|a| a == "--lr")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.001);
+
+        let epsilon: f64 = args
+            .iter()
+            .position(|a| a == "--epsilon")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.15);
+
+        let update_interval: u64 = args
+            .iter()
+            .position(|a| a == "--update-interval")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
+
+        let resume_path: Option<String> = args
+            .iter()
+            .position(|a| a == "--resume")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
+
+        Self {
+            total_games,
+            lr,
+            epsilon,
+            update_interval,
+            self_play,
+            resume_path,
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let self_play = args.iter().any(|a| a == "--self-play");
-    let total_games: u64 = args.iter()
-        .position(|a| a == "--games")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100_000);
-    let epsilon: f64 = args.iter()
-        .position(|a| a == "--epsilon")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.15);
-    let update_interval: u64 = args.iter()
-        .position(|a| a == "--update-interval")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1000);
-
-    let resume_path: Option<String> = args.iter()
-        .position(|a| a == "--resume")
-        .and_then(|i| args.get(i + 1))
-        .cloned();
+    let config = TrainingConfig::from_args(&args);
 
     let bag = create_bag();
     let gs = create_initial_state(&bag);
 
     let device = WgpuDevice::default();
-    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, 0.001);
+    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, config.lr);
 
     // Load checkpoint if resuming
-    if let Some(ref path) = resume_path {
+    if let Some(ref path) = config.resume_path {
         println!("Resuming from checkpoint: {}", path);
         trainer.load_model(path);
         println!("Model loaded.");
@@ -55,15 +94,18 @@ fn main() {
     let nnue_weights = export_weights(&trainer.model);
     let mut nnue_evaluator = NnueEvaluator::new(nnue_weights);
 
-    if self_play {
+    if config.self_play {
         println!("Phase 2: NNUE self-play training");
-        println!("  epsilon={}, update_interval={}, total_games={}", epsilon, update_interval, total_games);
-        if resume_path.is_none() {
+        println!(
+            "  epsilon={}, update_interval={}, total_games={}",
+            config.epsilon, config.update_interval, config.total_games
+        );
+        if config.resume_path.is_none() {
             eprintln!("WARNING: --self-play without --resume starts from random weights!");
         }
     } else {
         println!("Phase 1: Random play training");
-        println!("  total_games={}", total_games);
+        println!("  total_games={}", config.total_games);
     }
 
     let start = Instant::now();
@@ -72,11 +114,11 @@ fn main() {
     let mut wins = [0u32; 2];
     let mut ties = 0u32;
 
-    for game_num in 0..total_games {
+    for game_num in 0..config.total_games {
         let mut rng = StdRng::seed_from_u64(game_num);
 
-        let (states, result) = if self_play {
-            play_nnue_game(&gs, &nnue_evaluator, &mut rng, epsilon)
+        let (states, result) = if config.self_play {
+            play_nnue_game(&gs, &nnue_evaluator, &mut rng, config.epsilon)
         } else {
             play_random_game(&gs, &mut rng)
         };
@@ -103,7 +145,7 @@ fn main() {
             recent_loss = 0.0;
         }
 
-        if (game_num + 1) % update_interval == 0 {
+        if (game_num + 1) % config.update_interval == 0 {
             // Save checkpoints
             let checkpoint_path = format!("checkpoints/fc_model_game_{}", game_num + 1);
             std::fs::create_dir_all("checkpoints").expect("Failed to create checkpoints dir");
@@ -113,7 +155,7 @@ fn main() {
             let new_weights = export_weights(&trainer.model);
             new_weights.save(&nnue_path).expect("Failed to save NNUE weights");
 
-            if self_play {
+            if config.self_play {
                 // Update NNUE evaluator with latest trained weights
                 nnue_evaluator = NnueEvaluator::new(new_weights);
                 println!("NNUE weights updated + checkpoint saved: {}", nnue_path);
@@ -124,7 +166,7 @@ fn main() {
     }
 
     let elapsed = start.elapsed();
-    println!("\nTraining complete: {} games in {:.1?}", total_games, elapsed);
-    println!("Avg time per game: {:.1?}", elapsed / total_games as u32);
-    println!("Final avg loss: {:.6}", total_loss / total_games as f32);
+    println!("\nTraining complete: {} games in {:.1?}", config.total_games, elapsed);
+    println!("Avg time per game: {:.1?}", elapsed / config.total_games as u32);
+    println!("Final avg loss: {:.6}", total_loss / config.total_games as f32);
 }

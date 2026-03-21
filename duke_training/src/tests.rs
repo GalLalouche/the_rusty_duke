@@ -12,10 +12,10 @@ use duke_rust::game::tile::Owner;
 
 use crate::encoding::{active_feature_indices, encode_state, encode_state_flat, BOARD_SIZE, NUM_PLANES};
 use crate::fc_model::FcValueNetwork;
+use crate::fc_td_training::FcTdTrainer;
 use crate::game_setup::{create_bag, create_initial_state, play_random_game};
 use crate::model::ValueNetwork;
 use crate::nnue::{NnueAccumulator, NnueEvaluator, NnueWeights, L1_SIZE};
-use crate::td_training::TdTrainer;
 use crate::weight_export::export_weights;
 
 type TestBackend = Autodiff<NdArray>;
@@ -218,12 +218,12 @@ fn model_output_is_between_zero_and_one() {
     }
 }
 
-// ── td_training tests ───────────────────────────────────────────────────
+// ── fc_td_training tests ────────────────────────────────────────────────
 
 #[test]
 fn train_on_game_returns_loss() {
     let device = Default::default();
-    let mut trainer: TdTrainer<TestBackend> = TdTrainer::new(device, 0.001);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001);
 
     let gs = create_test_state();
     let mut rng = StdRng::seed_from_u64(0);
@@ -238,7 +238,7 @@ fn train_on_game_returns_loss() {
 fn train_reduces_loss_on_repeated_game() {
     // Use a small bag (empty) so the game is short and training is fast in debug mode.
     let device = Default::default();
-    let mut trainer: TdTrainer<TestBackend> = TdTrainer::new(device, 0.01);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.01);
 
     let gs = create_small_state();
     let mut rng = StdRng::seed_from_u64(7);
@@ -263,7 +263,7 @@ fn train_reduces_loss_on_repeated_game() {
 }
 
 #[test]
-#[ignore] // Flaky: CNN with 5 training iterations may not converge enough
+#[ignore] // Flaky: FC model with 5 training iterations may not converge enough
 fn terminal_state_target_is_correct() {
     // Use small bag for fast game in debug mode.
     let gs = create_small_state();
@@ -298,14 +298,14 @@ fn terminal_state_target_is_correct() {
 
     // Train a few times (kept low for debug builds)
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
-    let mut trainer: TdTrainer<TestBackend> = TdTrainer::new(device.clone(), 0.01);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device.clone(), 0.01);
     for _ in 0..5 {
         trainer.train_on_game(&states, game_result);
     }
 
     // Now check the terminal state prediction
-    let encoded = encode_state::<TestBackend>(terminal_state, &device);
-    let batch = encoded.unsqueeze::<4>(); // [1, 30, 6, 6]
+    let encoded = encode_state_flat::<TestBackend>(terminal_state, &device);
+    let batch = encoded.unsqueeze::<2>(); // [1, 1080]
     let prediction = trainer.model.forward(batch);
     let pred_value: f32 = prediction.into_data().to_vec::<f32>().expect("to_vec")[0];
 
@@ -630,8 +630,6 @@ fn encode_state_flat_uses_active_feature_indices() {
 
 #[test]
 fn fc_trainer_load_model_changes_output() {
-    use crate::fc_td_training::FcTdTrainer;
-
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
 
     // Create two trainers — they get different random weights

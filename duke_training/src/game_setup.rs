@@ -6,7 +6,7 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
-use duke_rust::game::ai::player::AiMove;
+use duke_rust::game::ai::player::{AiMove, EvaluatingPlayer};
 use duke_rust::game::ai::player::ArtificialPlayer;
 use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
@@ -15,6 +15,41 @@ use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::units;
 
 use crate::nnue::NnueEvaluator;
+
+/// Common trait for anything that can evaluate a game state.
+/// Returns win probability for the current player in [0, 1].
+pub trait GameEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32;
+}
+
+impl GameEvaluator for NnueEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        self.evaluate_state(gs)
+    }
+}
+
+/// Wrapper that adapts an `EvaluatingPlayer` (heuristic) to the `GameEvaluator` trait.
+///
+/// The heuristic's `cheap_evaluate` returns a score in an arbitrary range;
+/// we map it to [0, 1] using a sigmoid so it can be used interchangeably
+/// with neural-network evaluators.
+pub struct HeuristicEvaluator<'a> {
+    inner: &'a dyn EvaluatingPlayer,
+}
+
+impl<'a> HeuristicEvaluator<'a> {
+    pub fn new(inner: &'a dyn EvaluatingPlayer) -> Self {
+        Self { inner }
+    }
+}
+
+impl GameEvaluator for HeuristicEvaluator<'_> {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        let raw = self.inner.cheap_evaluate(gs);
+        // Sigmoid to map arbitrary heuristic score to [0, 1]
+        (1.0 / (1.0 + (-raw).exp())) as f32
+    }
+}
 
 /// Create the standard tile bag (all tiles except Assassin).
 pub fn create_bag() -> TileBag {
@@ -64,7 +99,7 @@ pub fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, Ga
     }
 }
 
-/// Play a game using NNUE self-play with epsilon-greedy exploration.
+/// Play a game using self-play with epsilon-greedy exploration.
 pub fn play_nnue_game(
     gs: &GameState,
     evaluator: &NnueEvaluator,
@@ -83,7 +118,7 @@ pub fn play_nnue_game(
                 if rng.gen::<f64>() < epsilon {
                     ai.play_next_move(rng, &mut game);
                 } else {
-                    let mv = nnue_greedy_move(&game, evaluator, rng);
+                    let mv = greedy_move(&game, evaluator, rng);
                     mv.play(&mut game, rng);
                 }
             }
@@ -96,7 +131,9 @@ pub fn play_nnue_game(
 }
 
 /// Pick the move that minimizes the opponent's value (= maximizes our value).
-pub fn nnue_greedy_move(gs: &GameState, evaluator: &NnueEvaluator, rng: &mut impl Rng) -> AiMove {
+///
+/// Works with any `GameEvaluator` implementation (NNUE, heuristic, etc.).
+pub fn greedy_move(gs: &GameState, evaluator: &dyn GameEvaluator, rng: &mut impl Rng) -> AiMove {
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
     moves.shuffle(rng);
 
@@ -109,7 +146,7 @@ pub fn nnue_greedy_move(gs: &GameState, evaluator: &NnueEvaluator, rng: &mut imp
         // corrupt the main rng or depend on move order.
         let mut eval_rng = StdRng::seed_from_u64(0);
         mv.play(&mut clone, &mut eval_rng);
-        let prediction = evaluator.evaluate_state(&clone);
+        let prediction = evaluator.evaluate(&clone);
         let score = 1.0 - prediction as f64;
         if score > best_score {
             best_score = score;
