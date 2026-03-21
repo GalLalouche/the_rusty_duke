@@ -3,10 +3,11 @@ use burn::prelude::*;
 use burn::tensor::activation::sigmoid;
 
 use crate::encoding::{NUM_PLANES, BOARD_SIZE};
+use crate::nnue;
 
 pub const INPUT_SIZE: usize = NUM_PLANES * BOARD_SIZE * BOARD_SIZE; // 1080
-pub const L1_SIZE: usize = 256;
-pub const L2_SIZE: usize = 32;
+pub const L1_SIZE: usize = nnue::L1_SIZE;
+pub const L2_SIZE: usize = nnue::L2_SIZE;
 
 /// A flat fully-connected value network matching the NNUE architecture.
 ///

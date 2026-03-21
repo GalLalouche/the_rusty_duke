@@ -501,3 +501,140 @@ fn accumulator_incremental_matches_full() {
         );
     }
 }
+
+#[test]
+fn accumulator_remove_feature_matches_full() {
+    use burn::backend::NdArray;
+
+    let device = Default::default();
+    let model = FcValueNetwork::<NdArray>::new(&device);
+    let weights = export_weights(&model);
+
+    // Target: features [0, 100]
+    let target_features = vec![0, 100];
+    let target_acc = NnueAccumulator::from_features(&weights, &target_features);
+
+    // Start from [0, 5, 100], remove 5
+    let full_features = vec![0, 5, 100];
+    let mut inc_acc = NnueAccumulator::from_features(&weights, &full_features);
+    inc_acc.remove_feature(5, &weights);
+
+    for i in 0..L1_SIZE {
+        let diff = (target_acc.hidden[i] - inc_acc.hidden[i]).abs();
+        assert!(
+            diff < 1e-5,
+            "remove_feature mismatch at {}: expected={}, got={}",
+            i,
+            target_acc.hidden[i],
+            inc_acc.hidden[i]
+        );
+    }
+}
+
+#[test]
+fn encode_state_flat_matches_encode_state() {
+    let device = Default::default();
+    let gs = create_initial_state();
+
+    let tensor_3d = encode_state::<TestBackend>(&gs, &device);
+    let flat_from_3d: Vec<f32> = tensor_3d
+        .reshape([1080])
+        .into_data()
+        .to_vec()
+        .expect("reshape");
+
+    let tensor_flat = encode_state_flat::<TestBackend>(&gs, &device);
+    let flat_direct: Vec<f32> = tensor_flat
+        .into_data()
+        .to_vec()
+        .expect("flat");
+
+    assert_eq!(flat_from_3d.len(), flat_direct.len());
+    for i in 0..flat_from_3d.len() {
+        assert_eq!(
+            flat_from_3d[i], flat_direct[i],
+            "encode_state vs encode_state_flat mismatch at index {}",
+            i
+        );
+    }
+}
+
+#[test]
+fn active_features_matches_encoding_after_moves() {
+    // Test encoding consistency after several moves (flipped tiles, captures)
+    let gs = create_initial_state();
+    let mut game = gs;
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(42);
+    let device = Default::default();
+
+    // Play a few moves to get flipped tiles
+    for _ in 0..6 {
+        if game.game_result() != GameResult::Ongoing {
+            break;
+        }
+        ai.play_next_move(&mut rng, &mut game);
+    }
+
+    let tensor = encode_state::<TestBackend>(&game, &device);
+    let flat: Vec<f32> = tensor.reshape([1080]).into_data().to_vec().expect("flat");
+
+    let active = active_feature_indices(&game);
+    for &idx in &active {
+        assert_eq!(flat[idx], 1.0, "Feature {} should be 1.0 after moves", idx);
+    }
+    let ones_count = flat.iter().filter(|&&v| v == 1.0).count();
+    assert_eq!(
+        ones_count,
+        active.len(),
+        "After moves: {} ones in tensor but {} active features",
+        ones_count,
+        active.len()
+    );
+}
+
+#[test]
+fn nnue_matches_burn_across_multiple_states() {
+    use burn::backend::NdArray;
+
+    let device = Default::default();
+    let model = FcValueNetwork::<NdArray>::new(&device);
+    let nnue_weights = export_weights(&model);
+    let evaluator = NnueEvaluator::new(nnue_weights);
+
+    // Play a game and check NNUE matches burn at every state
+    let gs = create_small_state();
+    let mut game = gs;
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(99);
+    let mut states_checked = 0;
+
+    for _ in 0..10 {
+        if game.game_result() != GameResult::Ongoing {
+            break;
+        }
+
+        let flat = encode_state_flat::<NdArray>(&game, &device);
+        let batch = flat.unsqueeze::<2>();
+        let burn_output: f32 = model
+            .forward(batch)
+            .into_data()
+            .to_vec::<f32>()
+            .expect("burn")[0];
+
+        let nnue_output = evaluator.evaluate_state(&game);
+        let diff = (burn_output - nnue_output).abs();
+        assert!(
+            diff < 1e-4,
+            "State {}: NNUE={} vs burn={}, diff={}",
+            states_checked,
+            nnue_output,
+            burn_output,
+            diff
+        );
+        states_checked += 1;
+
+        ai.play_next_move(&mut rng, &mut game);
+    }
+    assert!(states_checked >= 3, "Should check at least 3 states, checked {}", states_checked);
+}
