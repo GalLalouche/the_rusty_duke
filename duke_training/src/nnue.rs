@@ -1,7 +1,7 @@
 use duke_rust::game::state::GameState;
-use crate::encoding::{active_feature_indices, NUM_PLANES, BOARD_SIZE};
+use crate::encoding::{active_feature_indices, TOTAL_FEATURES, BOARD_FEATURES, bag_features, BAG_FEATURES};
 
-pub const NUM_FEATURES: usize = NUM_PLANES * BOARD_SIZE * BOARD_SIZE; // 1080
+pub const NUM_FEATURES: usize = TOTAL_FEATURES; // 1106
 pub const L1_SIZE: usize = 256;
 pub const L2_SIZE: usize = 32;
 /// Maximum active features: 12 tiles × 2 features each (type + side).
@@ -142,11 +142,24 @@ impl NnueEvaluator {
         Self { weights }
     }
 
-    /// Evaluate a game state from scratch.
-    /// Returns win probability for the current player in [0, 1].
     pub fn evaluate_state(&self, gs: &GameState) -> f32 {
-        let features = active_feature_indices(gs);
-        let acc = NnueAccumulator::from_features(&self.weights, &features);
+        // Board features (sparse binary)
+        let board_features = active_feature_indices(gs);
+        let mut acc = NnueAccumulator::from_features(&self.weights, &board_features);
+
+        // Bag features (dense, at indices BOARD_FEATURES..TOTAL_FEATURES)
+        let bag = bag_features(gs);
+        for (i, &val) in bag.iter().enumerate() {
+            if val != 0.0 {
+                let feat = BOARD_FEATURES + i;
+                // Dense: multiply weight column by the count value
+                let col = &self.weights.l1_weight[feat * L1_SIZE..(feat + 1) * L1_SIZE];
+                for j in 0..L1_SIZE {
+                    acc.hidden[j] += col[j] * val;
+                }
+            }
+        }
+
         self.evaluate_from_accumulator(&acc)
     }
 

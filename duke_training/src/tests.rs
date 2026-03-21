@@ -325,10 +325,11 @@ fn terminal_state_target_is_correct() {
 
 #[test]
 fn active_features_matches_encoding() {
+    use crate::encoding::BOARD_FEATURES;
     let gs = create_test_state();
     let device = Default::default();
     let tensor = encode_state::<TestBackend>(&gs, &device);
-    let flat: Vec<f32> = tensor.reshape([1080]).into_data().to_vec().expect("flat");
+    let flat: Vec<f32> = tensor.reshape([BOARD_FEATURES as i32]).into_data().to_vec().expect("flat");
 
     let active = active_feature_indices(&gs);
     // Every active index should have a 1.0 in the flat tensor
@@ -351,9 +352,8 @@ fn fc_model_forward_produces_valid_output() {
     let device = Default::default();
     let model = FcValueNetwork::<TestBackend>::new(&device);
 
-    // Random input of shape [1, 1080]
     let input = Tensor::<TestBackend, 2>::random(
-        [1, NUM_PLANES * BOARD_SIZE * BOARD_SIZE],
+        [1, crate::encoding::TOTAL_FEATURES],
         burn::tensor::Distribution::Uniform(0.0, 1.0),
         &device,
     );
@@ -485,31 +485,37 @@ fn accumulator_remove_feature_matches_full() {
 }
 
 #[test]
-fn encode_state_flat_matches_encode_state() {
+fn encode_state_flat_board_portion_matches_encode_state() {
+    use crate::encoding::BOARD_FEATURES;
     let device = Default::default();
     let gs = create_test_state();
 
+    // 3D encoding = board only (1080)
     let tensor_3d = encode_state::<TestBackend>(&gs, &device);
     let flat_from_3d: Vec<f32> = tensor_3d
-        .reshape([1080])
+        .reshape([BOARD_FEATURES as i32])
         .into_data()
         .to_vec()
         .expect("reshape");
 
+    // Flat encoding = board (1080) + bag (26) = 1106
     let tensor_flat = encode_state_flat::<TestBackend>(&gs, &device);
     let flat_direct: Vec<f32> = tensor_flat
         .into_data()
         .to_vec()
         .expect("flat");
 
-    assert_eq!(flat_from_3d.len(), flat_direct.len());
-    for i in 0..flat_from_3d.len() {
+    // Board portion should match
+    for i in 0..BOARD_FEATURES {
         assert_eq!(
             flat_from_3d[i], flat_direct[i],
-            "encode_state vs encode_state_flat mismatch at index {}",
-            i
+            "Board feature mismatch at index {}", i
         );
     }
+
+    // Bag portion should have non-zero values (initial state has tiles in bag)
+    let bag_sum: f32 = flat_direct[BOARD_FEATURES..].iter().sum();
+    assert!(bag_sum > 0.0, "Bag features should be non-zero for initial state");
 }
 
 #[test]
@@ -530,7 +536,7 @@ fn active_features_matches_encoding_after_moves() {
     }
 
     let tensor = encode_state::<TestBackend>(&game, &device);
-    let flat: Vec<f32> = tensor.reshape([1080]).into_data().to_vec().expect("flat");
+    let flat: Vec<f32> = tensor.reshape([crate::encoding::BOARD_FEATURES as i32]).into_data().to_vec().expect("flat");
 
     let active = active_feature_indices(&game);
     for &idx in &active {
@@ -593,18 +599,14 @@ fn nnue_matches_burn_across_multiple_states() {
 }
 
 #[test]
-#[test]
 fn encode_state_flat_uses_active_feature_indices() {
-    // Verify encode_state_flat sets exactly the indices from active_feature_indices.
-    // This is the critical consistency check: training (encode_state_flat) and
-    // NNUE inference (active_feature_indices) MUST agree on what features are active.
+    use crate::encoding::{BOARD_FEATURES, bag_features, BAG_FEATURES};
     let gs = create_test_state();
     let mut game = gs;
     let ai = StupidSyncAi {};
     let mut rng = StdRng::seed_from_u64(123);
     let device = Default::default();
 
-    // Check at multiple points during a game
     for turn in 0..8 {
         if game.game_result() != GameResult::Ongoing { break; }
 
@@ -614,15 +616,22 @@ fn encode_state_flat_uses_active_feature_indices() {
             .to_vec()
             .expect("flat");
 
-        // Every active index should be 1.0
+        // Board portion: active indices should be 1.0
         for &idx in &active {
             assert_eq!(flat[idx], 1.0,
-                "Turn {}: feature {} should be 1.0 in flat encoding", turn, idx);
+                "Turn {}: board feature {} should be 1.0", turn, idx);
         }
-        // Total 1.0s should match active count
-        let ones = flat.iter().filter(|&&v| v == 1.0).count();
-        assert_eq!(ones, active.len(),
-            "Turn {}: {} ones in flat but {} active features", turn, ones, active.len());
+        // Board 1.0 count should match active features
+        let board_ones = flat[..BOARD_FEATURES].iter().filter(|&&v| v == 1.0).count();
+        assert_eq!(board_ones, active.len(),
+            "Turn {}: {} ones in board but {} active features", turn, board_ones, active.len());
+
+        // Bag portion: should match bag_features()
+        let bag = bag_features(&game);
+        for i in 0..BAG_FEATURES {
+            assert_eq!(flat[BOARD_FEATURES + i], bag[i],
+                "Turn {}: bag feature {} mismatch", turn, i);
+        }
 
         ai.play_next_move(&mut rng, &mut game);
     }

@@ -4,25 +4,32 @@ use duke_rust::game::tile::{CurrentSide, TileType};
 use strum::EnumCount;
 
 pub const NUM_TILE_TYPES: usize = TileType::COUNT;
-/// 13 tile types × 2 (my/opponent) + 4 side planes = 30
-pub const NUM_PLANES: usize = NUM_TILE_TYPES * 2 + 4;
 pub const BOARD_SIZE: usize = 6;
+/// Board planes: 13 tile types × 2 (my/opponent) + 4 side planes = 30
+pub const NUM_BOARD_PLANES: usize = NUM_TILE_TYPES * 2 + 4;
+pub const BOARD_FEATURES: usize = NUM_BOARD_PLANES * BOARD_SIZE * BOARD_SIZE; // 1080
+/// Bag features: 13 tile types × 2 (my bag / opponent bag) = 26 scalars
+pub const BAG_FEATURES: usize = NUM_TILE_TYPES * 2;
+/// Total input size for the flat FC model.
+pub const TOTAL_FEATURES: usize = BOARD_FEATURES + BAG_FEATURES; // 1106
+
+// Keep NUM_PLANES for backward compatibility with CNN model
+pub const NUM_PLANES: usize = NUM_BOARD_PLANES;
 
 /// Encode a `GameState` into a tensor of shape `[NUM_PLANES, 6, 6]`.
-///
-/// Encoding is relative to the current player:
-/// - Planes 0..12:  current player's tile of type i
-/// - Planes 13..25: opponent's tile of type i
-/// - Plane 26/27: current player's tile on initial/flipped side
-/// - Plane 28/29: opponent's tile on initial/flipped side
+/// NOTE: This is the CNN encoding and does NOT include bag features.
 pub fn encode_state<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 3> {
-    encode_state_flat(gs, device)
+    let total = BOARD_FEATURES;
+    let mut data = vec![0.0f32; total];
+    for idx in active_board_features(gs) {
+        data[idx] = 1.0;
+    }
+    Tensor::<B, 1>::from_floats(data.as_slice(), device)
         .reshape([NUM_PLANES as i32, BOARD_SIZE as i32, BOARD_SIZE as i32])
 }
 
-/// Returns indices of active features in the sparse encoding.
-/// Each tile contributes 2 features (type plane + side plane).
-pub fn active_feature_indices(gs: &GameState) -> Vec<usize> {
+/// Board feature indices (sparse binary). Same as before.
+pub fn active_board_features(gs: &GameState) -> Vec<usize> {
     let current_player = gs.current_player_turn();
     let board = gs.board();
     let mut features = Vec::with_capacity(24);
@@ -47,15 +54,44 @@ pub fn active_feature_indices(gs: &GameState) -> Vec<usize> {
     features
 }
 
-/// Flat tensor of shape `[1080]`. Delegates to `active_feature_indices`.
-pub fn encode_state_flat<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 1> {
-    let total = NUM_PLANES * BOARD_SIZE * BOARD_SIZE;
-    let mut data = vec![0.0f32; total];
+/// Bag tile counts: [my_bag_type_0, ..., my_bag_type_12, opp_bag_type_0, ..., opp_bag_type_12]
+/// Each value is the count of that tile type in the respective bag.
+pub fn bag_features(gs: &GameState) -> [f32; BAG_FEATURES] {
+    let current_player = gs.current_player_turn();
+    let my_bag = gs.bag_for_current_player();
+    let opp_bag = gs.bag_for_other_player();
 
-    for idx in active_feature_indices(gs) {
-        debug_assert!(idx < total);
+    let mut features = [0.0f32; BAG_FEATURES];
+
+    for tile in my_bag.remaining() {
+        features[tile.tile_type().index()] += 1.0;
+    }
+    for tile in opp_bag.remaining() {
+        features[NUM_TILE_TYPES + tile.tile_type().index()] += 1.0;
+    }
+
+    features
+}
+
+/// Backward-compatible alias for active_board_features.
+pub fn active_feature_indices(gs: &GameState) -> Vec<usize> {
+    active_board_features(gs)
+}
+
+/// Flat tensor of shape `[TOTAL_FEATURES]` (1106).
+/// Board features (sparse binary) + bag features (dense counts).
+pub fn encode_state_flat<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 1> {
+    let mut data = vec![0.0f32; TOTAL_FEATURES];
+
+    // Board features (sparse)
+    for idx in active_board_features(gs) {
+        debug_assert!(idx < BOARD_FEATURES);
         data[idx] = 1.0;
     }
+
+    // Bag features (dense, appended after board)
+    let bag = bag_features(gs);
+    data[BOARD_FEATURES..TOTAL_FEATURES].copy_from_slice(&bag);
 
     Tensor::<B, 1>::from_floats(data.as_slice(), device)
 }

@@ -2,10 +2,10 @@ use burn::nn::{Linear, LinearConfig};
 use burn::prelude::*;
 use burn::tensor::activation::sigmoid;
 
-use crate::encoding::{NUM_PLANES, BOARD_SIZE};
+use crate::encoding::TOTAL_FEATURES;
 use crate::nnue;
 
-pub const INPUT_SIZE: usize = NUM_PLANES * BOARD_SIZE * BOARD_SIZE; // 1080
+pub const INPUT_SIZE: usize = TOTAL_FEATURES; // 1106 (1080 board + 26 bag)
 pub const L1_SIZE: usize = nnue::L1_SIZE;
 pub const L2_SIZE: usize = nnue::L2_SIZE;
 
