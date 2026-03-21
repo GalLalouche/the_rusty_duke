@@ -31,6 +31,7 @@ pub struct TrainingConfig {
 impl TrainingConfig {
     /// Linear decay from lr_start to lr_end over total_games.
     pub fn lr_at(&self, game_num: u64) -> f64 {
+        if self.total_games == 0 { return self.lr_start; }
         let progress = game_num as f64 / self.total_games as f64;
         self.lr_start + (self.lr_end - self.lr_start) * progress
     }

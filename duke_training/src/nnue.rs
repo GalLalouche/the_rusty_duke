@@ -73,6 +73,15 @@ impl NnueWeights {
         f.read_exact(&mut buf4)?;
         let l2_size = u32::from_le_bytes(buf4) as usize;
 
+        if l1_size > MAX_L1 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                format!("l1_size {} exceeds MAX_L1 {}", l1_size, MAX_L1)));
+        }
+        if l2_size > MAX_L2 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                format!("l2_size {} exceeds MAX_L2 {}", l2_size, MAX_L2)));
+        }
+
         let read_vec = |f: &mut std::fs::File, n: usize| -> std::io::Result<Vec<f32>> {
             let mut buf = vec![0u8; n * 4];
             f.read_exact(&mut buf)?;

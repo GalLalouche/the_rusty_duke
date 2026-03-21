@@ -32,7 +32,7 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
     }
 
     /// Encode a list of game states into a batched tensor of shape
-    /// `[batch, 1080]`.
+    /// `[batch, TOTAL_FEATURES]`.
     fn encode_batch(&self, states: &[GameState]) -> Tensor<B, 2> {
         let tensors: Vec<Tensor<B, 1>> = states
             .iter()

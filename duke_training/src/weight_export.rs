@@ -1,5 +1,5 @@
 use burn::tensor::backend::Backend;
-use crate::fc_model::FcValueNetwork;
+use crate::fc_model::{FcValueNetwork, INPUT_SIZE};
 use crate::nnue::NnueWeights;
 
 /// Extract weights from a trained burn FcValueNetwork into NnueWeights.
@@ -8,6 +8,7 @@ use crate::nnue::NnueWeights;
 /// L2/L3: burn [in, out] row-major → NNUE [out, in] row-major (transpose).
 pub fn export_weights<B: Backend>(model: &FcValueNetwork<B>, l1_size: usize, l2_size: usize) -> NnueWeights {
     let l1_weight: Vec<f32> = model.fc1.weight.val().into_data().to_vec().expect("fc1 weight");
+    assert_eq!(l1_weight.len(), INPUT_SIZE * l1_size, "L1 weight size mismatch");
     let l1_bias: Vec<f32> = model.fc1.bias.as_ref().expect("fc1 bias").val().into_data().to_vec().expect("fc1 bias");
 
     let fc2_burn: Vec<f32> = model.fc2.weight.val().into_data().to_vec().expect("fc2 weight");
