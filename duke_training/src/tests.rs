@@ -12,7 +12,7 @@ use duke_rust::game::tile::Owner;
 
 use crate::encoding::{active_feature_indices, encode_state, encode_state_flat, BOARD_SIZE, NUM_PLANES};
 use crate::fc_model::FcValueNetwork;
-use crate::fc_td_training::FcTdTrainer;
+use crate::fc_td_training::{FcTdTrainer, GameTrajectory};
 use crate::game_setup::{create_bag, create_initial_state, play_random_game};
 use crate::nnue::{NnueAccumulator, NnueEvaluator, NnueWeights, DEFAULT_L1, DEFAULT_L2};
 use crate::weight_export::export_weights;
@@ -674,11 +674,77 @@ fn greedy_move_is_deterministic() {
         "RNG state should be identical after greedy_move with same seed");
 }
 
+// ── batch training tests ──────────────────────────────────────────────
+
+#[test]
+fn train_on_batch_produces_finite_loss() {
+    let device = Default::default();
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001, DEFAULT_L1, DEFAULT_L2);
+
+    let gs = create_test_state();
+
+    // Play 3 games with different seeds, collect trajectories
+    let games: Vec<GameTrajectory> = (0..3)
+        .map(|seed| {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (states, result) = play_random_game(&gs, &mut rng);
+            GameTrajectory { states, result }
+        })
+        .collect();
+
+    let loss = trainer.train_on_batch(&games);
+    assert!(loss.is_finite(), "Batch loss should be finite, got {}", loss);
+    assert!(loss >= 0.0, "Batch loss should be non-negative, got {}", loss);
+}
+
+#[test]
+fn parallel_games_are_deterministic() {
+    use rayon::prelude::*;
+
+    let gs = create_test_state();
+
+    // Play games serially
+    let serial_results: Vec<(usize, GameResult)> = (0..8u64)
+        .map(|seed| {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (states, result) = play_random_game(&gs, &mut rng);
+            (states.len(), result)
+        })
+        .collect();
+
+    // Play games in parallel with rayon (same seeds)
+    let parallel_results: Vec<(usize, GameResult)> = (0..8u64)
+        .into_par_iter()
+        .map(|seed| {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (states, result) = play_random_game(&gs, &mut rng);
+            (states.len(), result)
+        })
+        .collect();
+
+    // Same seeds should produce identical games regardless of parallelism
+    for (i, (serial, parallel)) in serial_results.iter().zip(parallel_results.iter()).enumerate() {
+        assert_eq!(
+            serial.0, parallel.0,
+            "Game {}: state count mismatch (serial={}, parallel={})",
+            i, serial.0, parallel.0
+        );
+        assert_eq!(
+            serial.1, parallel.1,
+            "Game {}: result mismatch (serial={:?}, parallel={:?})",
+            i, serial.1, parallel.1
+        );
+    }
+}
+
 // ── match_runner tests ────────────────────────────────────────────────
 
 use crate::match_runner::{play_match, run_matches, Player};
 use duke_rust::game::ai::heuristics::{HeuristicAi, Heuristics};
 use crate::game_setup::HeuristicEvaluator;
+use crate::learned_heuristic::{
+    extract_features, solve_linear_system, train_weights, LearnedHeuristicWeights, NUM_FEATURES,
+};
 
 #[test]
 fn play_match_terminates() {
@@ -791,4 +857,138 @@ fn heuristic_beats_random() {
         result.player_a_wins,
         total_decisive,
     );
+}
+
+// ── learned_heuristic tests ──────────────────────────────────────────
+
+#[test]
+fn feature_extraction_smoke_test() {
+    let gs = create_test_state();
+    let features = extract_features(&gs);
+
+    // Should have exactly NUM_FEATURES elements
+    assert_eq!(features.len(), NUM_FEATURES);
+
+    // All features should be finite
+    for (i, &f) in features.iter().enumerate() {
+        assert!(f.is_finite(), "Feature {} is not finite: {}", i, f);
+    }
+
+    // Bias term (last feature) should always be 1.0
+    assert_eq!(features[NUM_FEATURES - 1], 1.0, "Bias feature should be 1.0");
+
+    // Base heuristic features should be reasonable for initial state
+    // On the initial board, both players have the same setup, so
+    // differences should be small (possibly zero if perfectly symmetric)
+    // x2 (TotalTilesOnBoard) should be near 0 for symmetric start
+    assert!(
+        features[1].abs() < 100.0,
+        "TotalTilesOnBoard diff should be bounded, got {}",
+        features[1]
+    );
+}
+
+#[test]
+fn gaussian_elimination_known_3x3() {
+    // Solve:
+    //   2x + y - z = 8
+    //   -3x - y + 2z = -11
+    //   -2x + y + 2z = -3
+    // Solution: x=2, y=3, z=-1
+    let mut a = [[0.0f64; NUM_FEATURES]; NUM_FEATURES];
+    let mut b = [0.0f64; NUM_FEATURES];
+
+    // Set up 3x3 in the top-left corner, identity for the rest
+    a[0][0] = 2.0; a[0][1] = 1.0; a[0][2] = -1.0;
+    a[1][0] = -3.0; a[1][1] = -1.0; a[1][2] = 2.0;
+    a[2][0] = -2.0; a[2][1] = 1.0; a[2][2] = 2.0;
+    // Fill diagonal for remaining dimensions to make it non-singular
+    for i in 3..NUM_FEATURES {
+        a[i][i] = 1.0;
+    }
+
+    b[0] = 8.0;
+    b[1] = -11.0;
+    b[2] = -3.0;
+    // b[3..] = 0.0 already
+
+    let w = solve_linear_system(&mut a, &mut b);
+
+    let eps = 1e-10;
+    assert!((w[0] - 2.0).abs() < eps, "x should be 2, got {}", w[0]);
+    assert!((w[1] - 3.0).abs() < eps, "y should be 3, got {}", w[1]);
+    assert!((w[2] - (-1.0)).abs() < eps, "z should be -1, got {}", w[2]);
+
+    // Remaining unknowns should be 0
+    for i in 3..NUM_FEATURES {
+        assert!((w[i]).abs() < eps, "w[{}] should be 0, got {}", i, w[i]);
+    }
+}
+
+#[test]
+fn train_on_100_games_produces_finite_weights() {
+    let gs = create_test_state();
+    let mut rng = StdRng::seed_from_u64(123);
+
+    let games: Vec<_> = (0..100)
+        .map(|_| play_random_game(&gs, &mut rng))
+        .collect();
+
+    let weights = train_weights(&games);
+
+    for (i, &w) in weights.weights.iter().enumerate() {
+        assert!(
+            w.is_finite(),
+            "Weight {} is not finite: {}",
+            i, w
+        );
+    }
+
+    // At least some weights should be non-zero (not all degenerate)
+    let non_zero = weights.weights.iter().filter(|&&w| w.abs() > 1e-12).count();
+    assert!(
+        non_zero > 0,
+        "At least some weights should be non-zero after training on 100 games"
+    );
+}
+
+#[test]
+fn learned_weights_save_load_roundtrip() {
+    let gs = create_test_state();
+    let mut rng = StdRng::seed_from_u64(77);
+
+    let games: Vec<_> = (0..20)
+        .map(|_| play_random_game(&gs, &mut rng))
+        .collect();
+
+    let original = train_weights(&games);
+
+    let path = format!("test_learned_roundtrip_{}.json", std::process::id());
+    let _guard = TempFileGuard::new(&path);
+    original.save(&path).expect("save failed");
+    let loaded = LearnedHeuristicWeights::load(&path).expect("load failed");
+
+    for i in 0..NUM_FEATURES {
+        let diff = (original.weights[i] - loaded.weights[i]).abs();
+        assert!(
+            diff < 1e-10,
+            "Weight {} mismatch: original={}, loaded={}, diff={}",
+            i, original.weights[i], loaded.weights[i], diff
+        );
+    }
+}
+
+#[test]
+fn learned_evaluator_returns_finite_score() {
+    let gs = create_test_state();
+
+    // Create a simple weights vector (all ones) to test the evaluator
+    let mut weights = LearnedHeuristicWeights::default();
+    for i in 0..NUM_FEATURES {
+        weights.weights[i] = 0.01;
+    }
+
+    use crate::game_setup::GameEvaluator;
+    let score = weights.evaluate(&gs);
+    assert!(score.is_finite(), "Evaluator should return finite score, got {}", score);
 }

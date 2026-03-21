@@ -89,13 +89,9 @@ pub fn run_matches(
     for seed in 0..num_games {
         let mut rng = StdRng::seed_from_u64(seed as u64);
         let game_result = if seed % 2 == 0 {
-            let r = play_match(gs, player_a, player_b, &mut rng, 200);
-            match r {
-                GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::TopPlayer),
-                GameResult::Won(Owner::BottomPlayer) => GameResult::Won(Owner::BottomPlayer),
-                other => other,
-            }
+            play_match(gs, player_a, player_b, &mut rng, 200)
         } else {
+            // Swap sides; remap the winner back to player_a/player_b perspective.
             let r = play_match(gs, player_b, player_a, &mut rng, 200);
             match r {
                 GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::BottomPlayer),

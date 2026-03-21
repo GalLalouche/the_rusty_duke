@@ -4,10 +4,11 @@ use burn::backend::wgpu::WgpuDevice;
 use burn::backend::{Autodiff, Wgpu};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rayon::prelude::*;
 
 use duke_rust::game::state::GameResult;
 
-use duke_training::fc_td_training::FcTdTrainer;
+use duke_training::fc_td_training::{FcTdTrainer, GameTrajectory};
 use duke_training::game_setup::{create_bag, create_initial_state, play_random_game, play_selfplay_game};
 use duke_training::nnue::NnueEvaluator;
 use duke_training::weight_export::export_weights;
@@ -26,6 +27,7 @@ pub struct TrainingConfig {
     pub checkpoint_dir: String,
     pub l1_size: usize,
     pub l2_size: usize,
+    pub batch_size: u64,
 }
 
 impl TrainingConfig {
@@ -37,71 +39,41 @@ impl TrainingConfig {
     }
 }
 
+/// Parse a typed flag value from CLI args: `--flag <value>`.
+fn parse_flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+}
+
+/// Parse a string flag value from CLI args: `--flag <value>`.
+fn parse_flag_string(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
 impl TrainingConfig {
     pub fn from_args(args: &[String]) -> Self {
         let self_play = args.iter().any(|a| a == "--self-play");
 
-        let total_games: u64 = args
-            .iter()
-            .position(|a| a == "--games")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(100_000);
-
-        let lr_start: f64 = args
-            .iter()
-            .position(|a| a == "--lr")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.1);
-
-        let lr_end: f64 = args
-            .iter()
-            .position(|a| a == "--lr-end")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(lr_start / 100.0);
-
-        let epsilon: f64 = args
-            .iter()
-            .position(|a| a == "--epsilon")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.15);
-
-        let update_interval: u64 = args
-            .iter()
-            .position(|a| a == "--update-interval")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1000);
-
-        let resume_path: Option<String> = args
-            .iter()
-            .position(|a| a == "--resume")
-            .and_then(|i| args.get(i + 1))
-            .cloned();
-
-        let checkpoint_dir: String = args
-            .iter()
-            .position(|a| a == "--checkpoint-dir")
-            .and_then(|i| args.get(i + 1))
-            .cloned()
+        let total_games: u64 = parse_flag(args, "--games").unwrap_or(100_000);
+        let lr_start: f64 = parse_flag(args, "--lr").unwrap_or(0.1);
+        let lr_end: f64 = parse_flag(args, "--lr-end").unwrap_or(lr_start / 100.0);
+        let epsilon: f64 = parse_flag(args, "--epsilon").unwrap_or(0.15);
+        let update_interval: u64 = parse_flag(args, "--update-interval").unwrap_or(1000);
+        let resume_path: Option<String> = parse_flag_string(args, "--resume");
+        let checkpoint_dir: String = parse_flag_string(args, "--checkpoint-dir")
             .unwrap_or_else(|| "checkpoints".to_string());
+        let l1_size: usize = parse_flag(args, "--l1").unwrap_or(256);
+        let l2_size: usize = parse_flag(args, "--l2").unwrap_or(32);
 
-        let l1_size: usize = args
-            .iter()
-            .position(|a| a == "--l1")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(256);
-
-        let l2_size: usize = args
-            .iter()
-            .position(|a| a == "--l2")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(32);
+        let default_batch_size = std::thread::available_parallelism()
+            .map(|n| n.get() as u64)
+            .unwrap_or(4);
+        let batch_size: u64 = parse_flag(args, "--batch-size").unwrap_or(default_batch_size);
 
         Self {
             total_games,
@@ -114,6 +86,7 @@ impl TrainingConfig {
             checkpoint_dir,
             l1_size,
             l2_size,
+            batch_size,
         }
     }
 }
@@ -143,17 +116,17 @@ fn main() {
     if config.self_play {
         println!("Phase 2: NNUE self-play training");
         println!(
-            "  epsilon={}, update_interval={}, total_games={}, lr={}->{}",
+            "  epsilon={}, update_interval={}, total_games={}, lr={}->{}, batch_size={}",
             config.epsilon, config.update_interval, config.total_games,
-            config.lr_start, config.lr_end
+            config.lr_start, config.lr_end, config.batch_size
         );
         if config.resume_path.is_none() {
             eprintln!("WARNING: --self-play without --resume starts from random weights!");
         }
     } else {
         println!("Phase 1: Random play training");
-        println!("  total_games={}, lr={}->{}",
-            config.total_games, config.lr_start, config.lr_end);
+        println!("  total_games={}, lr={}->{}, batch_size={}",
+            config.total_games, config.lr_start, config.lr_end, config.batch_size);
     }
 
     let start = Instant::now();
@@ -161,53 +134,79 @@ fn main() {
     let mut recent_loss = 0.0f32;
     let mut wins = [0u32; 2];
     let mut ties = 0u32;
+    let mut game_num: u64 = 0;
+    let mut recent_game_count: u64 = 0;
+    let mut last_logged_at: u64 = 0;
 
-    for game_num in 0..config.total_games {
-        // Update learning rate per schedule
+    while game_num < config.total_games {
+        let batch_size = config.batch_size.min(config.total_games - game_num);
+
+        // Update learning rate at round boundary
         trainer.set_lr(config.lr_at(game_num));
 
-        let mut rng = StdRng::seed_from_u64(game_num);
+        // Phase 1: Play batch_size games in parallel (CPU, rayon)
+        let trajectories: Vec<GameTrajectory> = (0..batch_size)
+            .into_par_iter()
+            .map(|i| {
+                let seed = game_num + i;
+                let mut rng = StdRng::seed_from_u64(seed);
+                let (states, result) = if config.self_play {
+                    play_selfplay_game(&gs, &nnue_evaluator, &mut rng, config.epsilon)
+                } else {
+                    play_random_game(&gs, &mut rng)
+                };
+                GameTrajectory { states, result }
+            })
+            .collect();
 
-        let (states, result) = if config.self_play {
-            play_selfplay_game(&gs, &nnue_evaluator, &mut rng, config.epsilon)
-        } else {
-            play_random_game(&gs, &mut rng)
-        };
+        // Phase 2: Batch-train on all trajectories (single forward+backward pass)
+        let loss = trainer.train_on_batch(&trajectories);
+        total_loss += loss * batch_size as f32;
+        recent_loss += loss * batch_size as f32;
 
-        let loss = trainer.train_on_game(&states, result);
-        total_loss += loss;
-        recent_loss += loss;
-
-        match result {
-            GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
-            GameResult::Won(duke_rust::game::tile::Owner::BottomPlayer) => wins[1] += 1,
-            GameResult::Tie => ties += 1,
-            _ => {}
+        // Update stats
+        for traj in &trajectories {
+            match traj.result {
+                GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
+                GameResult::Won(duke_rust::game::tile::Owner::BottomPlayer) => wins[1] += 1,
+                GameResult::Tie => ties += 1,
+                _ => {}
+            }
         }
 
-        if (game_num + 1) % 100 == 0 {
-            let avg_loss = total_loss / (game_num + 1) as f32;
-            let recent_avg = recent_loss / 100.0;
+        game_num += batch_size;
+        recent_game_count += batch_size;
+
+        // Log every 100 games (or at round boundaries that cross the threshold)
+        if game_num / 100 > last_logged_at / 100 || game_num >= config.total_games {
+            let avg_loss = total_loss / game_num as f32;
+            let recent_avg = if recent_game_count > 0 {
+                recent_loss / recent_game_count as f32
+            } else {
+                0.0
+            };
             let elapsed = start.elapsed();
             println!(
                 "Game {}: avg_loss={:.6}, recent_loss={:.6}, lr={:.6}, wins=[{}, {}], ties={}, elapsed={:.1?}",
-                game_num + 1, avg_loss, recent_avg, trainer.lr(), wins[0], wins[1], ties, elapsed
+                game_num, avg_loss, recent_avg, trainer.lr(), wins[0], wins[1], ties, elapsed
             );
             recent_loss = 0.0;
+            recent_game_count = 0;
+            last_logged_at = game_num;
         }
 
-        if (game_num + 1) % config.update_interval == 0 {
-            // Save checkpoints
-            let checkpoint_path = format!("{}/fc_model_game_{}", config.checkpoint_dir, game_num + 1);
+        // Checkpoint at update_interval boundaries
+        if game_num / config.update_interval > (game_num - batch_size) / config.update_interval {
+            let checkpoint_game = (game_num / config.update_interval) * config.update_interval;
+            let checkpoint_path = format!("{}/fc_model_game_{}", config.checkpoint_dir, checkpoint_game);
             std::fs::create_dir_all(&config.checkpoint_dir).expect("Failed to create checkpoints dir");
             trainer.save_model(&checkpoint_path);
 
-            let nnue_path = format!("{}/nnue_game_{}.nnue", config.checkpoint_dir, game_num + 1);
+            let nnue_path = format!("{}/nnue_game_{}.nnue", config.checkpoint_dir, checkpoint_game);
             let new_weights = export_weights(&trainer.model, config.l1_size, config.l2_size);
             new_weights.save(&nnue_path).expect("Failed to save NNUE weights");
 
             if config.self_play {
-                // Update NNUE evaluator with latest trained weights
                 nnue_evaluator = NnueEvaluator::new(new_weights);
                 println!("NNUE weights updated + checkpoint saved: {}", nnue_path);
             } else {

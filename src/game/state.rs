@@ -376,18 +376,23 @@ impl GameState {
         }
     }
 
-    pub fn bag_for_current_player(&self) -> &TileBag {
-        match self.current_player_turn {
+    pub fn is_duke_in_guard(&self, o: Owner) -> bool {
+        self.board.is_guard(o)
+    }
+
+    pub fn bag_for_owner(&self, o: Owner) -> &TileBag {
+        match o {
             Owner::TopPlayer => &self.top_player_bag,
             Owner::BottomPlayer => &self.bottom_player_bag,
         }
     }
 
+    pub fn bag_for_current_player(&self) -> &TileBag {
+        self.bag_for_owner(self.current_player_turn)
+    }
+
     pub fn bag_for_other_player(&self) -> &TileBag {
-        match self.current_player_turn {
-            Owner::TopPlayer => &self.bottom_player_bag,
-            Owner::BottomPlayer => &self.top_player_bag,
-        }
+        self.bag_for_owner(self.current_player_turn.next_player())
     }
 
     pub fn to_undo(&self, mv: &GameMove) -> PossibleMove {

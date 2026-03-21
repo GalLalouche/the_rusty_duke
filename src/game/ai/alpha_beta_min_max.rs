@@ -1,6 +1,5 @@
 use minimax_alpha_beta::strategy::AlphaBetaMiniMaxStrategy;
-use rand::{Rng, RngCore, SeedableRng, thread_rng};
-use rand::rngs::StdRng;
+use rand::{Rng, RngCore, thread_rng};
 
 use crate::common::utils::{split_rng, Vectors};
 use crate::game::ai::heuristics::HeuristicAi;

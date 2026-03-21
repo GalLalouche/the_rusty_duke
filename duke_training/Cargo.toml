@@ -8,6 +8,7 @@ duke_rust = { path = ".." }
 rand = "0.8"
 strum = "0.24"
 burn = { version = "0.16", features = ["wgpu", "autodiff", "ndarray"] }
+rayon = "1.10"
 
 [[bin]]
 name = "duke_training"
@@ -16,3 +17,7 @@ path = "src/main.rs"
 [[bin]]
 name = "benchmark"
 path = "src/benchmark.rs"
+
+[[bin]]
+name = "train_heuristic"
+path = "src/train_heuristic.rs"
