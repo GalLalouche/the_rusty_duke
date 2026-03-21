@@ -4,19 +4,25 @@ use crate::encoding::{active_feature_indices, NUM_PLANES, BOARD_SIZE};
 pub const NUM_FEATURES: usize = NUM_PLANES * BOARD_SIZE * BOARD_SIZE; // 1080
 pub const L1_SIZE: usize = 256;
 pub const L2_SIZE: usize = 32;
+/// Maximum active features: 12 tiles × 2 features each (type + side).
+pub const MAX_ACTIVE_FEATURES: usize = 24;
 
 /// Raw model weights for NNUE inference.
+///
+/// L1 weights are stored in **column-major** order for cache-friendly access:
+/// `l1_weight[feat * L1_SIZE + i]` = weight from input `feat` to hidden unit `i`.
+/// This means `add_feature(feat)` reads a contiguous 1KB block (256 × f32).
 pub struct NnueWeights {
-    /// Layer 1 weights [L1_SIZE x NUM_FEATURES], row-major.
-    /// l1_weight[i * NUM_FEATURES + j] = weight from input j to hidden unit i.
+    /// Layer 1 weights [NUM_FEATURES × L1_SIZE], column-major.
+    /// l1_weight[feat * L1_SIZE + i] = weight from input feat to hidden unit i.
     pub l1_weight: Vec<f32>,
     /// Layer 1 bias [L1_SIZE].
     pub l1_bias: Vec<f32>,
-    /// Layer 2 weights [L2_SIZE x L1_SIZE], row-major.
+    /// Layer 2 weights [L2_SIZE × L1_SIZE], row-major.
     pub l2_weight: Vec<f32>,
     /// Layer 2 bias [L2_SIZE].
     pub l2_bias: Vec<f32>,
-    /// Layer 3 weights [1 x L2_SIZE], row-major.
+    /// Layer 3 weights [1 × L2_SIZE], row-major.
     pub l3_weight: Vec<f32>,
     /// Layer 3 bias [1].
     pub l3_bias: Vec<f32>,
@@ -24,7 +30,7 @@ pub struct NnueWeights {
 
 impl NnueWeights {
     const MAGIC: &'static [u8; 4] = b"DUKE";
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2; // Bumped: column-major L1 layout
 
     pub fn save(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
@@ -57,7 +63,9 @@ impl NnueWeights {
         assert_eq!(
             u32::from_le_bytes(version),
             Self::VERSION,
-            "Unsupported NNUE version"
+            "Unsupported NNUE version (expected {}, got {})",
+            Self::VERSION,
+            u32::from_le_bytes(version),
         );
 
         let read_vec = |f: &mut std::fs::File, n: usize| -> std::io::Result<Vec<f32>> {
@@ -70,7 +78,7 @@ impl NnueWeights {
         };
 
         Ok(Self {
-            l1_weight: read_vec(&mut f, L1_SIZE * NUM_FEATURES)?,
+            l1_weight: read_vec(&mut f, NUM_FEATURES * L1_SIZE)?,
             l1_bias: read_vec(&mut f, L1_SIZE)?,
             l2_weight: read_vec(&mut f, L2_SIZE * L1_SIZE)?,
             l2_bias: read_vec(&mut f, L2_SIZE)?,
@@ -80,7 +88,7 @@ impl NnueWeights {
     }
 }
 
-/// Cached first-layer output (pre-ReLU). 256 floats = 1KB.
+/// Cached first-layer output (pre-ReLU). 256 floats = 1KB, fits in L1 cache.
 #[derive(Clone)]
 pub struct NnueAccumulator {
     /// First layer output before ReLU: W1 * input + b1
@@ -92,29 +100,34 @@ impl NnueAccumulator {
     /// Starts from bias, then adds weight columns for each active feature.
     pub fn from_features(weights: &NnueWeights, features: &[usize]) -> Self {
         let mut hidden = [0.0f32; L1_SIZE];
-        // Start with bias
         hidden.copy_from_slice(&weights.l1_bias);
-        // Add columns for active features
         for &feat in features {
             debug_assert!(feat < NUM_FEATURES);
+            // Column-major: l1_weight[feat * L1_SIZE .. (feat+1) * L1_SIZE]
+            // is a contiguous 1KB block — cache-friendly.
+            let col = &weights.l1_weight[feat * L1_SIZE..(feat + 1) * L1_SIZE];
             for i in 0..L1_SIZE {
-                hidden[i] += weights.l1_weight[i * NUM_FEATURES + feat];
+                hidden[i] += col[i];
             }
         }
         Self { hidden }
     }
 
     /// Add a feature (tile placed/moved to a square).
+    #[inline]
     pub fn add_feature(&mut self, feat: usize, weights: &NnueWeights) {
+        let col = &weights.l1_weight[feat * L1_SIZE..(feat + 1) * L1_SIZE];
         for i in 0..L1_SIZE {
-            self.hidden[i] += weights.l1_weight[i * NUM_FEATURES + feat];
+            self.hidden[i] += col[i];
         }
     }
 
     /// Remove a feature (tile removed/moved from a square).
+    #[inline]
     pub fn remove_feature(&mut self, feat: usize, weights: &NnueWeights) {
+        let col = &weights.l1_weight[feat * L1_SIZE..(feat + 1) * L1_SIZE];
         for i in 0..L1_SIZE {
-            self.hidden[i] -= weights.l1_weight[i * NUM_FEATURES + feat];
+            self.hidden[i] -= col[i];
         }
     }
 }
@@ -137,21 +150,18 @@ impl NnueEvaluator {
         self.evaluate_from_accumulator(&acc)
     }
 
-    /// Evaluate from a pre-computed accumulator (layers 2-3 only).
-    /// This is the hot path -- ~8K multiply-adds.
+    /// Evaluate from a pre-computed accumulator (layers 2+3 only).
+    /// This is the hot path — ~8K multiply-adds.
+    #[inline]
     pub fn evaluate_from_accumulator(&self, acc: &NnueAccumulator) -> f32 {
-        // Layer 1 output: ReLU(accumulator)
-        let mut l1_out = [0.0f32; L1_SIZE];
-        for i in 0..L1_SIZE {
-            l1_out[i] = acc.hidden[i].max(0.0);
-        }
-
-        // Layer 2: W2 * l1_out + b2, then ReLU
+        // Layer 2: W2 * ReLU(accumulator) + b2, then ReLU
+        // Fused ReLU: apply max(0, hidden[j]) inline instead of separate pass.
         let mut l2_out = [0.0f32; L2_SIZE];
         for i in 0..L2_SIZE {
             let mut sum = self.weights.l2_bias[i];
+            let row = &self.weights.l2_weight[i * L1_SIZE..(i + 1) * L1_SIZE];
             for j in 0..L1_SIZE {
-                sum += self.weights.l2_weight[i * L1_SIZE + j] * l1_out[j];
+                sum += row[j] * acc.hidden[j].max(0.0);
             }
             l2_out[i] = sum.max(0.0);
         }

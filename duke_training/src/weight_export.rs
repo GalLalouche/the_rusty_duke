@@ -5,19 +5,25 @@ use crate::nnue::NnueWeights;
 /// Extract weights from a trained burn FcValueNetwork into NnueWeights.
 ///
 /// burn's Linear stores weight as [d_input, d_output] and computes O = X @ W + b.
-/// The NNUE engine expects weights in [d_output, d_input] row-major layout,
-/// where l1_weight[i * d_input + j] is the weight from input j to output i.
-/// So we need to transpose the weight matrices during export.
+///
+/// For L1: burn shape [INPUT_SIZE, L1_SIZE] row-major.
+///   NNUE wants column-major: l1_weight[feat * L1_SIZE + i].
+///   burn's row-major [INPUT_SIZE, L1_SIZE] is the same layout — no transpose needed.
+///
+/// For L2/L3: NNUE wants row-major [d_output, d_input], so we transpose.
 pub fn export_weights<B: Backend>(model: &FcValueNetwork<B>) -> NnueWeights {
-    // fc1: burn shape [INPUT_SIZE, L1_SIZE] -> NNUE shape [L1_SIZE, INPUT_SIZE]
-    let fc1_weight_burn: Vec<f32> = model
+    // fc1: burn [INPUT_SIZE, L1_SIZE] = NNUE column-major [NUM_FEATURES × L1_SIZE]
+    // No transpose: burn's row-major [INPUT_SIZE, L1_SIZE] stores data as
+    // [feat0_h0, feat0_h1, ..., feat0_h255, feat1_h0, ...] which is exactly
+    // l1_weight[feat * L1_SIZE + i].
+    let l1_weight: Vec<f32> = model
         .fc1
         .weight
         .val()
         .into_data()
         .to_vec()
         .expect("fc1 weight");
-    let l1_weight = transpose(&fc1_weight_burn, INPUT_SIZE, L1_SIZE);
+    assert_eq!(l1_weight.len(), INPUT_SIZE * L1_SIZE);
 
     let l1_bias: Vec<f32> = model
         .fc1
@@ -29,7 +35,7 @@ pub fn export_weights<B: Backend>(model: &FcValueNetwork<B>) -> NnueWeights {
         .to_vec()
         .expect("fc1 bias");
 
-    // fc2: burn shape [L1_SIZE, L2_SIZE] -> NNUE shape [L2_SIZE, L1_SIZE]
+    // fc2: burn shape [L1_SIZE, L2_SIZE] -> NNUE shape [L2_SIZE, L1_SIZE] row-major
     let fc2_weight_burn: Vec<f32> = model
         .fc2
         .weight
@@ -49,7 +55,7 @@ pub fn export_weights<B: Backend>(model: &FcValueNetwork<B>) -> NnueWeights {
         .to_vec()
         .expect("fc2 bias");
 
-    // fc3: burn shape [L2_SIZE, 1] -> NNUE shape [1, L2_SIZE]
+    // fc3: burn shape [L2_SIZE, 1] -> NNUE shape [1, L2_SIZE] row-major
     let fc3_weight_burn: Vec<f32> = model
         .fc3
         .weight
