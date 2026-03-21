@@ -17,11 +17,20 @@ type MyBackend = Autodiff<Wgpu>;
 /// All knobs for a training run, parsed from command-line arguments.
 pub struct TrainingConfig {
     pub total_games: u64,
-    pub lr: f64,
+    pub lr_start: f64,
+    pub lr_end: f64,
     pub epsilon: f64,
     pub update_interval: u64,
     pub self_play: bool,
     pub resume_path: Option<String>,
+}
+
+impl TrainingConfig {
+    /// Linear decay from lr_start to lr_end over total_games.
+    pub fn lr_at(&self, game_num: u64) -> f64 {
+        let progress = game_num as f64 / self.total_games as f64;
+        self.lr_start + (self.lr_end - self.lr_start) * progress
+    }
 }
 
 impl TrainingConfig {
@@ -35,12 +44,19 @@ impl TrainingConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(100_000);
 
-        let lr: f64 = args
+        let lr_start: f64 = args
             .iter()
             .position(|a| a == "--lr")
             .and_then(|i| args.get(i + 1))
             .and_then(|s| s.parse().ok())
-            .unwrap_or(0.001);
+            .unwrap_or(0.1);
+
+        let lr_end: f64 = args
+            .iter()
+            .position(|a| a == "--lr-end")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(lr_start / 100.0);
 
         let epsilon: f64 = args
             .iter()
@@ -64,7 +80,8 @@ impl TrainingConfig {
 
         Self {
             total_games,
-            lr,
+            lr_start,
+            lr_end,
             epsilon,
             update_interval,
             self_play,
@@ -81,7 +98,7 @@ fn main() {
     let gs = create_initial_state(&bag);
 
     let device = WgpuDevice::default();
-    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, config.lr);
+    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, config.lr_start);
 
     // Load checkpoint if resuming
     if let Some(ref path) = config.resume_path {
@@ -97,15 +114,17 @@ fn main() {
     if config.self_play {
         println!("Phase 2: NNUE self-play training");
         println!(
-            "  epsilon={}, update_interval={}, total_games={}",
-            config.epsilon, config.update_interval, config.total_games
+            "  epsilon={}, update_interval={}, total_games={}, lr={}->{}",
+            config.epsilon, config.update_interval, config.total_games,
+            config.lr_start, config.lr_end
         );
         if config.resume_path.is_none() {
             eprintln!("WARNING: --self-play without --resume starts from random weights!");
         }
     } else {
         println!("Phase 1: Random play training");
-        println!("  total_games={}", config.total_games);
+        println!("  total_games={}, lr={}->{}",
+            config.total_games, config.lr_start, config.lr_end);
     }
 
     let start = Instant::now();
@@ -115,6 +134,9 @@ fn main() {
     let mut ties = 0u32;
 
     for game_num in 0..config.total_games {
+        // Update learning rate per schedule
+        trainer.set_lr(config.lr_at(game_num));
+
         let mut rng = StdRng::seed_from_u64(game_num);
 
         let (states, result) = if config.self_play {
@@ -139,8 +161,8 @@ fn main() {
             let recent_avg = recent_loss / 100.0;
             let elapsed = start.elapsed();
             println!(
-                "Game {}: avg_loss={:.6}, recent_loss={:.6}, wins=[{}, {}], ties={}, elapsed={:.1?}",
-                game_num + 1, avg_loss, recent_avg, wins[0], wins[1], ties, elapsed
+                "Game {}: avg_loss={:.6}, recent_loss={:.6}, lr={:.6}, wins=[{}, {}], ties={}, elapsed={:.1?}",
+                game_num + 1, avg_loss, recent_avg, trainer.lr(), wins[0], wins[1], ties, elapsed
             );
             recent_loss = 0.0;
         }

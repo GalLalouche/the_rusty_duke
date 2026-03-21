@@ -121,6 +121,15 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
         loss_value
     }
 
+    /// Update the learning rate (e.g., for decay schedules).
+    pub fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    pub fn lr(&self) -> f64 {
+        self.lr
+    }
+
     /// Save model weights to a file.
     ///
     /// The file extension (`.mpk`) is automatically appended by the recorder.
