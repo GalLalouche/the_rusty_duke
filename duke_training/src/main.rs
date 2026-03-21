@@ -97,6 +97,13 @@ fn main() {
                 seed + 1, avg_loss, wins[0], wins[1], ties, elapsed
             );
         }
+
+        if (seed + 1) % 1000 == 0 {
+            let checkpoint_path = format!("checkpoints/model_game_{}", seed + 1);
+            std::fs::create_dir_all("checkpoints").expect("Failed to create checkpoints dir");
+            trainer.save_model(&checkpoint_path);
+            println!("Checkpoint saved: {}", checkpoint_path);
+        }
     }
 
     let elapsed = start.elapsed();

@@ -16,7 +16,7 @@ use duke_rust::game::tile::CurrentSide;
 pub const NUM_PLANES: usize = 30;
 pub const BOARD_SIZE: usize = 6;
 
-/// The 13 tile types in the game (Seer and Ranger are not implemented in code).
+/// The 13 tile types currently supported in the game.
 const TILE_NAMES: [&str; 13] = [
     "Duke",
     "Footman",

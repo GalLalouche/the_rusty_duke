@@ -1,6 +1,7 @@
 use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::{GradientsParams, Optimizer, SgdConfig, Sgd};
 use burn::prelude::*;
+use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::backend::AutodiffBackend;
 
 use duke_rust::game::state::{GameResult, GameState};
@@ -118,5 +119,28 @@ impl<B: AutodiffBackend> TdTrainer<B> {
         self.model = self.optimizer.step(self.lr, self.model.clone(), grads);
 
         loss_value
+    }
+
+    /// Save model weights to a file.
+    ///
+    /// The file extension (`.mpk`) is automatically appended by the recorder.
+    pub fn save_model(&self, path: &str) {
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+        self.model
+            .clone()
+            .save_file(path, &recorder)
+            .expect("Failed to save model");
+    }
+
+    /// Load model weights from a file.
+    ///
+    /// The file extension (`.mpk`) is automatically appended by the recorder.
+    pub fn load_model(&mut self, path: &str) {
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+        self.model = self
+            .model
+            .clone()
+            .load_file(path, &recorder, &self.device)
+            .expect("Failed to load model");
     }
 }
