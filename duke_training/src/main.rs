@@ -13,7 +13,8 @@ use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::units;
 
-use duke_training::td_training::TdTrainer;
+use duke_training::fc_td_training::FcTdTrainer;
+use duke_training::weight_export::export_weights;
 
 type MyBackend = Autodiff<Wgpu>;
 
@@ -68,7 +69,7 @@ fn main() {
     let gs = create_initial_state(&bag);
 
     let device = WgpuDevice::default();
-    let mut trainer: TdTrainer<MyBackend> = TdTrainer::new(device, 0.001);
+    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, 0.001);
 
     let total_games: u64 = 100_000;
     let start = Instant::now();
@@ -99,10 +100,16 @@ fn main() {
         }
 
         if (seed + 1) % 1000 == 0 {
-            let checkpoint_path = format!("checkpoints/model_game_{}", seed + 1);
+            let checkpoint_path = format!("checkpoints/fc_model_game_{}", seed + 1);
             std::fs::create_dir_all("checkpoints").expect("Failed to create checkpoints dir");
             trainer.save_model(&checkpoint_path);
-            println!("Checkpoint saved: {}", checkpoint_path);
+
+            // Also export NNUE weights
+            let nnue_weights = export_weights(&trainer.model);
+            let nnue_path = format!("checkpoints/nnue_game_{}.nnue", seed + 1);
+            nnue_weights.save(&nnue_path).expect("Failed to save NNUE weights");
+
+            println!("Checkpoint saved: {} + {}", checkpoint_path, nnue_path);
         }
     }
 

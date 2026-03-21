@@ -33,7 +33,7 @@ const TILE_NAMES: [&str; 13] = [
     "Longbowman",
 ];
 
-fn tile_name_to_index(name: &str) -> Option<usize> {
+pub fn tile_name_to_index(name: &str) -> Option<usize> {
     TILE_NAMES.iter().position(|&n| n == name)
 }
 
@@ -81,4 +81,66 @@ pub fn encode_state<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B,
 
     Tensor::<B, 1>::from_floats(data.as_slice(), device)
         .reshape([NUM_PLANES as i32, BOARD_SIZE as i32, BOARD_SIZE as i32])
+}
+
+/// Returns the indices of active features in the sparse encoding.
+/// Each tile contributes 2 features: one tile-type plane index and one side plane index.
+/// Max ~24 active features (12 tiles x 2 features each).
+pub fn active_feature_indices(gs: &GameState) -> Vec<usize> {
+    let current_player = gs.current_player_turn();
+    let board = gs.board();
+    let mut features = Vec::with_capacity(24);
+
+    for (coords, placed_tile) in board.active_coordinates() {
+        let x = coords.x as usize;
+        let y = coords.y as usize;
+        let cell_index = y * BOARD_SIZE + x;
+        let is_mine = placed_tile.owner == current_player;
+
+        if let Some(tile_idx) = tile_name_to_index(placed_tile.tile.get_name()) {
+            let plane = if is_mine { tile_idx } else { tile_idx + 13 };
+            features.push(plane * BOARD_SIZE * BOARD_SIZE + cell_index);
+        }
+
+        let side_plane = match (is_mine, placed_tile.current_side) {
+            (true, CurrentSide::Initial) => 26,
+            (true, CurrentSide::Flipped) => 27,
+            (false, CurrentSide::Initial) => 28,
+            (false, CurrentSide::Flipped) => 29,
+        };
+        features.push(side_plane * BOARD_SIZE * BOARD_SIZE + cell_index);
+    }
+
+    features
+}
+
+/// Encode a `GameState` into a flat tensor of shape `[1080]` (= 30 * 6 * 6).
+pub fn encode_state_flat<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 1> {
+    let current_player = gs.current_player_turn();
+    let board = gs.board();
+
+    let mut data = vec![0.0f32; NUM_PLANES * BOARD_SIZE * BOARD_SIZE];
+
+    for (coords, placed_tile) in board.active_coordinates() {
+        let x = coords.x as usize;
+        let y = coords.y as usize;
+        let cell_index = y * BOARD_SIZE + x;
+
+        let is_mine = placed_tile.owner == current_player;
+
+        if let Some(tile_idx) = tile_name_to_index(placed_tile.tile.get_name()) {
+            let plane = if is_mine { tile_idx } else { tile_idx + 13 };
+            data[plane * BOARD_SIZE * BOARD_SIZE + cell_index] = 1.0;
+        }
+
+        let side_plane = match (is_mine, placed_tile.current_side) {
+            (true, CurrentSide::Initial) => 26,
+            (true, CurrentSide::Flipped) => 27,
+            (false, CurrentSide::Initial) => 28,
+            (false, CurrentSide::Flipped) => 29,
+        };
+        data[side_plane * BOARD_SIZE * BOARD_SIZE + cell_index] = 1.0;
+    }
+
+    Tensor::<B, 1>::from_floats(data.as_slice(), device)
 }
