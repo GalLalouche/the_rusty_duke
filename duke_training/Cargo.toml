@@ -1,8 +1,9 @@
 [package]
 name = "duke_training"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 duke_rust = { path = ".." }
-rand = "*"
+rand = "0.8"
+burn = { version = "0.16", features = ["wgpu", "autodiff"] }

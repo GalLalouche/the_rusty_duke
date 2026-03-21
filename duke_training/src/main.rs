@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use burn::backend::wgpu::WgpuDevice;
+use burn::backend::{Autodiff, Wgpu};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -9,11 +11,14 @@ use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
-use duke_rust::game::tile::Owner;
 use duke_rust::game::units;
 
-fn main() {
-    let bag = TileBag::new(vec![
+use duke_training::td_training::TdTrainer;
+
+type MyBackend = Autodiff<Wgpu>;
+
+fn create_bag() -> TileBag {
+    TileBag::new(vec![
         Arc::new(units::footman()),
         Arc::new(units::bowman()),
         Arc::new(units::knight()),
@@ -27,51 +32,75 @@ fn main() {
         Arc::new(units::general()),
         Arc::new(units::marshall()),
         Arc::new(units::longbowman()),
-    ]);
+    ])
+}
 
-    let mut gs = GameState::new(
-        &bag,
+fn create_initial_state(bag: &TileBag) -> GameState {
+    GameState::new(
+        bag,
         (DukeInitialLocation::Left, FootmenSetup::Left),
         (DukeInitialLocation::Right, FootmenSetup::Right),
-    );
+    )
+}
 
-    let mut rng = StdRng::seed_from_u64(42);
-    let mut completed = 0u32;
-    let mut panicked = 0u32;
-    let total_games = 1000;
+/// Play a random game, collecting states at each turn.
+fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, GameResult) {
+    let ai = StupidSyncAi {};
+    let mut game = gs.clone();
+    let mut states = Vec::new();
 
+    loop {
+        match game.game_result() {
+            GameResult::Ongoing => {
+                states.push(game.clone());
+                ai.play_next_move(rng, &mut game);
+            }
+            result => {
+                states.push(game.clone());
+                return (states, result);
+            }
+        }
+    }
+}
+
+fn main() {
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let device = WgpuDevice::default();
+    let mut trainer: TdTrainer<MyBackend> = TdTrainer::new(device, 0.001);
+
+    let total_games: u64 = 1000;
     let start = Instant::now();
+    let mut total_loss = 0.0f32;
+    let mut wins = [0u32; 2]; // [TopPlayer, BottomPlayer]
+    let mut ties = 0u32;
 
     for seed in 0..total_games {
-        let mut game = gs.clone();
-        let mut game_rng = StdRng::seed_from_u64(seed);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let ai = StupidSyncAi {};
-            let mut turns = 0u32;
-            loop {
-                match game.game_result() {
-                    GameResult::Ongoing => {
-                        ai.play_next_move(&mut game_rng, &mut game);
-                        turns += 1;
-                    }
-                    GameResult::Won(winner) => return (turns, Some(winner)),
-                    GameResult::Tie => return (turns, None),
-                }
-            }
-        }));
+        let mut rng = StdRng::seed_from_u64(seed);
+        let (states, result) = play_random_game(&gs, &mut rng);
+        let loss = trainer.train_on_game(&states, result);
+        total_loss += loss;
+
         match result {
-            Ok((turns, winner)) => {
-                completed += 1;
-                if seed < 5 {
-                    println!("Game {}: {} turns, winner: {:?}", seed, turns, winner);
-                }
-            }
-            Err(_) => panicked += 1,
+            GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
+            GameResult::Won(duke_rust::game::tile::Owner::BottomPlayer) => wins[1] += 1,
+            GameResult::Tie => ties += 1,
+            _ => {}
+        }
+
+        if (seed + 1) % 100 == 0 {
+            let avg_loss = total_loss / (seed + 1) as f32;
+            let elapsed = start.elapsed();
+            println!(
+                "Game {}: avg_loss={:.6}, wins=[{}, {}], ties={}, elapsed={:.1?}",
+                seed + 1, avg_loss, wins[0], wins[1], ties, elapsed
+            );
         }
     }
 
     let elapsed = start.elapsed();
-    println!("\n{} games completed, {} panicked (pre-existing bugs)", completed, panicked);
-    println!("Total time: {:.3?}", elapsed);
-    println!("Avg per game: {:.3?}", elapsed / completed);
+    println!("\nTraining complete: {} games in {:.1?}", total_games, elapsed);
+    println!("Avg time per game: {:.1?}", elapsed / total_games as u32);
+    println!("Final avg loss: {:.6}", total_loss / total_games as f32);
 }

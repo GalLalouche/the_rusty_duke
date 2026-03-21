@@ -8,10 +8,10 @@ edition = "2018"
 
 [dependencies]
 fstrings = "*"
-rand = "*"
+rand = "0.8"
 paste = "*"
-strum = "*"
-strum_macros = "*"
+strum = "0.24"
+strum_macros = "0.24"
 
 log = "*"
 backtrace = "*"

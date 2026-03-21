@@ -1,5 +1,5 @@
 pub mod player;
-mod heuristics;
+pub mod heuristics;
 pub mod manual_simulator;
 pub mod stupid_sync_ai;
 
