@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use burn::backend::wgpu::WgpuDevice;
-use burn::backend::{Autodiff, Wgpu};
+use burn::backend::{NdArray, Wgpu};
 use burn::prelude::*;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use rand::rngs::StdRng;
@@ -21,7 +21,11 @@ use duke_rust::game::units;
 use duke_training::encoding::encode_state;
 use duke_training::model::ValueNetwork;
 
-type B = Wgpu;
+#[derive(Clone, Copy)]
+enum BackendKind {
+    Cpu,
+    Gpu,
+}
 
 fn create_bag() -> TileBag {
     TileBag::new(vec![
@@ -48,11 +52,11 @@ fn create_initial_state(bag: &TileBag) -> GameState {
     )
 }
 
-/// Neural network greedy player: picks the move that maximizes V(s') from its perspective.
-fn nn_greedy_move<R: Rng>(
+/// Neural network greedy player: picks the move that maximizes V(s').
+fn nn_greedy_move<B: Backend, R: Rng>(
     gs: &GameState,
     model: &ValueNetwork<B>,
-    device: &<B as Backend>::Device,
+    device: &B::Device,
     rng: &mut R,
 ) -> AiMove {
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
@@ -64,11 +68,9 @@ fn nn_greedy_move<R: Rng>(
     for mv in &moves {
         let mut clone = gs.clone();
         mv.play(&mut clone, rng);
-        // Encode from the NEXT player's perspective, then flip
         let encoded = encode_state::<B>(&clone, device);
         let batch = encoded.unsqueeze::<4>();
         let prediction: f32 = model.forward(batch).into_scalar().elem();
-        // The prediction is from opponent's perspective, so our value is 1 - prediction
         let score = 1.0 - prediction as f64;
         if score > best_score {
             best_score = score;
@@ -104,16 +106,16 @@ fn heuristic_greedy_move<R: Rng>(
     best_move.unwrap()
 }
 
-enum Player<'a> {
+enum Player<'a, B: Backend> {
     Random,
     Heuristic(&'a dyn EvaluatingPlayer),
-    NeuralNet(&'a ValueNetwork<B>, &'a <B as Backend>::Device),
+    NeuralNet(&'a ValueNetwork<B>, &'a B::Device),
 }
 
-fn play_match(
+fn play_match<B: Backend>(
     gs: &GameState,
-    top_player: &Player,
-    bottom_player: &Player,
+    top_player: &Player<B>,
+    bottom_player: &Player<B>,
     rng: &mut StdRng,
     max_turns: u32,
 ) -> GameResult {
@@ -125,7 +127,7 @@ fn play_match(
         match game.game_result() {
             GameResult::Ongoing => {
                 if turns >= max_turns {
-                    return GameResult::Tie; // timeout
+                    return GameResult::Tie;
                 }
                 let current = game.current_player_turn();
                 let player = match current {
@@ -139,7 +141,7 @@ fn play_match(
                         mv.play(&mut game, rng);
                     }
                     Player::NeuralNet(model, device) => {
-                        let mv = nn_greedy_move(&game, model, device, rng);
+                        let mv = nn_greedy_move(&game, model, *device, rng);
                         mv.play(&mut game, rng);
                     }
                 }
@@ -156,10 +158,10 @@ struct MatchResult {
     ties: u32,
 }
 
-fn run_matches(
+fn run_matches<B: Backend>(
     gs: &GameState,
-    player_a: &Player,
-    player_b: &Player,
+    player_a: &Player<B>,
+    player_b: &Player<B>,
     num_games: u32,
     label: &str,
 ) -> MatchResult {
@@ -168,19 +170,18 @@ fn run_matches(
 
     for seed in 0..num_games {
         let mut rng = StdRng::seed_from_u64(seed as u64);
-        // Alternate who plays TopPlayer/BottomPlayer for fairness
         let game_result = if seed % 2 == 0 {
             let r = play_match(gs, player_a, player_b, &mut rng, 200);
             match r {
-                GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::TopPlayer),     // A won
-                GameResult::Won(Owner::BottomPlayer) => GameResult::Won(Owner::BottomPlayer), // B won
+                GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::TopPlayer),
+                GameResult::Won(Owner::BottomPlayer) => GameResult::Won(Owner::BottomPlayer),
                 other => other,
             }
         } else {
             let r = play_match(gs, player_b, player_a, &mut rng, 200);
             match r {
-                GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::BottomPlayer),   // B won (was Top)
-                GameResult::Won(Owner::BottomPlayer) => GameResult::Won(Owner::TopPlayer),   // A won (was Bottom)
+                GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::BottomPlayer),
+                GameResult::Won(Owner::BottomPlayer) => GameResult::Won(Owner::TopPlayer),
                 other => other,
             }
         };
@@ -206,23 +207,15 @@ fn run_matches(
     result
 }
 
-fn main() {
-    let checkpoint = std::env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("Usage: benchmark <checkpoint_path>");
-        eprintln!("  e.g.: benchmark checkpoints/model_game_100000");
-        std::process::exit(1);
-    });
-
+fn run_all_benchmarks<B: Backend>(device: B::Device, checkpoint: &str, backend_name: &str) {
     let bag = create_bag();
     let gs = create_initial_state(&bag);
-    let device = WgpuDevice::default();
 
-    // Load trained model
-    println!("Loading model from: {}", checkpoint);
+    println!("Loading model from: {} (backend: {})", checkpoint, backend_name);
     let model = ValueNetwork::<B>::new(&device);
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     let model = model
-        .load_file(&checkpoint, &recorder, &device)
+        .load_file(checkpoint, &recorder, &device)
         .expect("Failed to load model checkpoint");
     println!("Model loaded.\n");
 
@@ -239,7 +232,7 @@ fn main() {
 
     let num_games = 200;
 
-    println!("=== Benchmark: {} games per matchup ===\n", num_games);
+    println!("=== Benchmark: {} games per matchup ({}) ===\n", num_games, backend_name);
 
     println!("--- Neural Net vs Random ---");
     run_matches(&gs, &nn, &random, num_games, "NN vs Random");
@@ -249,4 +242,26 @@ fn main() {
 
     println!("\n--- Heuristic vs Random (baseline) ---");
     run_matches(&gs, &heuristic, &random, num_games, "Heuristic vs Random");
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: benchmark <checkpoint_path> [--gpu|--cpu]");
+        eprintln!("  e.g.: benchmark checkpoints/model_game_100000 --cpu");
+        eprintln!("  Default: --cpu");
+        std::process::exit(1);
+    }
+
+    let checkpoint = &args[1];
+    let backend = if args.iter().any(|a| a == "--gpu") {
+        BackendKind::Gpu
+    } else {
+        BackendKind::Cpu
+    };
+
+    match backend {
+        BackendKind::Cpu => run_all_benchmarks::<NdArray>(Default::default(), checkpoint, "CPU"),
+        BackendKind::Gpu => run_all_benchmarks::<Wgpu>(WgpuDevice::default(), checkpoint, "GPU"),
+    }
 }
