@@ -104,17 +104,18 @@ fn play_nnue_game(
 /// Pick the move that minimizes the opponent's value (= maximizes our value).
 fn nnue_greedy_move(gs: &GameState, evaluator: &NnueEvaluator, rng: &mut impl Rng) -> AiMove {
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
-    moves.shuffle(rng); // randomize among equal-scored moves
+    moves.shuffle(rng);
 
     let mut best_score = f64::NEG_INFINITY;
     let mut best_move = None;
 
     for mv in &moves {
         let mut clone = gs.clone();
-        mv.play(&mut clone, rng);
+        // Use a deterministic rng for play so candidate evaluation doesn't
+        // corrupt the main rng or depend on move order.
+        let mut eval_rng = StdRng::seed_from_u64(0);
+        mv.play(&mut clone, &mut eval_rng);
         let prediction = evaluator.evaluate_state(&clone);
-        // After our move it's opponent's turn, so opponent's value = prediction.
-        // Our value = 1 - prediction.
         let score = 1.0 - prediction as f64;
         if score > best_score {
             best_score = score;
@@ -144,19 +145,34 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1000);
 
+    let resume_path: Option<String> = args.iter()
+        .position(|a| a == "--resume")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+
     let bag = create_bag();
     let gs = create_initial_state(&bag);
 
     let device = WgpuDevice::default();
     let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, 0.001);
 
-    // Initialize NNUE evaluator from the fresh model
-    let mut nnue_weights = export_weights(&trainer.model);
+    // Load checkpoint if resuming
+    if let Some(ref path) = resume_path {
+        println!("Resuming from checkpoint: {}", path);
+        trainer.load_model(path);
+        println!("Model loaded.");
+    }
+
+    // Initialize NNUE evaluator from the (possibly loaded) model
+    let nnue_weights = export_weights(&trainer.model);
     let mut nnue_evaluator = NnueEvaluator::new(nnue_weights);
 
     if self_play {
         println!("Phase 2: NNUE self-play training");
         println!("  epsilon={}, update_interval={}, total_games={}", epsilon, update_interval, total_games);
+        if resume_path.is_none() {
+            eprintln!("WARNING: --self-play without --resume starts from random weights!");
+        }
     } else {
         println!("Phase 1: Random play training");
         println!("  total_games={}", total_games);

@@ -153,7 +153,8 @@ fn heuristic_greedy_move<R: Rng>(
 
     for mv in &moves {
         let mut clone = gs.clone();
-        mv.play(&mut clone, rng);
+        let mut eval_rng = StdRng::seed_from_u64(0);
+        mv.play(&mut clone, &mut eval_rng);
         let score = -evaluator.cheap_evaluate(&clone);
         if score > best_score {
             best_score = score;
@@ -178,9 +179,11 @@ fn nnue_greedy_move<R: Rng>(
 
     for mv in &moves {
         let mut clone = gs.clone();
-        mv.play(&mut clone, rng);
+        // Use a deterministic rng for play so candidate evaluation doesn't
+        // corrupt the main rng or depend on move order.
+        let mut eval_rng = StdRng::seed_from_u64(0);
+        mv.play(&mut clone, &mut eval_rng);
         let prediction = evaluator.evaluate_state(&clone);
-        // Opponent's perspective after our move, so our value is 1 - prediction
         let score = 1.0 - prediction as f64;
         if score > best_score {
             best_score = score;

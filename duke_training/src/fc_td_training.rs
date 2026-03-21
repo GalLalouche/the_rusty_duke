@@ -132,7 +132,7 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
             .expect("Failed to save model");
     }
 
-    /// Load model weights from a file.
+    /// Load model weights from a file and reset the optimizer state.
     ///
     /// The file extension (`.mpk`) is automatically appended by the recorder.
     pub fn load_model(&mut self, path: &str) {
@@ -142,5 +142,7 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
             .clone()
             .load_file(path, &recorder, &self.device)
             .expect("Failed to load model");
+        // Reset optimizer state to match the loaded model
+        self.optimizer = SgdConfig::new().init::<B, FcValueNetwork<B>>();
     }
 }

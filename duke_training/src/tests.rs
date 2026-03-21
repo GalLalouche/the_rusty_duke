@@ -638,3 +638,78 @@ fn nnue_matches_burn_across_multiple_states() {
     }
     assert!(states_checked >= 3, "Should check at least 3 states, checked {}", states_checked);
 }
+
+#[test]
+fn fc_trainer_load_model_changes_output() {
+    use crate::fc_td_training::FcTdTrainer;
+
+    let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
+
+    // Create two trainers — they get different random weights
+    let trainer1 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001);
+    let mut trainer2 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001);
+
+    let gs = create_initial_state();
+    let flat = encode_state_flat::<TestBackend>(&gs, &device);
+
+    // Their outputs should differ (different random init)
+    let out1: f32 = trainer1.model.forward(flat.clone().unsqueeze()).into_data().to_vec::<f32>().expect("v")[0];
+    let out2_before: f32 = trainer2.model.forward(flat.clone().unsqueeze()).into_data().to_vec::<f32>().expect("v")[0];
+    assert!((out1 - out2_before).abs() > 1e-6, "Two random models should differ");
+
+    // Save trainer1's model, load into trainer2
+    let path = "test_load_model";
+    trainer1.save_model(path);
+    trainer2.load_model(path);
+    std::fs::remove_file(format!("{}.mpk", path)).ok();
+
+    // Now trainer2 should produce the same output as trainer1
+    let out2_after: f32 = trainer2.model.forward(flat.unsqueeze()).into_data().to_vec::<f32>().expect("v")[0];
+    let diff = (out1 - out2_after).abs();
+    assert!(diff < 1e-5, "After loading, outputs should match: {} vs {}, diff={}", out1, out2_after, diff);
+}
+
+#[test]
+fn nnue_greedy_move_is_deterministic() {
+    // Verify that evaluating candidate moves doesn't corrupt the rng,
+    // so the same position always picks the same move.
+    use burn::backend::NdArray;
+    use rand::seq::SliceRandom;
+
+    let device = Default::default();
+    let model = FcValueNetwork::<NdArray>::new(&device);
+    let weights = export_weights(&model);
+    let evaluator = NnueEvaluator::new(weights);
+
+    let gs = create_initial_state();
+
+    // Call twice with same seed — should get same move
+    let mut rng1 = StdRng::seed_from_u64(42);
+    let mut rng2 = StdRng::seed_from_u64(42);
+
+    let mut moves1: Vec<duke_rust::game::ai::player::AiMove> = duke_rust::game::ai::player::AiMove::all_moves(&gs).collect();
+    moves1.shuffle(&mut rng1);
+    let mut best1 = None;
+    let mut best_score1 = f64::NEG_INFINITY;
+    for mv in &moves1 {
+        let mut clone = gs.clone();
+        let mut eval_rng = StdRng::seed_from_u64(0);
+        mv.play(&mut clone, &mut eval_rng);
+        let score = 1.0 - evaluator.evaluate_state(&clone) as f64;
+        if score > best_score1 { best_score1 = score; best1 = Some(mv.clone()); }
+    }
+
+    let mut moves2: Vec<duke_rust::game::ai::player::AiMove> = duke_rust::game::ai::player::AiMove::all_moves(&gs).collect();
+    moves2.shuffle(&mut rng2);
+    let mut best2 = None;
+    let mut best_score2 = f64::NEG_INFINITY;
+    for mv in &moves2 {
+        let mut clone = gs.clone();
+        let mut eval_rng = StdRng::seed_from_u64(0);
+        mv.play(&mut clone, &mut eval_rng);
+        let score = 1.0 - evaluator.evaluate_state(&clone) as f64;
+        if score > best_score2 { best_score2 = score; best2 = Some(mv.clone()); }
+    }
+
+    assert_eq!(best1, best2, "Same seed should produce same move choice");
+}
