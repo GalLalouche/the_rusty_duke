@@ -7,3 +7,11 @@ edition = "2021"
 duke_rust = { path = ".." }
 rand = "0.8"
 burn = { version = "0.16", features = ["wgpu", "autodiff", "ndarray"] }
+
+[[bin]]
+name = "duke_training"
+path = "src/main.rs"
+
+[[bin]]
+name = "benchmark"
+path = "src/benchmark.rs"

@@ -70,7 +70,7 @@ fn main() {
     let device = WgpuDevice::default();
     let mut trainer: TdTrainer<MyBackend> = TdTrainer::new(device, 0.001);
 
-    let total_games: u64 = 1000;
+    let total_games: u64 = 100_000;
     let start = Instant::now();
     let mut total_loss = 0.0f32;
     let mut wins = [0u32; 2]; // [TopPlayer, BottomPlayer]
