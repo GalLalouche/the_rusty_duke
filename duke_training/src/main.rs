@@ -8,7 +8,7 @@ use rand::SeedableRng;
 use duke_rust::game::state::GameResult;
 
 use duke_training::fc_td_training::FcTdTrainer;
-use duke_training::game_setup::{create_bag, create_initial_state, play_random_game, play_nnue_game};
+use duke_training::game_setup::{create_bag, create_initial_state, play_random_game, play_selfplay_game};
 use duke_training::nnue::NnueEvaluator;
 use duke_training::weight_export::export_weights;
 
@@ -168,7 +168,7 @@ fn main() {
         let mut rng = StdRng::seed_from_u64(game_num);
 
         let (states, result) = if config.self_play {
-            play_nnue_game(&gs, &nnue_evaluator, &mut rng, config.epsilon)
+            play_selfplay_game(&gs, &nnue_evaluator, &mut rng, config.epsilon)
         } else {
             play_random_game(&gs, &mut rng)
         };

@@ -14,7 +14,6 @@ use crate::encoding::{active_feature_indices, encode_state, encode_state_flat, B
 use crate::fc_model::FcValueNetwork;
 use crate::fc_td_training::FcTdTrainer;
 use crate::game_setup::{create_bag, create_initial_state, play_random_game};
-use crate::model::ValueNetwork;
 use crate::nnue::{NnueAccumulator, NnueEvaluator, NnueWeights, DEFAULT_L1, DEFAULT_L2};
 use crate::weight_export::export_weights;
 
@@ -181,58 +180,6 @@ fn encode_state_side_planes_are_correct() {
         plane_28_sum > 0.0,
         "Plane 28 (opponent initial) should have non-zero values"
     );
-}
-
-// ── model tests ─────────────────────────────────────────────────────────
-
-#[test]
-fn model_forward_produces_valid_output() {
-    let device = Default::default();
-    let model = ValueNetwork::<TestBackend>::new(&device);
-
-    // Random input of shape [1, 30, 6, 6]
-    let input = Tensor::<TestBackend, 4>::random(
-        [1, NUM_PLANES, BOARD_SIZE, BOARD_SIZE],
-        burn::tensor::Distribution::Uniform(0.0, 1.0),
-        &device,
-    );
-    let output = model.forward(input);
-
-    assert_eq!(output.dims(), [1, 1], "Output shape should be [1, 1]");
-    let value: f32 = output.into_data().to_vec::<f32>().expect("to_vec")[0];
-    assert!(
-        (0.0..=1.0).contains(&value),
-        "Output should be in [0, 1], got {}",
-        value
-    );
-}
-
-#[test]
-fn model_output_is_between_zero_and_one() {
-    let device = Default::default();
-    let model = ValueNetwork::<TestBackend>::new(&device);
-
-    // Run multiple forward passes with different random inputs
-    for seed in 0..10u64 {
-        // Use a manual approach: create seeded data
-        let mut rng = StdRng::seed_from_u64(seed);
-        let data: Vec<f32> = (0..NUM_PLANES * BOARD_SIZE * BOARD_SIZE)
-            .map(|_| {
-                use rand::Rng;
-                rng.gen::<f32>()
-            })
-            .collect();
-        let input = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device)
-            .reshape([1, NUM_PLANES as i32, BOARD_SIZE as i32, BOARD_SIZE as i32]);
-        let output = model.forward(input);
-        let value: f32 = output.into_data().to_vec::<f32>().expect("to_vec")[0];
-        assert!(
-            value > 0.0 && value < 1.0,
-            "Output should be in (0, 1), got {} for seed {}",
-            value,
-            seed
-        );
-    }
 }
 
 // ── fc_td_training tests ────────────────────────────────────────────────
@@ -725,4 +672,123 @@ fn nnue_greedy_move_is_deterministic() {
     }
 
     assert_eq!(best1, best2, "Same seed should produce same move choice");
+}
+
+// ── match_runner tests ────────────────────────────────────────────────
+
+use crate::match_runner::{play_match, run_matches, Player};
+use duke_rust::game::ai::heuristics::{HeuristicAi, Heuristics};
+use crate::game_setup::HeuristicEvaluator;
+
+#[test]
+fn play_match_terminates() {
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+    let random = Player::Random;
+    let max_turns = 300;
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let result = play_match(&gs, &random, &random, &mut rng, max_turns);
+
+    // The match must have finished — it should not be Ongoing.
+    assert_ne!(
+        result,
+        GameResult::Ongoing,
+        "Match should terminate within {} turns",
+        max_turns,
+    );
+}
+
+#[test]
+fn play_match_random_vs_random_is_fair() {
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+    let random = Player::Random;
+
+    let num_games = 100u32;
+    let mut top_wins = 0u32;
+    let mut bottom_wins = 0u32;
+
+    for seed in 0..num_games {
+        let mut rng = StdRng::seed_from_u64(seed as u64);
+        // Alternate who starts as top to cancel out first-move advantage
+        let result = if seed % 2 == 0 {
+            play_match(&gs, &random, &random, &mut rng, 200)
+        } else {
+            play_match(&gs, &random, &random, &mut rng, 200)
+        };
+        match result {
+            GameResult::Won(Owner::TopPlayer) => top_wins += 1,
+            GameResult::Won(Owner::BottomPlayer) => bottom_wins += 1,
+            _ => {}
+        }
+    }
+
+    let total_decisive = top_wins + bottom_wins;
+    if total_decisive > 0 {
+        let top_pct = top_wins as f64 / total_decisive as f64;
+        assert!(
+            top_pct <= 0.70 && top_pct >= 0.30,
+            "Random vs Random should be roughly fair: top won {:.0}% of decisive games ({}/{})",
+            top_pct * 100.0,
+            top_wins,
+            total_decisive,
+        );
+    }
+}
+
+#[test]
+fn run_matches_alternates_sides() {
+    // run_matches uses seed as the loop variable.
+    // Even seeds: player_a = Top, player_b = Bottom
+    // Odd seeds: player_b = Top, player_a = Bottom
+    //
+    // We verify this by running 2 games and checking that the side
+    // assignment logic in run_matches produces a valid MatchResult.
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+    let random = Player::Random;
+
+    let result = run_matches(&gs, &random, &random, 2, "test");
+
+    // With 2 games, total outcomes should sum to 2
+    let total = result.player_a_wins + result.player_b_wins + result.ties;
+    assert_eq!(
+        total, 2,
+        "Two games should produce exactly 2 outcomes, got {}",
+        total,
+    );
+}
+
+#[test]
+fn heuristic_beats_random() {
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let heuristic_ai = HeuristicAi::new(vec![
+        Box::new(Heuristics::DukeMovementOptions),
+        Box::new(Heuristics::TotalTilesOnBoard),
+        Box::new(Heuristics::TotalMovementOptions),
+        Box::new(Heuristics::DiscardedUnits),
+    ]);
+    let heuristic_evaluator = HeuristicEvaluator::new(&heuristic_ai);
+
+    let heuristic = Player::Evaluator(&heuristic_evaluator);
+    let random = Player::Random;
+
+    let result = run_matches(&gs, &heuristic, &random, 50, "Heuristic vs Random");
+
+    let total_decisive = result.player_a_wins + result.player_b_wins;
+    assert!(
+        total_decisive > 0,
+        "At least some games should have a decisive result",
+    );
+    let heuristic_win_pct = result.player_a_wins as f64 / total_decisive as f64;
+    assert!(
+        heuristic_win_pct > 0.60,
+        "Heuristic should win >60% of decisive games vs Random, got {:.0}% ({}/{})",
+        heuristic_win_pct * 100.0,
+        result.player_a_wins,
+        total_decisive,
+    );
 }

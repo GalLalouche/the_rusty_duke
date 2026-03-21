@@ -796,4 +796,53 @@ mod test {
         board.place(duke_coordinates, units::place_tile(Owner::BottomPlayer, units::duke));
         assert!(board.is_guard(Owner::BottomPlayer))
     }
+
+    // ── JumpSlide tests (Assassin) ──────────────────────────────────────
+    // TopPlayer tiles are vertically flipped, so the Assassin's initial-side
+    // FarTop JumpSlide becomes a downward JumpSlide for TopPlayer.
+
+    #[test]
+    fn jumpslide_can_move_to_adjacent_square() {
+        // Assassin (TopPlayer, initial side) has JumpSlide downward.
+        // With no obstacles it should slide 1 square down (like Slide).
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        let src = Coordinates { x: 3, y: 2 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::assassin));
+        // 1 square down
+        let dst = Coordinates { x: 3, y: 3 };
+        assert!(board.can_move(src, dst));
+    }
+
+    #[test]
+    fn jumpslide_can_jump_over_adjacent_piece() {
+        // Assassin (TopPlayer, initial side) has JumpSlide downward.
+        // Place a blocker directly adjacent (1 square down). JumpSlide should
+        // jump over it and reach the square beyond.
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        let src = Coordinates { x: 3, y: 1 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::assassin));
+        // Blocker at (3,2) -- adjacent to src downward
+        board.place(Coordinates { x: 3, y: 2 }, units::place_tile(Owner::BottomPlayer, units::footman));
+        // Assassin should jump over (3,2) and reach (3,3)
+        let dst = Coordinates { x: 3, y: 3 };
+        assert!(board.can_move(src, dst));
+    }
+
+    #[test]
+    fn jumpslide_blocked_by_non_adjacent_piece() {
+        // Assassin (TopPlayer, initial side) has JumpSlide downward.
+        // Place a blocker 2 squares away (not adjacent). JumpSlide should NOT
+        // be able to pass through it to reach a square beyond.
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        let src = Coordinates { x: 3, y: 0 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::assassin));
+        // Blocker at (3,2) -- 2 squares away from src (not adjacent)
+        board.place(Coordinates { x: 3, y: 2 }, units::place_tile(Owner::BottomPlayer, units::footman));
+        // Assassin should NOT reach (3,3) past the non-adjacent blocker
+        let dst = Coordinates { x: 3, y: 3 };
+        assert_not!(board.can_move(src, dst));
+    }
 }

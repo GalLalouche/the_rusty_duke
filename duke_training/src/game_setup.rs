@@ -16,6 +16,10 @@ use duke_rust::game::units;
 
 use crate::nnue::NnueEvaluator;
 
+/// Safety limit: if a game exceeds this many turns, force a draw.
+/// In practice the built-in idle-move draw rule should trigger well before this.
+const MAX_TURNS: u32 = 500;
+
 /// Common trait for anything that can evaluate a game state.
 /// Higher values = better for the current player.
 /// The scale is arbitrary — only relative ordering matters for move selection.
@@ -83,6 +87,11 @@ pub fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, Ga
     loop {
         match game.game_result() {
             GameResult::Ongoing => {
+                if states.len() as u32 >= MAX_TURNS {
+                    eprintln!("WARNING: play_random_game exceeded {} turns, forcing draw", MAX_TURNS);
+                    states.push(game.clone());
+                    return (states, GameResult::Tie);
+                }
                 states.push(game.clone());
                 ai.play_next_move(rng, &mut game);
             }
@@ -95,9 +104,11 @@ pub fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, Ga
 }
 
 /// Play a game using self-play with epsilon-greedy exploration.
-pub fn play_nnue_game(
+///
+/// Accepts any `GameEvaluator` (NNUE, heuristic, etc.) for move selection.
+pub fn play_selfplay_game(
     gs: &GameState,
-    evaluator: &NnueEvaluator,
+    evaluator: &dyn GameEvaluator,
     rng: &mut StdRng,
     epsilon: f64,
 ) -> (Vec<GameState>, GameResult) {
@@ -108,6 +119,11 @@ pub fn play_nnue_game(
     loop {
         match game.game_result() {
             GameResult::Ongoing => {
+                if states.len() as u32 >= MAX_TURNS {
+                    eprintln!("WARNING: play_selfplay_game exceeded {} turns, forcing draw", MAX_TURNS);
+                    states.push(game.clone());
+                    return (states, GameResult::Tie);
+                }
                 states.push(game.clone());
 
                 if rng.gen::<f64>() < epsilon {
