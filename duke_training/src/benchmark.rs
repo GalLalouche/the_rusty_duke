@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Instant;
 
 use burn::backend::wgpu::WgpuDevice;
@@ -12,13 +11,11 @@ use rand::{Rng, SeedableRng};
 use duke_rust::game::ai::heuristics::{HeuristicAi, Heuristics};
 use duke_rust::game::ai::player::{AiMove, ArtificialPlayer, EvaluatingPlayer};
 use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
-use duke_rust::game::bag::TileBag;
-use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
-use duke_rust::game::units;
 
 use duke_training::encoding::encode_state;
+use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::model::ValueNetwork;
 use duke_training::nnue::NnueEvaluator;
 
@@ -26,31 +23,6 @@ use duke_training::nnue::NnueEvaluator;
 enum BackendKind {
     Cpu,
     Gpu,
-}
-
-fn create_bag() -> TileBag {
-    TileBag::new(vec![
-        Arc::new(units::footman()),
-        Arc::new(units::bowman()),
-        Arc::new(units::knight()),
-        Arc::new(units::pikeman()),
-        Arc::new(units::pikeman()),
-        Arc::new(units::champion()),
-        Arc::new(units::priest()),
-        Arc::new(units::wizard()),
-        Arc::new(units::dragoon()),
-        Arc::new(units::general()),
-        Arc::new(units::marshall()),
-        Arc::new(units::longbowman()),
-    ])
-}
-
-fn create_initial_state(bag: &TileBag) -> GameState {
-    GameState::new(
-        bag,
-        (DukeInitialLocation::Left, FootmenSetup::Left),
-        (DukeInitialLocation::Right, FootmenSetup::Right),
-    )
 }
 
 /// Timing accumulators for profiling NN move selection.
@@ -165,34 +137,7 @@ fn heuristic_greedy_move<R: Rng>(
     best_move.unwrap()
 }
 
-/// NNUE greedy player: picks the move that maximizes value after the move.
-fn nnue_greedy_move<R: Rng>(
-    gs: &GameState,
-    evaluator: &NnueEvaluator,
-    rng: &mut R,
-) -> AiMove {
-    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
-    moves.shuffle(rng);
-
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_move = None;
-
-    for mv in &moves {
-        let mut clone = gs.clone();
-        // Use a deterministic rng for play so candidate evaluation doesn't
-        // corrupt the main rng or depend on move order.
-        let mut eval_rng = StdRng::seed_from_u64(0);
-        mv.play(&mut clone, &mut eval_rng);
-        let prediction = evaluator.evaluate_state(&clone);
-        let score = 1.0 - prediction as f64;
-        if score > best_score {
-            best_score = score;
-            best_move = Some(mv.clone());
-        }
-    }
-
-    best_move.unwrap()
-}
+use duke_training::game_setup::nnue_greedy_move;
 
 enum Player<'a, B: Backend> {
     Random,

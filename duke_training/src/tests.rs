@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use burn::backend::{Autodiff, NdArray};
 use burn::prelude::*;
 use rand::rngs::StdRng;
@@ -11,10 +9,10 @@ use duke_rust::game::bag::TileBag;
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
-use duke_rust::game::units;
 
 use crate::encoding::{active_feature_indices, encode_state, encode_state_flat, BOARD_SIZE, NUM_PLANES};
 use crate::fc_model::FcValueNetwork;
+use crate::game_setup::{create_bag, create_initial_state, play_random_game};
 use crate::model::ValueNetwork;
 use crate::nnue::{NnueAccumulator, NnueEvaluator, NnueWeights, L1_SIZE};
 use crate::td_training::TdTrainer;
@@ -22,39 +20,8 @@ use crate::weight_export::export_weights;
 
 type TestBackend = Autodiff<NdArray>;
 
-fn create_bag() -> TileBag {
-    TileBag::new(vec![
-        Arc::new(units::footman()),
-        Arc::new(units::bowman()),
-        Arc::new(units::knight()),
-        Arc::new(units::pikeman()),
-        Arc::new(units::pikeman()),
-        Arc::new(units::champion()),
-        Arc::new(units::priest()),
-        Arc::new(units::wizard()),
-        Arc::new(units::dragoon()),
-        Arc::new(units::general()),
-        Arc::new(units::marshall()),
-        Arc::new(units::longbowman()),
-    ])
-}
-
-/// Small bag for faster games in debug mode.
-fn create_small_bag() -> TileBag {
-    TileBag::new(vec![])
-}
-
-fn create_initial_state() -> GameState {
-    let bag = create_bag();
-    GameState::new(
-        &bag,
-        (DukeInitialLocation::Left, FootmenSetup::Left),
-        (DukeInitialLocation::Right, FootmenSetup::Right),
-    )
-}
-
 fn create_small_state() -> GameState {
-    let bag = create_small_bag();
+    let bag = TileBag::new(vec![]);
     GameState::new(
         &bag,
         (DukeInitialLocation::Left, FootmenSetup::Left),
@@ -62,30 +29,16 @@ fn create_small_state() -> GameState {
     )
 }
 
-fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, GameResult) {
-    let ai = StupidSyncAi {};
-    let mut game = gs.clone();
-    let mut states = Vec::new();
-
-    loop {
-        match game.game_result() {
-            GameResult::Ongoing => {
-                states.push(game.clone());
-                ai.play_next_move(rng, &mut game);
-            }
-            result => {
-                states.push(game.clone());
-                return (states, result);
-            }
-        }
-    }
+fn create_test_state() -> GameState {
+    let bag = create_bag();
+    create_initial_state(&bag)
 }
 
 // ── encoding tests ──────────────────────────────────────────────────────
 
 #[test]
 fn encode_state_has_correct_shape() {
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let device = Default::default();
     let tensor = encode_state::<TestBackend>(&gs, &device);
     let dims = tensor.dims();
@@ -96,7 +49,7 @@ fn encode_state_has_correct_shape() {
 fn encode_state_initial_board_has_six_tiles() {
     // Initial board has 3 tiles per player (Duke + 2 Footmen = 6 total).
     // Sum of all tile-type planes (0..25) should equal 6.0.
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let device = Default::default();
     let tensor = encode_state::<TestBackend>(&gs, &device);
 
@@ -118,7 +71,7 @@ fn encode_state_initial_board_has_six_tiles() {
 fn encode_state_is_relative_to_current_player() {
     // Create a game state from TopPlayer's perspective and BottomPlayer's
     // perspective. The "my tiles" and "opponent tiles" planes should differ.
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let device = Default::default();
 
     // TopPlayer's turn (default)
@@ -158,7 +111,7 @@ fn encode_state_side_planes_are_correct() {
     // Initially all tiles are on Initial side.
     // Plane 26 (current player initial) and 28 (opponent initial) should have values.
     // Plane 27 (current player flipped) and 29 (opponent flipped) should be zero.
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let device = Default::default();
     let tensor = encode_state::<TestBackend>(&gs, &device);
 
@@ -272,7 +225,7 @@ fn train_on_game_returns_loss() {
     let device = Default::default();
     let mut trainer: TdTrainer<TestBackend> = TdTrainer::new(device, 0.001);
 
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let mut rng = StdRng::seed_from_u64(0);
     let (states, result) = play_random_game(&gs, &mut rng);
 
@@ -372,7 +325,7 @@ fn terminal_state_target_is_correct() {
 
 #[test]
 fn active_features_matches_encoding() {
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let device = Default::default();
     let tensor = encode_state::<TestBackend>(&gs, &device);
     let flat: Vec<f32> = tensor.reshape([1080]).into_data().to_vec().expect("flat");
@@ -424,7 +377,7 @@ fn nnue_matches_burn_fc_model() {
     let nnue_weights = export_weights(&model);
     let evaluator = NnueEvaluator::new(nnue_weights);
 
-    let gs = create_initial_state();
+    let gs = create_test_state();
 
     // Burn forward pass
     let flat = encode_state_flat::<NdArray>(&gs, &device);
@@ -534,7 +487,7 @@ fn accumulator_remove_feature_matches_full() {
 #[test]
 fn encode_state_flat_matches_encode_state() {
     let device = Default::default();
-    let gs = create_initial_state();
+    let gs = create_test_state();
 
     let tensor_3d = encode_state::<TestBackend>(&gs, &device);
     let flat_from_3d: Vec<f32> = tensor_3d
@@ -562,7 +515,7 @@ fn encode_state_flat_matches_encode_state() {
 #[test]
 fn active_features_matches_encoding_after_moves() {
     // Test encoding consistency after several moves (flipped tiles, captures)
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let mut game = gs;
     let ai = StupidSyncAi {};
     let mut rng = StdRng::seed_from_u64(42);
@@ -645,7 +598,7 @@ fn encode_state_flat_uses_active_feature_indices() {
     // Verify encode_state_flat sets exactly the indices from active_feature_indices.
     // This is the critical consistency check: training (encode_state_flat) and
     // NNUE inference (active_feature_indices) MUST agree on what features are active.
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let mut game = gs;
     let ai = StupidSyncAi {};
     let mut rng = StdRng::seed_from_u64(123);
@@ -685,7 +638,7 @@ fn fc_trainer_load_model_changes_output() {
     let trainer1 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001);
     let mut trainer2 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001);
 
-    let gs = create_initial_state();
+    let gs = create_test_state();
     let flat = encode_state_flat::<TestBackend>(&gs, &device);
 
     // Their outputs should differ (different random init)
@@ -717,7 +670,7 @@ fn nnue_greedy_move_is_deterministic() {
     let weights = export_weights(&model);
     let evaluator = NnueEvaluator::new(weights);
 
-    let gs = create_initial_state();
+    let gs = create_test_state();
 
     // Call twice with same seed — should get same move
     let mut rng1 = StdRng::seed_from_u64(42);

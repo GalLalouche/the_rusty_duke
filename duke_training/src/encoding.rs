@@ -1,5 +1,4 @@
 use burn::prelude::*;
-use duke_rust::common::geometry::Rectangular;
 use duke_rust::game::state::GameState;
 use duke_rust::game::tile::CurrentSide;
 
@@ -46,40 +45,11 @@ pub fn tile_name_to_index(name: &str) -> Option<usize> {
 /// - Plane 27: current player's tile on flipped side
 /// - Plane 28: opponent's tile on initial side
 /// - Plane 29: opponent's tile on flipped side
+///
+/// Delegates to `encode_state_flat` and reshapes, ensuring all encoding
+/// paths share the same underlying logic.
 pub fn encode_state<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 3> {
-    let current_player = gs.current_player_turn();
-    let board = gs.board();
-    let w = board.width() as usize;
-    let h = board.height() as usize;
-    debug_assert_eq!(w, BOARD_SIZE);
-    debug_assert_eq!(h, BOARD_SIZE);
-
-    let mut data = vec![0.0f32; NUM_PLANES * BOARD_SIZE * BOARD_SIZE];
-
-    for (coords, placed_tile) in board.active_coordinates() {
-        let x = coords.x as usize;
-        let y = coords.y as usize;
-        let cell_index = y * BOARD_SIZE + x;
-
-        let is_mine = placed_tile.owner == current_player;
-
-        // Tile type planes (0..25)
-        if let Some(tile_idx) = tile_name_to_index(placed_tile.tile.get_name()) {
-            let plane = if is_mine { tile_idx } else { tile_idx + 13 };
-            data[plane * BOARD_SIZE * BOARD_SIZE + cell_index] = 1.0;
-        }
-
-        // Side planes (26..29)
-        let side_plane = match (is_mine, placed_tile.current_side) {
-            (true, CurrentSide::Initial) => 26,
-            (true, CurrentSide::Flipped) => 27,
-            (false, CurrentSide::Initial) => 28,
-            (false, CurrentSide::Flipped) => 29,
-        };
-        data[side_plane * BOARD_SIZE * BOARD_SIZE + cell_index] = 1.0;
-    }
-
-    Tensor::<B, 1>::from_floats(data.as_slice(), device)
+    encode_state_flat(gs, device)
         .reshape([NUM_PLANES as i32, BOARD_SIZE as i32, BOARD_SIZE as i32])
 }
 
