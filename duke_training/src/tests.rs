@@ -15,7 +15,7 @@ use crate::fc_model::FcValueNetwork;
 use crate::fc_td_training::FcTdTrainer;
 use crate::game_setup::{create_bag, create_initial_state, play_random_game};
 use crate::model::ValueNetwork;
-use crate::nnue::{NnueAccumulator, NnueEvaluator, NnueWeights, L1_SIZE};
+use crate::nnue::{NnueAccumulator, NnueEvaluator, NnueWeights, DEFAULT_L1, DEFAULT_L2};
 use crate::weight_export::export_weights;
 
 type TestBackend = Autodiff<NdArray>;
@@ -223,7 +223,7 @@ fn model_output_is_between_zero_and_one() {
 #[test]
 fn train_on_game_returns_loss() {
     let device = Default::default();
-    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001, DEFAULT_L1, DEFAULT_L2);
 
     let gs = create_test_state();
     let mut rng = StdRng::seed_from_u64(0);
@@ -238,7 +238,7 @@ fn train_on_game_returns_loss() {
 fn train_reduces_loss_on_repeated_game() {
     // Use a small bag (empty) so the game is short and training is fast in debug mode.
     let device = Default::default();
-    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.01);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.01, DEFAULT_L1, DEFAULT_L2);
 
     let gs = create_small_state();
     let mut rng = StdRng::seed_from_u64(7);
@@ -298,7 +298,7 @@ fn terminal_state_target_is_correct() {
 
     // Train a few times (kept low for debug builds)
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
-    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device.clone(), 0.01);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device.clone(), 0.01, DEFAULT_L1, DEFAULT_L2);
     for _ in 0..5 {
         trainer.train_on_game(&states, game_result);
     }
@@ -350,7 +350,7 @@ fn active_features_matches_encoding() {
 #[test]
 fn fc_model_forward_produces_valid_output() {
     let device = Default::default();
-    let model = FcValueNetwork::<TestBackend>::new(&device);
+    let model = FcValueNetwork::<TestBackend>::new(&device, DEFAULT_L1, DEFAULT_L2);
 
     let input = Tensor::<TestBackend, 2>::random(
         [1, crate::encoding::TOTAL_FEATURES],
@@ -373,8 +373,8 @@ fn nnue_matches_burn_fc_model() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device);
-    let nnue_weights = export_weights(&model);
+    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let nnue_weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
     let evaluator = NnueEvaluator::new(nnue_weights);
 
     let gs = create_test_state();
@@ -406,8 +406,8 @@ fn nnue_weights_save_load_roundtrip() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device);
-    let weights = export_weights(&model);
+    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
 
     let path = "test_weights.nnue";
     weights.save(path).expect("save failed");
@@ -431,8 +431,8 @@ fn accumulator_incremental_matches_full() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device);
-    let weights = export_weights(&model);
+    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
 
     // Full computation with features [0, 5, 100]
     let features = vec![0, 5, 100];
@@ -443,7 +443,7 @@ fn accumulator_incremental_matches_full() {
     let mut inc_acc = NnueAccumulator::from_features(&weights, &partial);
     inc_acc.add_feature(100, &weights);
 
-    for i in 0..L1_SIZE {
+    for i in 0..DEFAULT_L1 {
         let diff = (full_acc.hidden[i] - inc_acc.hidden[i]).abs();
         assert!(
             diff < 1e-6,
@@ -460,8 +460,8 @@ fn accumulator_remove_feature_matches_full() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device);
-    let weights = export_weights(&model);
+    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
 
     // Target: features [0, 100]
     let target_features = vec![0, 100];
@@ -472,7 +472,7 @@ fn accumulator_remove_feature_matches_full() {
     let mut inc_acc = NnueAccumulator::from_features(&weights, &full_features);
     inc_acc.remove_feature(5, &weights);
 
-    for i in 0..L1_SIZE {
+    for i in 0..DEFAULT_L1 {
         let diff = (target_acc.hidden[i] - inc_acc.hidden[i]).abs();
         assert!(
             diff < 1e-5,
@@ -557,8 +557,8 @@ fn nnue_matches_burn_across_multiple_states() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device);
-    let nnue_weights = export_weights(&model);
+    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let nnue_weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
     let evaluator = NnueEvaluator::new(nnue_weights);
 
     // Play a game and check NNUE matches burn at every state
@@ -642,8 +642,8 @@ fn fc_trainer_load_model_changes_output() {
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
 
     // Create two trainers — they get different random weights
-    let trainer1 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001);
-    let mut trainer2 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001);
+    let trainer1 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, DEFAULT_L1, DEFAULT_L2);
+    let mut trainer2 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, DEFAULT_L1, DEFAULT_L2);
 
     let gs = create_test_state();
     let flat = encode_state_flat::<TestBackend>(&gs, &device);
@@ -673,8 +673,8 @@ fn nnue_greedy_move_is_deterministic() {
     use rand::seq::SliceRandom;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device);
-    let weights = export_weights(&model);
+    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
     let evaluator = NnueEvaluator::new(weights);
 
     let gs = create_test_state();

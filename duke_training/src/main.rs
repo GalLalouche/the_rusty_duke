@@ -23,6 +23,9 @@ pub struct TrainingConfig {
     pub update_interval: u64,
     pub self_play: bool,
     pub resume_path: Option<String>,
+    pub checkpoint_dir: String,
+    pub l1_size: usize,
+    pub l2_size: usize,
 }
 
 impl TrainingConfig {
@@ -78,6 +81,27 @@ impl TrainingConfig {
             .and_then(|i| args.get(i + 1))
             .cloned();
 
+        let checkpoint_dir: String = args
+            .iter()
+            .position(|a| a == "--checkpoint-dir")
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+            .unwrap_or_else(|| "checkpoints".to_string());
+
+        let l1_size: usize = args
+            .iter()
+            .position(|a| a == "--l1")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(256);
+
+        let l2_size: usize = args
+            .iter()
+            .position(|a| a == "--l2")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(32);
+
         Self {
             total_games,
             lr_start,
@@ -86,6 +110,9 @@ impl TrainingConfig {
             update_interval,
             self_play,
             resume_path,
+            checkpoint_dir,
+            l1_size,
+            l2_size,
         }
     }
 }
@@ -98,7 +125,8 @@ fn main() {
     let gs = create_initial_state(&bag);
 
     let device = WgpuDevice::default();
-    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, config.lr_start);
+    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, config.lr_start, config.l1_size, config.l2_size);
+    println!("  network: {}→{}→{}→1", duke_training::encoding::TOTAL_FEATURES, config.l1_size, config.l2_size);
 
     // Load checkpoint if resuming
     if let Some(ref path) = config.resume_path {
@@ -108,7 +136,7 @@ fn main() {
     }
 
     // Initialize NNUE evaluator from the (possibly loaded) model
-    let nnue_weights = export_weights(&trainer.model);
+    let nnue_weights = export_weights(&trainer.model, config.l1_size, config.l2_size);
     let mut nnue_evaluator = NnueEvaluator::new(nnue_weights);
 
     if config.self_play {
@@ -169,12 +197,12 @@ fn main() {
 
         if (game_num + 1) % config.update_interval == 0 {
             // Save checkpoints
-            let checkpoint_path = format!("checkpoints/fc_model_game_{}", game_num + 1);
-            std::fs::create_dir_all("checkpoints").expect("Failed to create checkpoints dir");
+            let checkpoint_path = format!("{}/fc_model_game_{}", config.checkpoint_dir, game_num + 1);
+            std::fs::create_dir_all(&config.checkpoint_dir).expect("Failed to create checkpoints dir");
             trainer.save_model(&checkpoint_path);
 
-            let nnue_path = format!("checkpoints/nnue_game_{}.nnue", game_num + 1);
-            let new_weights = export_weights(&trainer.model);
+            let nnue_path = format!("{}/nnue_game_{}.nnue", config.checkpoint_dir, game_num + 1);
+            let new_weights = export_weights(&trainer.model, config.l1_size, config.l2_size);
             new_weights.save(&nnue_path).expect("Failed to save NNUE weights");
 
             if config.self_play {

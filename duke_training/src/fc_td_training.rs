@@ -20,8 +20,8 @@ pub struct FcTdTrainer<B: AutodiffBackend> {
 
 impl<B: AutodiffBackend> FcTdTrainer<B> {
     /// Create a new trainer with a fresh model and SGD optimizer.
-    pub fn new(device: B::Device, lr: f64) -> Self {
-        let model = FcValueNetwork::new(&device);
+    pub fn new(device: B::Device, lr: f64, l1_size: usize, l2_size: usize) -> Self {
+        let model = FcValueNetwork::new(&device, l1_size, l2_size);
         let optimizer = SgdConfig::new().init::<B, FcValueNetwork<B>>();
         Self {
             model,
