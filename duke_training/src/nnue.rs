@@ -6,7 +6,8 @@ pub const NUM_FEATURES: usize = TOTAL_FEATURES;
 pub const DEFAULT_L1: usize = 256;
 pub const DEFAULT_L2: usize = 32;
 
-/// Maximum supported L2 layer size for stack allocation in evaluate_from_accumulator.
+/// Maximum supported layer sizes for stack allocation.
+const MAX_L1: usize = 1024;
 const MAX_L2: usize = 128;
 
 /// Raw model weights for NNUE inference.
@@ -93,20 +94,23 @@ impl NnueWeights {
 
 #[derive(Clone)]
 pub struct NnueAccumulator {
-    pub hidden: Vec<f32>,
+    pub hidden: [f32; MAX_L1],
+    l1_size: usize,
 }
 
 impl NnueAccumulator {
     pub fn from_features(weights: &NnueWeights, features: &[usize]) -> Self {
         let l1 = weights.l1_size;
-        let mut hidden = weights.l1_bias.clone();
+        assert!(l1 <= MAX_L1);
+        let mut hidden = [0.0f32; MAX_L1];
+        hidden[..l1].copy_from_slice(&weights.l1_bias);
         for &feat in features {
             let col = &weights.l1_weight[feat * l1..(feat + 1) * l1];
             for i in 0..l1 {
                 hidden[i] += col[i];
             }
         }
-        Self { hidden }
+        Self { hidden, l1_size: l1 }
     }
 
     /// Incrementally add a binary (0/1) board feature.
@@ -115,20 +119,17 @@ impl NnueAccumulator {
     #[inline]
     pub fn add_feature(&mut self, feat: usize, weights: &NnueWeights) {
         debug_assert!(feat < BOARD_FEATURES, "add_feature called with bag feature index {}", feat);
-        let l1 = weights.l1_size;
+        let l1 = self.l1_size;
         let col = &weights.l1_weight[feat * l1..(feat + 1) * l1];
         for i in 0..l1 {
             self.hidden[i] += col[i];
         }
     }
 
-    /// Incrementally remove a binary (0/1) board feature.
-    /// Only valid for board features (index < BOARD_FEATURES); bag features
-    /// are non-binary and must not be updated through this method.
     #[inline]
     pub fn remove_feature(&mut self, feat: usize, weights: &NnueWeights) {
         debug_assert!(feat < BOARD_FEATURES, "remove_feature called with bag feature index {}", feat);
-        let l1 = weights.l1_size;
+        let l1 = self.l1_size;
         let col = &weights.l1_weight[feat * l1..(feat + 1) * l1];
         for i in 0..l1 {
             self.hidden[i] -= col[i];
@@ -147,7 +148,7 @@ impl NnueEvaluator {
 
     pub fn evaluate_state(&self, gs: &GameState) -> f32 {
         let board_features = active_feature_indices(gs);
-        let mut acc = NnueAccumulator::from_features(&self.weights, &board_features);
+        let mut acc = NnueAccumulator::from_features(&self.weights, board_features.as_slice());
 
         let bag = bag_features(gs);
         let l1 = self.weights.l1_size;
