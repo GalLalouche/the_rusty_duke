@@ -62,23 +62,33 @@ fn nn_greedy_move<B: Backend, R: Rng>(
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
     moves.shuffle(rng);
 
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_move = None;
+    // Encode all resulting states in one batch
+    let encoded: Vec<Tensor<B, 3>> = moves
+        .iter()
+        .map(|mv| {
+            let mut clone = gs.clone();
+            mv.play(&mut clone, rng);
+            encode_state::<B>(&clone, device)
+        })
+        .collect();
 
-    for mv in &moves {
-        let mut clone = gs.clone();
-        mv.play(&mut clone, rng);
-        let encoded = encode_state::<B>(&clone, device);
-        let batch = encoded.unsqueeze::<4>();
-        let prediction: f32 = model.forward(batch).into_scalar().elem();
-        let score = 1.0 - prediction as f64;
-        if score > best_score {
-            best_score = score;
-            best_move = Some(mv.clone());
-        }
-    }
+    let batch = Tensor::stack(encoded, 0); // [num_moves, 30, 6, 6]
+    let predictions = model.forward(batch);  // [num_moves, 1]
+    let scores: Vec<f32> = predictions
+        .squeeze::<1>(1)
+        .into_data()
+        .to_vec()
+        .expect("to_vec");
 
-    best_move.unwrap()
+    // Pick the move where opponent's value is lowest (our value is highest)
+    let best_idx = scores
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap()) // min opponent value = max our value
+        .unwrap()
+        .0;
+
+    moves.swap_remove(best_idx)
 }
 
 /// Heuristic greedy player: picks the move with highest cheap_evaluate.
