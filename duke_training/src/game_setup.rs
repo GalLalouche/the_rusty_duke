@@ -106,9 +106,9 @@ pub fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, Ga
 /// Play a game using self-play with epsilon-greedy exploration.
 ///
 /// Accepts any `GameEvaluator` (NNUE, heuristic, etc.) for move selection.
-pub fn play_selfplay_game(
+pub fn play_selfplay_game<E: GameEvaluator>(
     gs: &GameState,
-    evaluator: &dyn GameEvaluator,
+    evaluator: &E,
     rng: &mut StdRng,
     epsilon: f64,
 ) -> (Vec<GameState>, GameResult) {
@@ -145,7 +145,7 @@ pub fn play_selfplay_game(
 ///
 /// Works with any `GameEvaluator` implementation (NNUE, heuristic, etc.).
 /// Panics if the game state has no legal moves.
-pub fn greedy_move(gs: &GameState, evaluator: &dyn GameEvaluator, rng: &mut impl Rng) -> AiMove {
+pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &GameState, evaluator: &E, rng: &mut impl Rng) -> AiMove {
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
     assert!(!moves.is_empty(), "greedy_move called with no legal moves");
     moves.shuffle(rng);
@@ -153,10 +153,11 @@ pub fn greedy_move(gs: &GameState, evaluator: &dyn GameEvaluator, rng: &mut impl
     let mut best_score = f64::NEG_INFINITY;
     let mut best_move = None;
 
+    // Create the deterministic rng once; clone per candidate to avoid re-seeding overhead.
+    let base_eval_rng = StdRng::seed_from_u64(0);
     for mv in &moves {
         let mut clone = gs.clone();
-        // Deterministic rng so candidate evaluation doesn't corrupt the main rng.
-        let mut eval_rng = StdRng::seed_from_u64(0);
+        let mut eval_rng = base_eval_rng.clone();
         mv.play(&mut clone, &mut eval_rng);
         let prediction = evaluator.evaluate(&clone);
         // Negate: opponent's score is negative of ours.

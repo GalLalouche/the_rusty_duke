@@ -183,7 +183,7 @@ impl PlacedTile {
         self.current_side = self.current_side.flip();
     }
     pub fn single_char_token(&self) -> char {
-        let c = self.tile.tile_type.to_string().chars().next().unwrap();
+        let c = self.tile.get_name().chars().next().unwrap();
         match self.current_side {
             CurrentSide::Initial => c.to_ascii_lowercase(),
             CurrentSide::Flipped => c.to_ascii_uppercase(),

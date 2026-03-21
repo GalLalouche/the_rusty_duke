@@ -6,6 +6,9 @@ pub const NUM_FEATURES: usize = TOTAL_FEATURES;
 pub const DEFAULT_L1: usize = 256;
 pub const DEFAULT_L2: usize = 32;
 
+/// Maximum supported L2 layer size for stack allocation in evaluate_from_accumulator.
+const MAX_L2: usize = 128;
+
 /// Raw model weights for NNUE inference.
 ///
 /// L1 weights are column-major: l1_weight[feat * l1_size + i].
@@ -167,7 +170,8 @@ impl NnueEvaluator {
         let l2 = self.weights.l2_size;
 
         // L2: W2 * ReLU(acc) + b2, then ReLU
-        let mut l2_out = vec![0.0f32; l2];
+        assert!(l2 <= MAX_L2, "l2_size {} exceeds MAX_L2 {}", l2, MAX_L2);
+        let mut l2_out = [0.0f32; MAX_L2];
         for i in 0..l2 {
             let mut sum = self.weights.l2_bias[i];
             let row = &self.weights.l2_weight[i * l1..(i + 1) * l1];
