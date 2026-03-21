@@ -115,31 +115,16 @@ pub fn active_feature_indices(gs: &GameState) -> Vec<usize> {
 }
 
 /// Encode a `GameState` into a flat tensor of shape `[1080]` (= 30 * 6 * 6).
+///
+/// This builds on `active_feature_indices` to ensure encoding consistency
+/// between the burn training path and the NNUE inference path.
 pub fn encode_state_flat<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 1> {
-    let current_player = gs.current_player_turn();
-    let board = gs.board();
+    let total = NUM_PLANES * BOARD_SIZE * BOARD_SIZE;
+    let mut data = vec![0.0f32; total];
 
-    let mut data = vec![0.0f32; NUM_PLANES * BOARD_SIZE * BOARD_SIZE];
-
-    for (coords, placed_tile) in board.active_coordinates() {
-        let x = coords.x as usize;
-        let y = coords.y as usize;
-        let cell_index = y * BOARD_SIZE + x;
-
-        let is_mine = placed_tile.owner == current_player;
-
-        if let Some(tile_idx) = tile_name_to_index(placed_tile.tile.get_name()) {
-            let plane = if is_mine { tile_idx } else { tile_idx + 13 };
-            data[plane * BOARD_SIZE * BOARD_SIZE + cell_index] = 1.0;
-        }
-
-        let side_plane = match (is_mine, placed_tile.current_side) {
-            (true, CurrentSide::Initial) => 26,
-            (true, CurrentSide::Flipped) => 27,
-            (false, CurrentSide::Initial) => 28,
-            (false, CurrentSide::Flipped) => 29,
-        };
-        data[side_plane * BOARD_SIZE * BOARD_SIZE + cell_index] = 1.0;
+    for idx in active_feature_indices(gs) {
+        debug_assert!(idx < total, "Feature index {} out of bounds", idx);
+        data[idx] = 1.0;
     }
 
     Tensor::<B, 1>::from_floats(data.as_slice(), device)

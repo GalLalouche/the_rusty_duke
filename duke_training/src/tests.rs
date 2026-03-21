@@ -640,6 +640,42 @@ fn nnue_matches_burn_across_multiple_states() {
 }
 
 #[test]
+#[test]
+fn encode_state_flat_uses_active_feature_indices() {
+    // Verify encode_state_flat sets exactly the indices from active_feature_indices.
+    // This is the critical consistency check: training (encode_state_flat) and
+    // NNUE inference (active_feature_indices) MUST agree on what features are active.
+    let gs = create_initial_state();
+    let mut game = gs;
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(123);
+    let device = Default::default();
+
+    // Check at multiple points during a game
+    for turn in 0..8 {
+        if game.game_result() != GameResult::Ongoing { break; }
+
+        let active = active_feature_indices(&game);
+        let flat: Vec<f32> = encode_state_flat::<TestBackend>(&game, &device)
+            .into_data()
+            .to_vec()
+            .expect("flat");
+
+        // Every active index should be 1.0
+        for &idx in &active {
+            assert_eq!(flat[idx], 1.0,
+                "Turn {}: feature {} should be 1.0 in flat encoding", turn, idx);
+        }
+        // Total 1.0s should match active count
+        let ones = flat.iter().filter(|&&v| v == 1.0).count();
+        assert_eq!(ones, active.len(),
+            "Turn {}: {} ones in flat but {} active features", turn, ones, active.len());
+
+        ai.play_next_move(&mut rng, &mut game);
+    }
+}
+
+#[test]
 fn fc_trainer_load_model_changes_output() {
     use crate::fc_td_training::FcTdTrainer;
 
