@@ -128,8 +128,10 @@ pub fn play_nnue_game(
 /// Pick the move that minimizes the opponent's value (= maximizes our value).
 ///
 /// Works with any `GameEvaluator` implementation (NNUE, heuristic, etc.).
+/// Panics if the game state has no legal moves.
 pub fn greedy_move(gs: &GameState, evaluator: &dyn GameEvaluator, rng: &mut impl Rng) -> AiMove {
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
+    assert!(!moves.is_empty(), "greedy_move called with no legal moves");
     moves.shuffle(rng);
 
     let mut best_score = f64::NEG_INFINITY;
@@ -137,14 +139,11 @@ pub fn greedy_move(gs: &GameState, evaluator: &dyn GameEvaluator, rng: &mut impl
 
     for mv in &moves {
         let mut clone = gs.clone();
-        // Use a deterministic rng for play so candidate evaluation doesn't
-        // corrupt the main rng or depend on move order.
+        // Deterministic rng so candidate evaluation doesn't corrupt the main rng.
         let mut eval_rng = StdRng::seed_from_u64(0);
         mv.play(&mut clone, &mut eval_rng);
         let prediction = evaluator.evaluate(&clone);
-        // After our move it's opponent's turn. The evaluator returns a score
-        // where higher = better for the current player (the opponent).
-        // We want to MINIMIZE the opponent's score, so negate it.
+        // Negate: opponent's score is negative of ours.
         let score = -(prediction as f64);
         if score > best_score {
             best_score = score;

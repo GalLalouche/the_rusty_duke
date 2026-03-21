@@ -217,6 +217,6 @@ fn main() {
 
     let elapsed = start.elapsed();
     println!("\nTraining complete: {} games in {:.1?}", config.total_games, elapsed);
-    println!("Avg time per game: {:.1?}", elapsed / config.total_games as u32);
-    println!("Final avg loss: {:.6}", total_loss / config.total_games as f32);
+    println!("Avg time per game: {:.1?}", elapsed.div_f64(config.total_games as f64));
+    println!("Final avg loss: {:.6}", total_loss as f64 / config.total_games as f64);
 }

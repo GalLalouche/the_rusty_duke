@@ -1,8 +1,8 @@
 use duke_rust::game::state::GameState;
-use crate::encoding::{active_feature_indices, TOTAL_FEATURES, BOARD_FEATURES, bag_features, BAG_FEATURES};
+use crate::encoding::{active_feature_indices, TOTAL_FEATURES, BOARD_FEATURES, bag_features};
 
 pub const NUM_FEATURES: usize = TOTAL_FEATURES;
-/// Default sizes — can be overridden via NnueWeights::with_sizes()
+/// Default sizes — can be overridden at load time or by `export_weights`.
 pub const DEFAULT_L1: usize = 256;
 pub const DEFAULT_L2: usize = 32;
 
@@ -49,12 +49,19 @@ impl NnueWeights {
 
         let mut magic = [0u8; 4];
         f.read_exact(&mut magic)?;
-        assert_eq!(&magic, Self::MAGIC, "Invalid NNUE file magic");
+        if &magic != Self::MAGIC {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid NNUE file magic"));
+        }
 
         let mut version = [0u8; 4];
         f.read_exact(&mut version)?;
         let version = u32::from_le_bytes(version);
-        assert!(version == 3, "Unsupported NNUE version (expected 3, got {})", version);
+        if version != 3 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Unsupported NNUE version (expected 3, got {})", version),
+            ));
+        }
 
         let mut buf4 = [0u8; 4];
         f.read_exact(&mut buf4)?;
@@ -99,8 +106,12 @@ impl NnueAccumulator {
         Self { hidden }
     }
 
+    /// Incrementally add a binary (0/1) board feature.
+    /// Only valid for board features (index < BOARD_FEATURES); bag features
+    /// are non-binary and must not be updated through this method.
     #[inline]
     pub fn add_feature(&mut self, feat: usize, weights: &NnueWeights) {
+        debug_assert!(feat < BOARD_FEATURES, "add_feature called with bag feature index {}", feat);
         let l1 = weights.l1_size;
         let col = &weights.l1_weight[feat * l1..(feat + 1) * l1];
         for i in 0..l1 {
@@ -108,8 +119,12 @@ impl NnueAccumulator {
         }
     }
 
+    /// Incrementally remove a binary (0/1) board feature.
+    /// Only valid for board features (index < BOARD_FEATURES); bag features
+    /// are non-binary and must not be updated through this method.
     #[inline]
     pub fn remove_feature(&mut self, feat: usize, weights: &NnueWeights) {
+        debug_assert!(feat < BOARD_FEATURES, "remove_feature called with bag feature index {}", feat);
         let l1 = weights.l1_size;
         let col = &weights.l1_weight[feat * l1..(feat + 1) * l1];
         for i in 0..l1 {

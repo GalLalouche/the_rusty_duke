@@ -20,6 +20,23 @@ use crate::weight_export::export_weights;
 
 type TestBackend = Autodiff<NdArray>;
 
+/// RAII guard that removes a file when dropped (including on panic).
+struct TempFileGuard {
+    path: String,
+}
+
+impl TempFileGuard {
+    fn new(path: &str) -> Self {
+        Self { path: path.to_string() }
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).ok();
+    }
+}
+
 fn create_small_state() -> GameState {
     let bag = TileBag::new(vec![]);
     GameState::new(
@@ -409,10 +426,10 @@ fn nnue_weights_save_load_roundtrip() {
     let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
     let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
 
-    let path = "test_weights.nnue";
-    weights.save(path).expect("save failed");
-    let loaded = NnueWeights::load(path).expect("load failed");
-    std::fs::remove_file(path).ok();
+    let path = format!("test_nnue_roundtrip_{}.nnue", std::process::id());
+    let _guard = TempFileGuard::new(&path);
+    weights.save(&path).expect("save failed");
+    let loaded = NnueWeights::load(&path).expect("load failed");
 
     // Compare weights
     assert_eq!(weights.l1_weight.len(), loaded.l1_weight.len());
@@ -654,10 +671,10 @@ fn fc_trainer_load_model_changes_output() {
     assert!((out1 - out2_before).abs() > 1e-6, "Two random models should differ");
 
     // Save trainer1's model, load into trainer2
-    let path = "test_load_model";
-    trainer1.save_model(path);
-    trainer2.load_model(path);
-    std::fs::remove_file(format!("{}.mpk", path)).ok();
+    let path = format!("test_load_model_{}", std::process::id());
+    let _guard = TempFileGuard::new(&format!("{}.mpk", path));
+    trainer1.save_model(&path);
+    trainer2.load_model(&path);
 
     // Now trainer2 should produce the same output as trainer1
     let out2_after: f32 = trainer2.model.forward(flat.unsqueeze()).into_data().to_vec::<f32>().expect("v")[0];
