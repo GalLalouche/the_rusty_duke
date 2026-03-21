@@ -17,7 +17,8 @@ use duke_rust::game::units;
 use crate::nnue::NnueEvaluator;
 
 /// Common trait for anything that can evaluate a game state.
-/// Returns win probability for the current player in [0, 1].
+/// Higher values = better for the current player.
+/// The scale is arbitrary — only relative ordering matters for move selection.
 pub trait GameEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32;
 }
@@ -29,10 +30,6 @@ impl GameEvaluator for NnueEvaluator {
 }
 
 /// Wrapper that adapts an `EvaluatingPlayer` (heuristic) to the `GameEvaluator` trait.
-///
-/// The heuristic's `cheap_evaluate` returns a score in an arbitrary range;
-/// we map it to [0, 1] using a sigmoid so it can be used interchangeably
-/// with neural-network evaluators.
 pub struct HeuristicEvaluator<'a> {
     inner: &'a dyn EvaluatingPlayer,
 }
@@ -45,9 +42,7 @@ impl<'a> HeuristicEvaluator<'a> {
 
 impl GameEvaluator for HeuristicEvaluator<'_> {
     fn evaluate(&self, gs: &GameState) -> f32 {
-        let raw = self.inner.cheap_evaluate(gs);
-        // Sigmoid to map arbitrary heuristic score to [0, 1]
-        (1.0 / (1.0 + (-raw).exp())) as f32
+        self.inner.cheap_evaluate(gs) as f32
     }
 }
 
@@ -147,7 +142,10 @@ pub fn greedy_move(gs: &GameState, evaluator: &dyn GameEvaluator, rng: &mut impl
         let mut eval_rng = StdRng::seed_from_u64(0);
         mv.play(&mut clone, &mut eval_rng);
         let prediction = evaluator.evaluate(&clone);
-        let score = 1.0 - prediction as f64;
+        // After our move it's opponent's turn. The evaluator returns a score
+        // where higher = better for the current player (the opponent).
+        // We want to MINIMIZE the opponent's score, so negate it.
+        let score = -(prediction as f64);
         if score > best_score {
             best_score = score;
             best_move = Some(mv.clone());
