@@ -11,16 +11,48 @@ pub enum CurrentSide {
     Flipped,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash,
+    strum_macros::EnumCount, strum_macros::IntoStaticStr, strum_macros::Display)]
+#[repr(u8)]
+pub enum TileType {
+    Duke = 0,
+    Footman = 1,
+    Pikeman = 2,
+    Knight = 3,
+    Champion = 4,
+    Dragoon = 5,
+    Wizard = 6,
+    General = 7,
+    Marshall = 8,
+    Assassin = 9,
+    Priest = 10,
+    Bowman = 11,
+    Longbowman = 12,
+}
+
+impl TileType {
+    #[inline]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    #[inline]
+    pub fn is_duke(self) -> bool {
+        self == TileType::Duke
+    }
+
+}
+
 #[derive(Debug)]
 pub struct Tile {
     side_a: TileSide,
     side_b: TileSide,
-    name: String,
+    tile_type: TileType,
 }
 
 impl PartialEq for Tile {
     fn eq(&self, other: &Self) -> bool {
-        self.name_compare(other)
+        self.tile_type == other.tile_type
     }
 }
 
@@ -28,7 +60,7 @@ impl Eq for Tile {}
 
 impl Hash for Tile {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.name.hash(state)
+        self.tile_type.hash(state)
     }
 }
 
@@ -41,18 +73,23 @@ impl Tile {
         &self.side_b
     }
 
-    pub fn get_name(&self) -> &String {
-        &self.name
+    pub fn tile_type(&self) -> TileType {
+        self.tile_type
+    }
+
+    pub fn get_name(&self) -> &'static str {
+        self.tile_type.into()
     }
 
     pub fn name_compare(&self, other: &Tile) -> bool {
-        self.name == other.name
+        self.tile_type == other.tile_type
     }
-    pub fn new(side_a: TileSide, side_b: TileSide, name: &str) -> Tile {
+
+    pub fn new(side_a: TileSide, side_b: TileSide, tile_type: TileType) -> Tile {
         Tile {
             side_a,
             side_b,
-            name: name.to_owned(),
+            tile_type,
         }
     }
 
@@ -60,15 +97,10 @@ impl Tile {
         Tile {
             side_a: self.side_a.flip_vertical(),
             side_b: self.side_b.flip_vertical(),
-            name: self.name.clone(),
+            tile_type: self.tile_type,
         }
     }
 }
-
-// #[derive(Debug, PartialEq, Eq, Clone)]
-// pub struct TileRef {
-//     pub tile: Rc<Tile>,
-// }
 
 pub type TileRef = Arc<Tile>;
 
@@ -112,7 +144,7 @@ pub struct PlacedTile {
 
 impl Display for PlacedTile {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({}, {:?})", self.tile.name, self.owner, self.current_side)
+        write!(f, "{} ({}, {:?})", self.tile.tile_type(), self.owner, self.current_side)
     }
 }
 
@@ -151,7 +183,7 @@ impl PlacedTile {
         self.current_side = self.current_side.flip();
     }
     pub fn single_char_token(&self) -> char {
-        let c = self.tile.name.chars().next().unwrap();
+        let c = self.tile.tile_type.to_string().chars().next().unwrap();
         match self.current_side {
             CurrentSide::Initial => c.to_ascii_lowercase(),
             CurrentSide::Flipped => c.to_ascii_uppercase(),

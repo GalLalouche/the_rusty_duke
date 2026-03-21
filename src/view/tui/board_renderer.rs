@@ -79,7 +79,7 @@ pub fn render_board(
             height: TILE_HEIGHT + 2,
         };
         let b = Block::default()
-            .title(tile.tile.get_name().clone() + " info")
+            .title(format!("{} info", tile.tile.get_name()))
             .border_type(BorderType::Double)
             .borders(Borders::ALL)
             ;

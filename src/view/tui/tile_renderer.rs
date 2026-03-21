@@ -62,7 +62,7 @@ pub(super) fn render_tile(
         };
         b.title(match &config {
             RenderTileConfig::Info { title } => title.to_owned(),
-            _ => tile.get_name().clone(),
+            _ => tile.get_name().to_owned(),
         }).style(Style::default().bg(color))
     };
     let inner = with_title.inner(area);

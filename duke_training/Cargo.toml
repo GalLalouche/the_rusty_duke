@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 duke_rust = { path = ".." }
 rand = "0.8"
+strum = "0.24"
 burn = { version = "0.16", features = ["wgpu", "autodiff", "ndarray"] }
 
 [[bin]]

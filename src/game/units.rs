@@ -1,11 +1,9 @@
 use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalOffset};
-use crate::game::tile::{Owner, PlacedTile, Tile};
+use crate::game::tile::{Owner, PlacedTile, Tile, TileType};
 use crate::game::tile_side::{TileAction, TileSide};
 
-const DUKE_NAME: &str = "Duke";
-
 pub fn is_duke(t: &Tile) -> bool {
-    t.get_name() == DUKE_NAME
+    t.tile_type().is_duke()
 }
 
 pub fn duke() -> Tile {
@@ -17,7 +15,7 @@ pub fn duke() -> Tile {
             (&VerticalOffset::Top, TileAction::Slide),
             (&VerticalOffset::Bottom, TileAction::Slide),
         ]),
-        DUKE_NAME,
+        TileType::Duke,
     )
 }
 
@@ -35,7 +33,7 @@ pub fn bowman() -> Tile {
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Strike),
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
         ]),
-        "Bowman",
+        TileType::Bowman,
     )
 }
 
@@ -48,7 +46,7 @@ pub fn footman() -> Tile {
             (&FourWaySymmetric::NearDiagonal, TileAction::Move),
             (&VerticalOffset::FarTop, TileAction::Move),
         ]),
-        "Footman",
+        TileType::Footman,
     )
 }
 
@@ -65,7 +63,7 @@ pub fn dragoon() -> Tile {
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Slide),
         ]),
-        "Dragoon",
+        TileType::Dragoon,
     )
 }
 
@@ -79,7 +77,7 @@ pub fn assassin() -> Tile {
             (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::JumpSlide),
             (&VerticalOffset::FarBottom, TileAction::JumpSlide),
         ]),
-        "Assassin",
+        TileType::Assassin,
     )
 }
 
@@ -93,7 +91,7 @@ pub fn champion() -> Tile {
             (&FourWaySymmetric::NearStraight, TileAction::Strike),
             (&FourWaySymmetric::FarStraight, TileAction::Jump),
         ]),
-        "Champion",
+        TileType::Champion,
     )
 }
 
@@ -114,7 +112,7 @@ pub fn general() -> Tile {
             (&VerticalOffset::Bottom, TileAction::Command),
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Command),
         ]),
-        "General",
+        TileType::General,
     )
 }
 
@@ -134,7 +132,7 @@ pub fn marshall() -> Tile {
             (&VerticalOffset::Top, TileAction::Command),
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Command),
         ]),
-        "Marshall",
+        TileType::Marshall,
     )
 }
 
@@ -147,7 +145,7 @@ pub fn priest() -> Tile {
             (&FourWaySymmetric::NearDiagonal, TileAction::Move),
             (&FourWaySymmetric::FarDiagonal, TileAction::Jump),
         ]),
-        "Priest",
+        TileType::Priest,
     )
 }
 
@@ -165,7 +163,7 @@ pub fn longbowman() -> Tile {
             (&VerticalOffset::Top, TileAction::Strike),
             (&VerticalOffset::FarTop, TileAction::Strike),
         ]),
-        "Longbowman",
+        TileType::Longbowman,
     )
 }
 
@@ -182,7 +180,7 @@ pub fn knight() -> Tile {
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
             (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarBottom), TileAction::Move),
         ]),
-        "Knight",
+        TileType::Knight,
     )
 }
 
@@ -198,7 +196,7 @@ pub fn pikeman() -> Tile {
             (&VerticalOffset::FarBottom, TileAction::Move),
             (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Strike),
         ]),
-        "Pikeman",
+        TileType::Pikeman,
     )
 }
 
@@ -212,7 +210,7 @@ pub fn wizard() -> Tile {
             (&FourWaySymmetric::FarStraight, TileAction::Jump),
             (&FourWaySymmetric::FarDiagonal, TileAction::Jump),
         ]),
-        "Wizard",
+        TileType::Wizard,
     )
 }
 
