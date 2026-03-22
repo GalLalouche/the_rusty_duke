@@ -59,39 +59,39 @@ pub fn extract_features(gs: &GameState) -> [f64; NUM_FEATURES] {
     let owner = gs.current_player_turn();
     let opp = owner.next_player();
 
-    // Base heuristics (using approx_difference for speed)
-    let x1 = Heuristics::DukeMovementOptions.approx_difference(owner, gs);
-    let x2 = Heuristics::TotalTilesOnBoard.approx_difference(owner, gs);
-    let x3 = Heuristics::TotalMovementOptions.approx_difference(owner, gs);
-    let x4 = Heuristics::DiscardedUnits.approx_difference(owner, gs);
-
-    // New cheap features
-    // x5: duke_guard_diff — +1 if opponent duke is in guard, -1 if our duke is in guard
-    let my_guard = if gs.is_duke_in_guard(owner) { 1.0 } else { 0.0 };
-    let opp_guard = if gs.is_duke_in_guard(opp) { 1.0 } else { 0.0 };
-    let x5 = opp_guard - my_guard;
-
-    // x6: bag_emptiness_diff — opponent_bag_size - my_bag_size
-    let my_bag = gs.bag_for_owner(owner).remaining().len() as f64;
-    let opp_bag = gs.bag_for_owner(opp).remaining().len() as f64;
-    let x6 = opp_bag - my_bag;
-
-    // x7: tile_adjacency_diff — count orthogonally adjacent own-tile pairs
-    let my_adj = count_adjacent_pairs(gs, owner) as f64;
-    let opp_adj = count_adjacent_pairs(gs, opp) as f64;
-    let x7 = my_adj - opp_adj;
-
-    // x8: center_control_diff — tiles in center 4 squares
-    let my_center = count_center_tiles(gs, owner) as f64;
-    let opp_center = count_center_tiles(gs, opp) as f64;
-    let x8 = my_center - opp_center;
-
-    // x9: duke_mobility_ratio_diff — duke_moves/max(total_moves,1) per player
-    // Use approx (ignoring guard) consistently for both numerator and denominator
+    // Per-player heuristic values (computed once, reused for differences and ratios)
     let my_duke_mob = Heuristics::DukeMovementOptions.approx_evaluate_for_owner(owner, gs);
     let opp_duke_mob = Heuristics::DukeMovementOptions.approx_evaluate_for_owner(opp, gs);
     let my_total_mob = Heuristics::TotalMovementOptions.approx_evaluate_for_owner(owner, gs);
     let opp_total_mob = Heuristics::TotalMovementOptions.approx_evaluate_for_owner(opp, gs);
+
+    // Base heuristic differences
+    let x1 = my_duke_mob - opp_duke_mob;
+    let x2 = Heuristics::TotalTilesOnBoard.approx_difference(owner, gs);
+    let x3 = my_total_mob - opp_total_mob;
+    let x4 = Heuristics::DiscardedUnits.approx_difference(owner, gs);
+
+    // x5: duke_guard_diff
+    let my_guard = if gs.is_duke_in_guard(owner) { 1.0 } else { 0.0 };
+    let opp_guard = if gs.is_duke_in_guard(opp) { 1.0 } else { 0.0 };
+    let x5 = opp_guard - my_guard;
+
+    // x6: bag_emptiness_diff
+    let my_bag = gs.bag_for_owner(owner).remaining().len() as f64;
+    let opp_bag = gs.bag_for_owner(opp).remaining().len() as f64;
+    let x6 = opp_bag - my_bag;
+
+    // x7: tile_adjacency_diff
+    let my_adj = count_adjacent_pairs(gs, owner) as f64;
+    let opp_adj = count_adjacent_pairs(gs, opp) as f64;
+    let x7 = my_adj - opp_adj;
+
+    // x8: center_control_diff
+    let my_center = count_center_tiles(gs, owner) as f64;
+    let opp_center = count_center_tiles(gs, opp) as f64;
+    let x8 = my_center - opp_center;
+
+    // x9: duke_mobility_ratio_diff
     let my_ratio = my_duke_mob / my_total_mob.max(1.0);
     let opp_ratio = opp_duke_mob / opp_total_mob.max(1.0);
     let x9 = my_ratio - opp_ratio;
@@ -265,7 +265,8 @@ impl RegressionAccumulator {
             };
             for i in 0..NUM_FEATURES {
                 self.xty[i] += features[i] * target;
-                for j in 0..NUM_FEATURES {
+                // Upper triangle only (X'X is symmetric)
+                for j in i..NUM_FEATURES {
                     self.xtx[i][j] += features[i] * features[j];
                 }
             }
@@ -339,7 +340,11 @@ impl RegressionAccumulator {
 
         let mut xtx = self.xtx;
         let mut xty = self.xty;
+        // Mirror upper triangle to lower (we only accumulated upper)
         for i in 0..NUM_FEATURES {
+            for j in 0..i {
+                xtx[i][j] = xtx[j][i];
+            }
             xtx[i][i] += scaled_lambda;
         }
         let weights = solve_linear_system(&mut xtx, &mut xty);

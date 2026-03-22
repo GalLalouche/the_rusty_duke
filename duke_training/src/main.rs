@@ -65,10 +65,7 @@ fn parse_flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
 
 /// Parse a string flag value from CLI args: `--flag <value>`.
 fn parse_flag_string(args: &[String], flag: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .cloned()
+    parse_flag(args, flag)
 }
 
 impl TrainingConfig {
@@ -213,15 +210,11 @@ fn main() {
         total_loss += loss * batch_size as f32;
         recent_loss += loss * batch_size as f32;
 
-        // Accumulate for learned heuristic regression + save to disk
+        // Accumulate regression, save to disk, and update stats in one pass
         for traj in &trajectories {
             regression_acc.add_game(&traj.states, &traj.result);
             traj_writer.write_game(&traj.states, &traj.result)
                 .expect("Failed to write trajectory");
-        }
-
-        // Update stats
-        for traj in &trajectories {
             match traj.result {
                 GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
                 GameResult::Won(duke_rust::game::tile::Owner::BottomPlayer) => wins[1] += 1,

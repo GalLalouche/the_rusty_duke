@@ -20,7 +20,6 @@ pub struct Negamax<E: Evaluator> {
     max_depth: usize,
     move_pool: MovePool<<E::G as Game>::M>,
     rng: ThreadRng,
-    prev_value: Evaluation,
     eval: E,
 }
 
@@ -47,7 +46,6 @@ impl<E: Evaluator> Negamax<E> {
             max_depth: depth,
             move_pool: MovePool::<_>::default(),
             rng: rand::thread_rng(),
-            prev_value: 0,
             eval,
         }
     }
@@ -113,7 +111,6 @@ impl<E: Evaluator> Strategy<E::G> for Negamax<E>
             }
         }
         self.move_pool.free(moves);
-        self.prev_value = best;
         Some(best_move)
     }
 }

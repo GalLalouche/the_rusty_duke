@@ -45,7 +45,7 @@ impl FeatureBuffer {
 
     #[inline]
     fn push(&mut self, val: usize) {
-        assert!(self.len < MAX_BOARD_FEATURE_COUNT);
+        debug_assert!(self.len < MAX_BOARD_FEATURE_COUNT);
         self.data[self.len] = val;
         self.len += 1;
     }
