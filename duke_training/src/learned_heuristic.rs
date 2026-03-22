@@ -81,14 +81,18 @@ pub fn extract_features(gs: &GameState) -> [f64; NUM_FEATURES] {
     let opp_bag = gs.bag_for_owner(opp).remaining().len() as f64;
     let x6 = opp_bag - my_bag;
 
+    // Fetch tiles once per owner (avoids 4 separate Vec allocations)
+    let my_tiles = gs.get_tiles_for_owner(owner);
+    let opp_tiles = gs.get_tiles_for_owner(opp);
+
     // x7: tile_adjacency_diff
-    let my_adj = count_adjacent_pairs(gs, owner) as f64;
-    let opp_adj = count_adjacent_pairs(gs, opp) as f64;
+    let my_adj = count_adjacent_pairs_from(&my_tiles) as f64;
+    let opp_adj = count_adjacent_pairs_from(&opp_tiles) as f64;
     let x7 = my_adj - opp_adj;
 
     // x8: center_control_diff
-    let my_center = count_center_tiles(gs, owner) as f64;
-    let opp_center = count_center_tiles(gs, opp) as f64;
+    let my_center = count_center_tiles_from(&my_tiles) as f64;
+    let opp_center = count_center_tiles_from(&opp_tiles) as f64;
     let x8 = my_center - opp_center;
 
     // x9: duke_mobility_ratio_diff
@@ -138,9 +142,8 @@ pub fn extract_features(gs: &GameState) -> [f64; NUM_FEATURES] {
     features
 }
 
-/// Count orthogonally adjacent own-tile pairs for a given owner.
-fn count_adjacent_pairs(gs: &GameState, owner: Owner) -> usize {
-    let tiles = gs.get_tiles_for_owner(owner);
+/// Count orthogonally adjacent own-tile pairs from pre-fetched tile list.
+fn count_adjacent_pairs_from(tiles: &[(duke_rust::common::coordinates::Coordinates, &duke_rust::game::tile::PlacedTile)]) -> usize {
     let mut count = 0;
     for i in 0..tiles.len() {
         for j in (i + 1)..tiles.len() {
@@ -157,9 +160,8 @@ fn count_adjacent_pairs(gs: &GameState, owner: Owner) -> usize {
     count
 }
 
-/// Count tiles in the center 4 squares for a given owner.
-fn count_center_tiles(gs: &GameState, owner: Owner) -> usize {
-    let tiles = gs.get_tiles_for_owner(owner);
+/// Count tiles in the center 4 squares from pre-fetched tile list.
+fn count_center_tiles_from(tiles: &[(duke_rust::common::coordinates::Coordinates, &duke_rust::game::tile::PlacedTile)]) -> usize {
     tiles.iter()
         .filter(|(c, _)| CENTER_SQUARES.contains(&(c.x, c.y)))
         .count()

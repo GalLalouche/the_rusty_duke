@@ -179,6 +179,12 @@ impl NnueEvaluator {
         let l1 = self.weights.l1_size;
         let l2 = self.weights.l2_size;
 
+        // Pre-compute ReLU on L1 hidden activations (avoids redundant max per L2 neuron)
+        let mut relu_hidden = [0.0f32; MAX_L1];
+        for j in 0..l1 {
+            relu_hidden[j] = acc.hidden[j].max(0.0);
+        }
+
         // L2: W2 * ReLU(acc) + b2, then ReLU
         assert!(l2 <= MAX_L2, "l2_size {} exceeds MAX_L2 {}", l2, MAX_L2);
         let mut l2_out = [0.0f32; MAX_L2];
@@ -186,7 +192,7 @@ impl NnueEvaluator {
             let mut sum = self.weights.l2_bias[i];
             let row = &self.weights.l2_weight[i * l1..(i + 1) * l1];
             for j in 0..l1 {
-                sum += row[j] * acc.hidden[j].max(0.0);
+                sum += row[j] * relu_hidden[j];
             }
             l2_out[i] = sum.max(0.0);
         }

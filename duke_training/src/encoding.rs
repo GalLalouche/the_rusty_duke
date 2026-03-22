@@ -21,8 +21,7 @@ pub const NUM_PLANES: usize = NUM_BOARD_PLANES;
 /// Encode a `GameState` into a tensor of shape `[NUM_PLANES, 6, 6]`.
 /// NOTE: This is the CNN encoding and does NOT include bag features.
 pub fn encode_state<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 3> {
-    let total = BOARD_FEATURES;
-    let mut data = vec![0.0f32; total];
+    let mut data = [0.0f32; BOARD_FEATURES];
     let features = active_board_features(gs);
     for &idx in features.as_slice() {
         data[idx] = 1.0;
@@ -128,7 +127,7 @@ pub fn active_feature_indices(gs: &GameState) -> FeatureBuffer {
 /// Flat tensor of shape `[TOTAL_FEATURES]` (1106).
 /// Board features (sparse binary) + bag features (dense counts).
 pub fn encode_state_flat<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 1> {
-    let mut data = vec![0.0f32; TOTAL_FEATURES];
+    let mut data = [0.0f32; TOTAL_FEATURES];
 
     let features = active_board_features(gs);
     for &idx in features.as_slice() {
