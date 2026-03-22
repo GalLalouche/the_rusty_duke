@@ -167,6 +167,54 @@ fn count_center_tiles_from(tiles: &[(duke_rust::common::coordinates::Coordinates
         .count()
 }
 
+/// Compute 4 Manhattan-distance proximity features from the perspective of
+/// `gs.current_player_turn()`:
+///
+/// - `[0]` my_units_near_my_duke: count of my non-duke tiles within Manhattan distance 2 of my duke
+/// - `[1]` enemy_units_near_my_duke: count of enemy tiles within Manhattan distance 2 of my duke
+/// - `[2]` my_units_near_enemy_duke: count of my tiles within Manhattan distance 2 of enemy duke
+/// - `[3]` enemy_units_near_enemy_duke: count of enemy non-duke tiles within Manhattan distance 2 of enemy duke
+pub fn manhattan_distance_features(gs: &GameState) -> [f64; 4] {
+    let me = gs.current_player_turn();
+    let opp = me.next_player();
+
+    let my_duke = gs.duke_coordinate(me);
+    let enemy_duke = gs.duke_coordinate(opp);
+
+    let mut counts = [0.0f64; 4];
+
+    for (coords, tile) in gs.board().active_coordinates() {
+        let is_mine = tile.owner == me;
+        let is_duke_tile = tile.tile.tile_type().is_duke();
+
+        let dx_my = (coords.x as i32 - my_duke.x as i32).unsigned_abs();
+        let dy_my = (coords.y as i32 - my_duke.y as i32).unsigned_abs();
+        let dist_my = dx_my + dy_my;
+
+        let dx_en = (coords.x as i32 - enemy_duke.x as i32).unsigned_abs();
+        let dy_en = (coords.y as i32 - enemy_duke.y as i32).unsigned_abs();
+        let dist_en = dx_en + dy_en;
+
+        if dist_my <= 2 {
+            if is_mine && !is_duke_tile {
+                counts[0] += 1.0; // my non-duke near my duke
+            } else if !is_mine {
+                counts[1] += 1.0; // enemy near my duke
+            }
+        }
+
+        if dist_en <= 2 {
+            if is_mine {
+                counts[2] += 1.0; // my tile near enemy duke
+            } else if !is_mine && !is_duke_tile {
+                counts[3] += 1.0; // enemy non-duke near enemy duke
+            }
+        }
+    }
+
+    counts
+}
+
 impl LearnedHeuristicWeights {
     /// Evaluate a game state, returning a raw score (higher = better for current player).
     pub fn evaluate_raw(&self, gs: &GameState) -> f64 {

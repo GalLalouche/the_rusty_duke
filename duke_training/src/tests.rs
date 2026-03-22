@@ -743,7 +743,7 @@ fn parallel_games_are_deterministic() {
 
 use crate::match_runner::{play_match, run_matches, Player};
 use duke_rust::game::ai::heuristics::{HeuristicAi, Heuristics};
-use crate::game_setup::HeuristicEvaluator;
+use crate::game_setup::{HeuristicEvaluator, StaticHeuristicEvaluator};
 use crate::learned_heuristic::{
     extract_features, solve_linear_system, train_weights, LearnedHeuristicWeights, NUM_FEATURES,
 };
@@ -828,13 +828,7 @@ fn heuristic_beats_random() {
     let bag = create_bag();
     let gs = create_initial_state(&bag);
 
-    let heuristic_ai = HeuristicAi::new(vec![
-        Box::new(Heuristics::DukeMovementOptions),
-        Box::new(Heuristics::TotalTilesOnBoard),
-        Box::new(Heuristics::TotalMovementOptions),
-        Box::new(Heuristics::DiscardedUnits),
-    ]);
-    let heuristic_evaluator = HeuristicEvaluator::new(&heuristic_ai);
+    let heuristic_evaluator = StaticHeuristicEvaluator::new();
 
     let heuristic = Player::Evaluator(&heuristic_evaluator);
     let random = Player::Random;
@@ -1114,4 +1108,117 @@ fn feature_cache_roundtrip() {
     assert_eq!(acc.n_samples(), expected_samples as u64);
 
     let _ = std::fs::remove_file(&path);
+}
+
+// ── Manhattan distance feature tests ────────────────────────────────────
+
+mod manhattan_tests {
+    use duke_rust::common::coordinates::Coordinates;
+    use duke_rust::game::bag::{DiscardBag, TileBag};
+    use duke_rust::game::state::GameState;
+    use duke_rust::game::tile::{Owner, PlacedTile};
+    use duke_rust::game::units;
+    use crate::learned_heuristic::manhattan_distance_features;
+
+    fn coord(x: u16, y: u16) -> Coordinates {
+        Coordinates { x, y }
+    }
+
+    fn make_state(tiles: Vec<(Coordinates, PlacedTile)>, current: Owner) -> GameState {
+        GameState::from_snapshot(
+            tiles,
+            current,
+            TileBag::new(vec![]),
+            TileBag::new(vec![]),
+            DiscardBag::empty(),
+            DiscardBag::empty(),
+            0,
+        )
+    }
+
+    /// Simple: 2 my tiles near my duke, 1 far away.
+    /// My duke at (2,2), my footmen at (2,3) and (3,2), my pikeman at (5,5).
+    /// Enemy duke at (4,4).
+    #[test]
+    fn simple_two_near_one_far() {
+        let me = Owner::TopPlayer;
+        let opp = Owner::BottomPlayer;
+
+        let tiles = vec![
+            (coord(2, 2), PlacedTile::new(me, units::duke())),
+            (coord(2, 3), PlacedTile::new(me, units::footman())),  // dist 1 from my duke
+            (coord(3, 2), PlacedTile::new(me, units::footman())),  // dist 1 from my duke
+            (coord(5, 5), PlacedTile::new(me, units::pikeman())),  // dist 6 from my duke
+            (coord(4, 4), PlacedTile::new(opp, units::duke())),
+        ];
+        let gs = make_state(tiles, me);
+        let f = manhattan_distance_features(&gs);
+
+        // my_units_near_my_duke: footman(2,3) dist=1, footman(3,2) dist=1 => 2
+        assert_eq!(f[0], 2.0, "my_units_near_my_duke");
+        // enemy_units_near_my_duke: enemy duke(4,4) dist=4 => 0
+        assert_eq!(f[1], 0.0, "enemy_units_near_my_duke");
+        // my_units_near_enemy_duke: pikeman(5,5) dist=2 => 1
+        assert_eq!(f[2], 1.0, "my_units_near_enemy_duke");
+        // enemy_units_near_enemy_duke: only enemy duke itself at dist 0, excluded => 0
+        assert_eq!(f[3], 0.0, "enemy_units_near_enemy_duke");
+    }
+
+    /// Both dukes with surrounding tiles from both players.
+    /// My duke at (1,1), enemy duke at (4,4).
+    /// Mixed ownership tiles near each duke.
+    #[test]
+    fn both_dukes_with_surrounding_tiles() {
+        let me = Owner::TopPlayer;
+        let opp = Owner::BottomPlayer;
+
+        let tiles = vec![
+            (coord(1, 1), PlacedTile::new(me, units::duke())),
+            (coord(4, 4), PlacedTile::new(opp, units::duke())),
+            (coord(1, 2), PlacedTile::new(me, units::footman())),   // near my duke
+            (coord(3, 3), PlacedTile::new(me, units::pikeman())),   // near enemy duke
+            (coord(1, 0), PlacedTile::new(opp, units::footman())),  // near my duke
+            (coord(4, 3), PlacedTile::new(opp, units::bowman())),   // near enemy duke
+            (coord(3, 4), PlacedTile::new(opp, units::pikeman())),  // near enemy duke
+        ];
+        let gs = make_state(tiles, me);
+        let f = manhattan_distance_features(&gs);
+
+        // my_units_near_my_duke: footman(1,2) dist=1 => 1
+        assert_eq!(f[0], 1.0, "my_units_near_my_duke");
+        // enemy_units_near_my_duke: footman(1,0) dist=1 => 1
+        assert_eq!(f[1], 1.0, "enemy_units_near_my_duke");
+        // my_units_near_enemy_duke: pikeman(3,3) dist=2 => 1
+        assert_eq!(f[2], 1.0, "my_units_near_enemy_duke");
+        // enemy_units_near_enemy_duke: bowman(4,3) dist=1, pikeman(3,4) dist=1 => 2
+        assert_eq!(f[3], 2.0, "enemy_units_near_enemy_duke");
+    }
+
+    /// Edge case: duke in corner (0,0) with tiles at boundary positions.
+    /// My duke at (0,0), enemy duke at (5,5).
+    #[test]
+    fn duke_in_corner() {
+        let me = Owner::TopPlayer;
+        let opp = Owner::BottomPlayer;
+
+        let tiles = vec![
+            (coord(0, 0), PlacedTile::new(me, units::duke())),
+            (coord(5, 5), PlacedTile::new(opp, units::duke())),
+            (coord(0, 1), PlacedTile::new(me, units::footman())),   // dist 1 from my duke
+            (coord(1, 1), PlacedTile::new(me, units::footman())),   // dist 2 from my duke
+            (coord(0, 2), PlacedTile::new(opp, units::bowman())),   // dist 2 from my duke
+            (coord(5, 4), PlacedTile::new(opp, units::pikeman())),  // dist 1 from enemy duke
+        ];
+        let gs = make_state(tiles, me);
+        let f = manhattan_distance_features(&gs);
+
+        // my_units_near_my_duke: footman(0,1) dist=1, footman(1,1) dist=2 => 2
+        assert_eq!(f[0], 2.0, "my_units_near_my_duke");
+        // enemy_units_near_my_duke: bowman(0,2) dist=2 => 1
+        assert_eq!(f[1], 1.0, "enemy_units_near_my_duke");
+        // my_units_near_enemy_duke: footman(0,1) dist=9, footman(1,1) dist=8 => 0
+        assert_eq!(f[2], 0.0, "my_units_near_enemy_duke");
+        // enemy_units_near_enemy_duke: pikeman(5,4) dist=1 => 1
+        assert_eq!(f[3], 1.0, "enemy_units_near_enemy_duke");
+    }
 }
