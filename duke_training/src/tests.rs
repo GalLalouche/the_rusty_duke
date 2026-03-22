@@ -1564,3 +1564,74 @@ mod manhattan_tests {
         assert_eq!(f[3], 1.0, "enemy_units_near_enemy_duke");
     }
 }
+
+// ── Board control feature tests ─────────────────────────────────────────
+
+mod board_control_tests {
+    use duke_rust::common::coordinates::Coordinates;
+    use duke_rust::game::bag::{DiscardBag, TileBag};
+    use duke_rust::game::state::GameState;
+    use duke_rust::game::tile::{Owner, PlacedTile};
+    use duke_rust::game::units;
+    use crate::learned_heuristic::board_control_features;
+
+    fn coord(x: u16, y: u16) -> Coordinates { Coordinates { x, y } }
+
+    fn make_state(tiles: Vec<(Coordinates, PlacedTile)>, current: Owner) -> GameState {
+        GameState::from_snapshot(tiles, current,
+            TileBag::new(vec![]), TileBag::new(vec![]),
+            DiscardBag::empty(), DiscardBag::empty(), 0)
+    }
+
+    #[test]
+    fn simple_two_dukes() {
+        let gs = make_state(vec![
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
+            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+        ], Owner::TopPlayer);
+
+        let [my_moves, opp_moves, my_reach, opp_reach, contested] = board_control_features(&gs);
+        assert_eq!(my_moves, 5.0);
+        assert_eq!(opp_moves, 5.0);
+        assert_eq!(my_reach, 5.0);
+        assert_eq!(opp_reach, 5.0);
+        assert_eq!(contested, 0.0);
+    }
+
+    #[test]
+    fn blocking_slide() {
+        let gs = make_state(vec![
+            (coord(3, 3), PlacedTile::new(Owner::TopPlayer, units::duke())),
+            (coord(1, 3), PlacedTile::new(Owner::TopPlayer, units::footman())),
+            (coord(0, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+        ], Owner::TopPlayer);
+
+        let [my_moves, opp_moves, my_reach, opp_reach, contested] = board_control_features(&gs);
+        assert_eq!(my_moves, 7.0, "3 duke + 4 footman");
+        assert_eq!(opp_moves, 5.0);
+        assert_eq!(my_reach, 6.0, "6 unique squares (duke and footman share (2,3))");
+        assert_eq!(opp_reach, 5.0);
+        assert_eq!(contested, 0.0);
+    }
+
+    #[test]
+    fn contested_invariant() {
+        let mut top_duke = PlacedTile::new(Owner::TopPlayer, units::duke());
+        top_duke.flip();
+        let mut bottom_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        bottom_duke.flip();
+
+        let gs = make_state(vec![
+            (coord(3, 0), top_duke),
+            (coord(3, 5), bottom_duke),
+        ], Owner::TopPlayer);
+
+        let [my_moves, opp_moves, my_reach, opp_reach, contested] = board_control_features(&gs);
+        assert_eq!(my_moves, 5.0);
+        assert_eq!(opp_moves, 5.0);
+        assert_eq!(my_reach, 5.0);
+        assert_eq!(opp_reach, 5.0);
+        assert_eq!(contested, 4.0);
+        assert!(contested <= my_reach.min(opp_reach));
+    }
+}

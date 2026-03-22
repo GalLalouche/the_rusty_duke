@@ -9,6 +9,7 @@
 use std::fs;
 
 use duke_rust::game::ai::heuristics::{Heuristic, Heuristics};
+use duke_rust::game::board::PossibleMove;
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
 
@@ -213,6 +214,61 @@ pub fn manhattan_distance_features(gs: &GameState) -> [f64; 4] {
     }
 
     counts
+}
+
+/// Compute approx move counts and board control features in one pass.
+/// Returns: [my_approx_moves, opp_approx_moves, my_reachable_squares, opp_reachable_squares, contested_squares]
+///
+/// Moves are computed while ignoring the guard constraint (the expensive part),
+/// making this a cheap approximation. Only tile-move destinations (not placements)
+/// contribute to the reachable-squares arrays.
+pub fn board_control_features(gs: &GameState) -> [f64; 5] {
+    let owner = gs.current_player_turn();
+    let opp = owner.next_player();
+
+    let mut my_reach = [false; 36];
+    let mut opp_reach = [false; 36];
+
+    let mut my_approx_moves = 0u32;
+    for pm in gs.all_valid_game_moves_for_ignoring_guard(owner) {
+        my_approx_moves += 1;
+        if let PossibleMove::ApplyNonCommandTileAction { dst, .. } = &pm {
+            let idx = dst.y as usize * 6 + dst.x as usize;
+            my_reach[idx] = true;
+        }
+    }
+
+    let mut opp_approx_moves = 0u32;
+    for pm in gs.all_valid_game_moves_for_ignoring_guard(opp) {
+        opp_approx_moves += 1;
+        if let PossibleMove::ApplyNonCommandTileAction { dst, .. } = &pm {
+            let idx = dst.y as usize * 6 + dst.x as usize;
+            opp_reach[idx] = true;
+        }
+    }
+
+    let mut my_reachable = 0u32;
+    let mut opp_reachable = 0u32;
+    let mut contested = 0u32;
+    for i in 0..36 {
+        if my_reach[i] {
+            my_reachable += 1;
+        }
+        if opp_reach[i] {
+            opp_reachable += 1;
+        }
+        if my_reach[i] && opp_reach[i] {
+            contested += 1;
+        }
+    }
+
+    [
+        my_approx_moves as f64,
+        opp_approx_moves as f64,
+        my_reachable as f64,
+        opp_reachable as f64,
+        contested as f64,
+    ]
 }
 
 impl LearnedHeuristicWeights {
