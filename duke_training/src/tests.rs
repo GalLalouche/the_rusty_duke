@@ -987,3 +987,71 @@ fn learned_evaluator_returns_finite_score() {
     let score = weights.evaluate(&gs);
     assert!(score.is_finite(), "Evaluator should return finite score, got {}", score);
 }
+
+#[test]
+fn trajectory_roundtrip_preserves_game_states() {
+    use crate::trajectory_io::{TrajectoryWriter, load_trajectories};
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+    let ai = StupidSyncAi {};
+
+    // Play 5 random games
+    let mut games = Vec::new();
+    for seed in 0..5u64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let (states, result) = play_random_game(&gs, &mut rng);
+        games.push((states, result));
+    }
+
+    // Write to temp file
+    let path = format!("D:/temp/test_traj_roundtrip_{}.dtrj", std::process::id());
+    let mut writer = TrajectoryWriter::new(&path).unwrap();
+    for (states, result) in &games {
+        writer.write_game(states, result).unwrap();
+    }
+    let count = writer.finish().unwrap();
+    assert_eq!(count, 5);
+
+    // Load back
+    let loaded = load_trajectories(&path).unwrap();
+    assert_eq!(loaded.len(), 5);
+
+    for (i, ((orig_states, orig_result), loaded_game)) in games.iter().zip(loaded.iter()).enumerate() {
+        assert_eq!(*orig_result, loaded_game.result, "Game {} result mismatch", i);
+        assert_eq!(orig_states.len(), loaded_game.states.len(), "Game {} state count mismatch", i);
+
+        for (j, (orig, loaded_gs)) in orig_states.iter().zip(loaded_game.states.iter()).enumerate() {
+            // Verify board matches
+            assert_eq!(
+                orig.current_player_turn(), loaded_gs.current_player_turn(),
+                "Game {} state {} player mismatch", i, j
+            );
+            // Verify board tiles match
+            let orig_board = orig.board();
+            let loaded_board = loaded_gs.board();
+            for y in 0..6u16 {
+                for x in 0..6u16 {
+                    let c = duke_rust::common::coordinates::Coordinates { x, y };
+                    let orig_tile = orig_board.get(c);
+                    let loaded_tile = loaded_board.get(c);
+                    match (orig_tile, loaded_tile) {
+                        (None, None) => {}
+                        (Some(o), Some(l)) => {
+                            assert_eq!(o.tile.tile_type(), l.tile.tile_type(),
+                                "Game {} state {} ({},{}) tile type mismatch", i, j, x, y);
+                            assert_eq!(o.current_side, l.current_side,
+                                "Game {} state {} ({},{}) side mismatch", i, j, x, y);
+                            assert_eq!(o.owner, l.owner,
+                                "Game {} state {} ({},{}) owner mismatch", i, j, x, y);
+                        }
+                        _ => panic!("Game {} state {} ({},{}) occupancy mismatch", i, j, x, y),
+                    }
+                }
+            }
+        }
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(&path);
+}

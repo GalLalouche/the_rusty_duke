@@ -95,7 +95,7 @@ impl TrainingConfig {
         let default_batch_size = std::thread::available_parallelism()
             .map(|n| n.get() as u64)
             .unwrap_or(4);
-        let batch_size: u64 = parse_flag(args, "--batch-size").unwrap_or(default_batch_size);
+        let batch_size: u64 = parse_flag(args, "--batch-size").unwrap_or(default_batch_size).max(1);
 
         Self {
             total_games,
