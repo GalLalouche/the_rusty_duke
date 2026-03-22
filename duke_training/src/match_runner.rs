@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rayon::prelude::*;
 
 use duke_rust::game::ai::player::ArtificialPlayer;
 use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
@@ -15,8 +16,11 @@ use crate::game_setup::{greedy_move, GameEvaluator};
 /// Represents a player strategy in a benchmark match.
 pub enum Player<'a> {
     Random,
-    Evaluator(&'a dyn GameEvaluator),
+    Evaluator(&'a (dyn GameEvaluator + Sync)),
 }
+
+// Player is Sync because &(dyn GameEvaluator + Sync) is Sync
+unsafe impl Sync for Player<'_> {}
 
 /// Play a single match between a top player and a bottom player.
 ///
@@ -67,6 +71,7 @@ pub struct MatchResult {
 }
 
 /// Run `num_games` matches between `player_a` and `player_b`, alternating sides.
+/// Games are played in parallel using rayon.
 ///
 /// Even seeds: player_a plays as Top, player_b plays as Bottom.
 /// Odd seeds: player_b plays as Top, player_a plays as Bottom.
@@ -80,25 +85,30 @@ pub fn run_matches(
     label: &str,
 ) -> MatchResult {
     let start = Instant::now();
+
+    let results: Vec<GameResult> = (0..num_games)
+        .into_par_iter()
+        .map(|seed| {
+            let mut rng = StdRng::seed_from_u64(seed as u64);
+            if seed % 2 == 0 {
+                play_match(gs, player_a, player_b, &mut rng, 200)
+            } else {
+                let r = play_match(gs, player_b, player_a, &mut rng, 200);
+                match r {
+                    GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::BottomPlayer),
+                    GameResult::Won(Owner::BottomPlayer) => GameResult::Won(Owner::TopPlayer),
+                    other => other,
+                }
+            }
+        })
+        .collect();
+
     let mut result = MatchResult {
         player_a_wins: 0,
         player_b_wins: 0,
         ties: 0,
     };
-
-    for seed in 0..num_games {
-        let mut rng = StdRng::seed_from_u64(seed as u64);
-        let game_result = if seed % 2 == 0 {
-            play_match(gs, player_a, player_b, &mut rng, 200)
-        } else {
-            // Swap sides; remap the winner back to player_a/player_b perspective.
-            let r = play_match(gs, player_b, player_a, &mut rng, 200);
-            match r {
-                GameResult::Won(Owner::TopPlayer) => GameResult::Won(Owner::BottomPlayer),
-                GameResult::Won(Owner::BottomPlayer) => GameResult::Won(Owner::TopPlayer),
-                other => other,
-            }
-        };
+    for game_result in &results {
         match game_result {
             GameResult::Won(Owner::TopPlayer) => result.player_a_wins += 1,
             GameResult::Won(Owner::BottomPlayer) => result.player_b_wins += 1,
