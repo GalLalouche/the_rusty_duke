@@ -94,7 +94,6 @@ impl GameBoard {
         &self.board
     }
 
-    #[cfg(test)]
     pub fn empty() -> GameBoard {
         GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
     }

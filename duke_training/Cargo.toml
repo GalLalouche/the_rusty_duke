@@ -21,3 +21,7 @@ path = "src/benchmark.rs"
 [[bin]]
 name = "train_heuristic"
 path = "src/train_heuristic.rs"
+
+[[bin]]
+name = "sweep_lambda"
+path = "src/sweep_lambda.rs"

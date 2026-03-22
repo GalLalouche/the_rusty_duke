@@ -9,11 +9,27 @@ use rayon::prelude::*;
 use duke_rust::game::state::GameResult;
 
 use duke_training::fc_td_training::{FcTdTrainer, GameTrajectory};
-use duke_training::game_setup::{create_bag, create_initial_state, play_random_game, play_selfplay_game};
+use duke_training::game_setup::{
+    create_bag, create_initial_state, play_random_game, play_selfplay_game,
+    GameEvaluator, StaticHeuristicEvaluator,
+};
+use duke_training::learned_heuristic::RegressionAccumulator;
 use duke_training::nnue::NnueEvaluator;
+use duke_training::trajectory_io::TrajectoryWriter;
 use duke_training::weight_export::export_weights;
 
 type MyBackend = Autodiff<Wgpu>;
+
+/// How games are played during training.
+#[derive(Clone, Copy, PartialEq)]
+pub enum PlayMode {
+    /// Pure random moves (phase 1 baseline).
+    Random,
+    /// 1-ply heuristic greedy with epsilon-greedy exploration.
+    Heuristic,
+    /// NNUE self-play with epsilon-greedy exploration.
+    SelfPlay,
+}
 
 /// All knobs for a training run, parsed from command-line arguments.
 pub struct TrainingConfig {
@@ -22,7 +38,7 @@ pub struct TrainingConfig {
     pub lr_end: f64,
     pub epsilon: f64,
     pub update_interval: u64,
-    pub self_play: bool,
+    pub play_mode: PlayMode,
     pub resume_path: Option<String>,
     pub checkpoint_dir: String,
     pub l1_size: usize,
@@ -57,7 +73,13 @@ fn parse_flag_string(args: &[String], flag: &str) -> Option<String> {
 
 impl TrainingConfig {
     pub fn from_args(args: &[String]) -> Self {
-        let self_play = args.iter().any(|a| a == "--self-play");
+        let play_mode = if args.iter().any(|a| a == "--self-play") {
+            PlayMode::SelfPlay
+        } else if args.iter().any(|a| a == "--heuristic") {
+            PlayMode::Heuristic
+        } else {
+            PlayMode::Random
+        };
 
         let total_games: u64 = parse_flag(args, "--games").unwrap_or(100_000);
         let lr_start: f64 = parse_flag(args, "--lr").unwrap_or(0.1);
@@ -81,7 +103,7 @@ impl TrainingConfig {
             lr_end,
             epsilon,
             update_interval,
-            self_play,
+            play_mode,
             resume_path,
             checkpoint_dir,
             l1_size,
@@ -112,22 +134,44 @@ fn main() {
     // Initialize NNUE evaluator from the (possibly loaded) model
     let nnue_weights = export_weights(&trainer.model, config.l1_size, config.l2_size);
     let mut nnue_evaluator = NnueEvaluator::new(nnue_weights);
+    let heuristic_evaluator = StaticHeuristicEvaluator::new();
 
-    if config.self_play {
-        println!("Phase 2: NNUE self-play training");
-        println!(
-            "  epsilon={}, update_interval={}, total_games={}, lr={}->{}, batch_size={}",
-            config.epsilon, config.update_interval, config.total_games,
-            config.lr_start, config.lr_end, config.batch_size
-        );
-        if config.resume_path.is_none() {
-            eprintln!("WARNING: --self-play without --resume starts from random weights!");
+    match config.play_mode {
+        PlayMode::SelfPlay => {
+            println!("NNUE self-play training");
+            println!(
+                "  epsilon={}, update_interval={}, total_games={}, lr={}->{}, batch_size={}",
+                config.epsilon, config.update_interval, config.total_games,
+                config.lr_start, config.lr_end, config.batch_size
+            );
+            if config.resume_path.is_none() {
+                eprintln!("WARNING: --self-play without --resume starts from random weights!");
+            }
         }
-    } else {
-        println!("Phase 1: Random play training");
-        println!("  total_games={}, lr={}->{}, batch_size={}",
-            config.total_games, config.lr_start, config.lr_end, config.batch_size);
+        PlayMode::Heuristic => {
+            println!("Heuristic 1-ply training");
+            println!(
+                "  epsilon={}, total_games={}, lr={}->{}, batch_size={}",
+                config.epsilon, config.total_games,
+                config.lr_start, config.lr_end, config.batch_size
+            );
+        }
+        PlayMode::Random => {
+            println!("Random play training");
+            println!("  total_games={}, lr={}->{}, batch_size={}",
+                config.total_games, config.lr_start, config.lr_end, config.batch_size);
+        }
     }
+
+    // Accumulate data for learned heuristic regression (free — no extra games needed)
+    let mut regression_acc = RegressionAccumulator::new();
+
+    // Save game trajectories to disk for offline replay
+    let trajectory_path = format!("{}/trajectories.dtrj", config.checkpoint_dir);
+    std::fs::create_dir_all(&config.checkpoint_dir).expect("Failed to create checkpoints dir");
+    let mut traj_writer = TrajectoryWriter::new(&trajectory_path)
+        .expect("Failed to create trajectory file");
+    println!("Saving trajectories to: {}", trajectory_path);
 
     let start = Instant::now();
     let mut total_loss = 0.0f32;
@@ -144,16 +188,21 @@ fn main() {
         // Update learning rate at round boundary
         trainer.set_lr(config.lr_at(game_num));
 
-        // Phase 1: Play batch_size games in parallel (CPU, rayon)
+        // Play batch_size games in parallel (CPU, rayon)
+        let evaluator: &(dyn GameEvaluator + Sync) = match config.play_mode {
+            PlayMode::SelfPlay => &nnue_evaluator,
+            PlayMode::Heuristic => &heuristic_evaluator,
+            PlayMode::Random => &heuristic_evaluator, // unused, but needed for type
+        };
         let trajectories: Vec<GameTrajectory> = (0..batch_size)
             .into_par_iter()
             .map(|i| {
                 let seed = game_num + i;
                 let mut rng = StdRng::seed_from_u64(seed);
-                let (states, result) = if config.self_play {
-                    play_selfplay_game(&gs, &nnue_evaluator, &mut rng, config.epsilon)
-                } else {
+                let (states, result) = if config.play_mode == PlayMode::Random {
                     play_random_game(&gs, &mut rng)
+                } else {
+                    play_selfplay_game(&gs, evaluator, &mut rng, config.epsilon)
                 };
                 GameTrajectory { states, result }
             })
@@ -163,6 +212,13 @@ fn main() {
         let loss = trainer.train_on_batch(&trajectories);
         total_loss += loss * batch_size as f32;
         recent_loss += loss * batch_size as f32;
+
+        // Accumulate for learned heuristic regression + save to disk
+        for traj in &trajectories {
+            regression_acc.add_game(&traj.states, &traj.result);
+            traj_writer.write_game(&traj.states, &traj.result)
+                .expect("Failed to write trajectory");
+        }
 
         // Update stats
         for traj in &trajectories {
@@ -206,7 +262,10 @@ fn main() {
             let new_weights = export_weights(&trainer.model, config.l1_size, config.l2_size);
             new_weights.save(&nnue_path).expect("Failed to save NNUE weights");
 
-            if config.self_play {
+            // Sync trajectory file so it's recoverable on crash
+            traj_writer.sync().expect("Failed to sync trajectory file");
+
+            if config.play_mode == PlayMode::SelfPlay {
                 nnue_evaluator = NnueEvaluator::new(new_weights);
                 println!("NNUE weights updated + checkpoint saved: {}", nnue_path);
             } else {
@@ -215,8 +274,25 @@ fn main() {
         }
     }
 
+    // Finalize trajectory file
+    let traj_count = traj_writer.finish().expect("Failed to finalize trajectory file");
+
     let elapsed = start.elapsed();
     println!("\nTraining complete: {} games in {:.1?}", config.total_games, elapsed);
-    println!("Avg time per game: {:.1?}", elapsed.div_f64(config.total_games as f64));
-    println!("Final avg loss: {:.6}", total_loss as f64 / config.total_games as f64);
+    if config.total_games > 0 {
+        println!("Avg time per game: {:.1?}", elapsed.div_f64(config.total_games as f64));
+        println!("Final avg loss: {:.6}", total_loss as f64 / config.total_games as f64);
+    }
+
+    // Save regression accumulator (X'X + X'y) for instant lambda sweeps later
+    let reg_path = format!("{}/regression.bin", config.checkpoint_dir);
+    regression_acc.save(&reg_path).expect("Failed to save regression accumulator");
+    println!("Regression accumulator saved: {} ({} samples)", reg_path, regression_acc.n_samples());
+
+    // Solve and save learned heuristic weights (free regression from the same games)
+    let learned_weights = regression_acc.solve();
+    let lr_path = format!("{}/learned_heuristic.json", config.checkpoint_dir);
+    learned_weights.save(&lr_path).expect("Failed to save learned heuristic weights");
+    println!("Learned heuristic saved: {} ({} samples)", lr_path, regression_acc.n_samples());
+    println!("Trajectories saved: {} ({} games)", trajectory_path, traj_count);
 }

@@ -255,6 +255,25 @@ mod test {
     );
 }
 
+/// Construct a Tile from its TileType.
+pub fn tile_from_type(tt: TileType) -> Tile {
+    match tt {
+        TileType::Duke => duke(),
+        TileType::Footman => footman(),
+        TileType::Pikeman => pikeman(),
+        TileType::Knight => knight(),
+        TileType::Champion => champion(),
+        TileType::Dragoon => dragoon(),
+        TileType::Wizard => wizard(),
+        TileType::General => general(),
+        TileType::Marshall => marshall(),
+        TileType::Assassin => assassin(),
+        TileType::Priest => priest(),
+        TileType::Bowman => bowman(),
+        TileType::Longbowman => longbowman(),
+    }
+}
+
 pub fn place_tile<U>(o: Owner, ctor: U) -> PlacedTile where U: Fn() -> Tile {
     PlacedTile::new(o, ctor())
 }

@@ -14,6 +14,8 @@ use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::units;
 
+use duke_rust::game::ai::heuristics::Heuristic;
+
 use crate::nnue::NnueEvaluator;
 
 /// Safety limit: if a game exceeds this many turns, force a draw.
@@ -47,6 +49,35 @@ impl<'a> HeuristicEvaluator<'a> {
 impl GameEvaluator for HeuristicEvaluator<'_> {
     fn evaluate(&self, gs: &GameState) -> f32 {
         self.inner.cheap_evaluate(gs) as f32
+    }
+}
+
+/// Static heuristic evaluator using the four known heuristic enum values.
+/// Fully `Send + Sync` — no trait objects, works with rayon.
+pub struct StaticHeuristicEvaluator {
+    heuristics: Vec<duke_rust::game::ai::heuristics::Heuristics>,
+}
+
+impl StaticHeuristicEvaluator {
+    pub fn new() -> Self {
+        use duke_rust::game::ai::heuristics::Heuristics;
+        Self {
+            heuristics: vec![
+                Heuristics::DukeMovementOptions,
+                Heuristics::TotalTilesOnBoard,
+                Heuristics::TotalMovementOptions,
+                Heuristics::DiscardedUnits,
+            ],
+        }
+    }
+}
+
+impl GameEvaluator for StaticHeuristicEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        let owner = gs.current_player_turn();
+        self.heuristics.iter()
+            .map(|h| h.approx_difference(owner, gs))
+            .sum::<f64>() as f32
     }
 }
 
@@ -106,7 +137,7 @@ pub fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, Ga
 /// Play a game using self-play with epsilon-greedy exploration.
 ///
 /// Accepts any `GameEvaluator` (NNUE, heuristic, etc.) for move selection.
-pub fn play_selfplay_game<E: GameEvaluator>(
+pub fn play_selfplay_game<E: GameEvaluator + ?Sized>(
     gs: &GameState,
     evaluator: &E,
     rng: &mut StdRng,

@@ -287,7 +287,7 @@ fn terminal_state_target_is_correct() {
 
     // Now check the terminal state prediction
     let encoded = encode_state_flat::<TestBackend>(terminal_state, &device);
-    let batch = encoded.unsqueeze::<2>(); // [1, 1080]
+    let batch = encoded.unsqueeze::<2>(); // [1, 1106]
     let prediction = trainer.model.forward(batch);
     let pred_value: f32 = prediction.into_data().to_vec::<f32>().expect("to_vec")[0];
 
@@ -363,7 +363,7 @@ fn nnue_matches_burn_fc_model() {
 
     // Burn forward pass
     let flat = encode_state_flat::<NdArray>(&gs, &device);
-    let batch = flat.unsqueeze::<2>(); // [1, 1080]
+    let batch = flat.unsqueeze::<2>(); // [1, 1106]
     let burn_output: f32 = model
         .forward(batch)
         .into_data()
@@ -777,12 +777,7 @@ fn play_match_random_vs_random_is_fair() {
 
     for seed in 0..num_games {
         let mut rng = StdRng::seed_from_u64(seed as u64);
-        // Alternate who starts as top to cancel out first-move advantage
-        let result = if seed % 2 == 0 {
-            play_match(&gs, &random, &random, &mut rng, 200)
-        } else {
-            play_match(&gs, &random, &random, &mut rng, 200)
-        };
+        let result = play_match(&gs, &random, &random, &mut rng, 200);
         match result {
             GameResult::Won(Owner::TopPlayer) => top_wins += 1,
             GameResult::Won(Owner::BottomPlayer) => bottom_wins += 1,

@@ -4,6 +4,7 @@ pub mod fc_td_training;
 pub mod learned_heuristic;
 pub mod match_runner;
 pub mod nnue;
+pub mod trajectory_io;
 pub mod weight_export;
 pub mod game_setup;
 

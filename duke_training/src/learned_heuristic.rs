@@ -7,17 +7,18 @@
 //! - 1 bias term
 
 use std::fs;
-use std::path::Path;
 
-use duke_rust::common::coordinates::Coordinates;
 use duke_rust::game::ai::heuristics::{Heuristic, Heuristics};
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
 
 use crate::game_setup::GameEvaluator;
 
-/// Total number of features in the learned heuristic.
+/// Total number of features in the full polynomial expansion.
 pub const NUM_FEATURES: usize = 24;
+
+/// Number of base features (4 heuristics + bias).
+pub const NUM_BASE_FEATURES: usize = 5;
 
 /// Ridge regularization parameter for numerical stability.
 const LAMBDA: f64 = 1e-6;
@@ -37,6 +38,18 @@ impl Default for LearnedHeuristicWeights {
             weights: [0.0; NUM_FEATURES],
         }
     }
+}
+
+/// Extract just the 4 base heuristic differences + bias (5 features).
+pub fn extract_base_features(gs: &GameState) -> [f64; NUM_BASE_FEATURES] {
+    let owner = gs.current_player_turn();
+    [
+        Heuristics::DukeMovementOptions.approx_difference(owner, gs),
+        Heuristics::TotalTilesOnBoard.approx_difference(owner, gs),
+        Heuristics::TotalMovementOptions.approx_difference(owner, gs),
+        Heuristics::DiscardedUnits.approx_difference(owner, gs),
+        1.0, // bias
+    ]
 }
 
 /// Extract the 24-dimensional feature vector from a game state.
@@ -73,11 +86,12 @@ pub fn extract_features(gs: &GameState) -> [f64; NUM_FEATURES] {
     let opp_center = count_center_tiles(gs, opp) as f64;
     let x8 = my_center - opp_center;
 
-    // x9: duke_mobility_ratio_diff — x1/max(x3,1) style, but per-player
+    // x9: duke_mobility_ratio_diff — duke_moves/max(total_moves,1) per player
+    // Use approx (ignoring guard) consistently for both numerator and denominator
     let my_duke_mob = Heuristics::DukeMovementOptions.approx_evaluate_for_owner(owner, gs);
     let opp_duke_mob = Heuristics::DukeMovementOptions.approx_evaluate_for_owner(opp, gs);
-    let my_total_mob = Heuristics::TotalMovementOptions.evaluate_for_owner(owner, gs);
-    let opp_total_mob = Heuristics::TotalMovementOptions.evaluate_for_owner(opp, gs);
+    let my_total_mob = Heuristics::TotalMovementOptions.approx_evaluate_for_owner(owner, gs);
+    let opp_total_mob = Heuristics::TotalMovementOptions.approx_evaluate_for_owner(opp, gs);
     let my_ratio = my_duke_mob / my_total_mob.max(1.0);
     let opp_ratio = opp_duke_mob / opp_total_mob.max(1.0);
     let x9 = my_ratio - opp_ratio;
@@ -218,6 +232,121 @@ impl GameEvaluator for LearnedHeuristicWeights {
     }
 }
 
+/// Incrementally accumulates X'X and X'y for ridge regression.
+/// Feed game trajectories in batches, then call `solve()` at the end.
+pub struct RegressionAccumulator {
+    xtx: [[f64; NUM_FEATURES]; NUM_FEATURES],
+    xty: [f64; NUM_FEATURES],
+    n_samples: u64,
+}
+
+impl RegressionAccumulator {
+    pub fn new() -> Self {
+        Self {
+            xtx: [[0.0; NUM_FEATURES]; NUM_FEATURES],
+            xty: [0.0; NUM_FEATURES],
+            n_samples: 0,
+        }
+    }
+
+    /// Add one game trajectory to the accumulator.
+    pub fn add_game(&mut self, states: &[GameState], result: &GameResult) {
+        for state in states {
+            if state.game_result() != GameResult::Ongoing {
+                continue;
+            }
+            let features = extract_features(state);
+            let current = state.current_player_turn();
+            let target = match result {
+                GameResult::Won(winner) => {
+                    if *winner == current { 1.0 } else { -1.0 }
+                }
+                GameResult::Tie | GameResult::Ongoing => 0.0,
+            };
+            for i in 0..NUM_FEATURES {
+                self.xty[i] += features[i] * target;
+                for j in 0..NUM_FEATURES {
+                    self.xtx[i][j] += features[i] * features[j];
+                }
+            }
+            self.n_samples += 1;
+        }
+    }
+
+    pub fn n_samples(&self) -> u64 { self.n_samples }
+
+    /// Save the accumulated X'X and X'y matrices to a binary file.
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(b"XREG")?;
+        f.write_all(&self.n_samples.to_le_bytes())?;
+        for row in &self.xtx {
+            for &val in row {
+                f.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.xty {
+            f.write_all(&val.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Load a previously saved accumulator.
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path)?;
+        let mut magic = [0u8; 4];
+        f.read_exact(&mut magic)?;
+        if &magic != b"XREG" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid regression file"));
+        }
+        let mut buf8 = [0u8; 8];
+        f.read_exact(&mut buf8)?;
+        let n_samples = u64::from_le_bytes(buf8);
+        let mut xtx = [[0.0f64; NUM_FEATURES]; NUM_FEATURES];
+        for row in &mut xtx {
+            for val in row {
+                f.read_exact(&mut buf8)?;
+                *val = f64::from_le_bytes(buf8);
+            }
+        }
+        let mut xty = [0.0f64; NUM_FEATURES];
+        for val in &mut xty {
+            f.read_exact(&mut buf8)?;
+            *val = f64::from_le_bytes(buf8);
+        }
+        Ok(Self { xtx, xty, n_samples })
+    }
+
+    /// Solve the accumulated system with the default ridge lambda.
+    pub fn solve(&self) -> LearnedHeuristicWeights {
+        self.solve_with_lambda(LAMBDA)
+    }
+
+    /// Solve with a specific lambda value. Lambda is scaled by the average
+    /// diagonal of X'X so that lambda=1.0 means "regularization strength equal
+    /// to average feature energy". Without this, lambda has no effect because
+    /// X'X entries are in the billions with millions of samples.
+    pub fn solve_with_lambda(&self, lambda: f64) -> LearnedHeuristicWeights {
+        if self.n_samples == 0 {
+            return LearnedHeuristicWeights::default();
+        }
+        let avg_diag = (0..NUM_FEATURES)
+            .map(|i| self.xtx[i][i])
+            .sum::<f64>() / NUM_FEATURES as f64;
+        let scaled_lambda = lambda * avg_diag.max(1.0);
+
+        let mut xtx = self.xtx;
+        let mut xty = self.xty;
+        for i in 0..NUM_FEATURES {
+            xtx[i][i] += scaled_lambda;
+        }
+        let weights = solve_linear_system(&mut xtx, &mut xty);
+        LearnedHeuristicWeights { weights }
+    }
+}
+
 /// Train weights via ridge regression: w = (X'X + lambdaI)^{-1} X'y
 ///
 /// Each game provides a sequence of (state, outcome) pairs.
@@ -226,57 +355,11 @@ impl GameEvaluator for LearnedHeuristicWeights {
 ///   -1.0 if the current player at that state eventually lost
 ///    0.0 for a tie
 pub fn train_weights(games: &[(Vec<GameState>, GameResult)]) -> LearnedHeuristicWeights {
-    // Collect all (feature_vector, target) pairs
-    let mut rows: Vec<([f64; NUM_FEATURES], f64)> = Vec::new();
-
+    let mut acc = RegressionAccumulator::new();
     for (states, result) in games {
-        for state in states {
-            if state.game_result() != GameResult::Ongoing {
-                continue; // skip terminal states (no moves to evaluate)
-            }
-            let features = extract_features(state);
-            let current = state.current_player_turn();
-            let target = match result {
-                GameResult::Won(winner) => {
-                    if *winner == current {
-                        1.0
-                    } else {
-                        -1.0
-                    }
-                }
-                GameResult::Tie => 0.0,
-                GameResult::Ongoing => 0.0,
-            };
-            rows.push((features, target));
-        }
+        acc.add_game(states, result);
     }
-
-    if rows.is_empty() {
-        return LearnedHeuristicWeights::default();
-    }
-
-    // Compute X'X (NUM_FEATURES x NUM_FEATURES)
-    let mut xtx = [[0.0f64; NUM_FEATURES]; NUM_FEATURES];
-    let mut xty = [0.0f64; NUM_FEATURES];
-
-    for (features, target) in &rows {
-        for i in 0..NUM_FEATURES {
-            xty[i] += features[i] * target;
-            for j in 0..NUM_FEATURES {
-                xtx[i][j] += features[i] * features[j];
-            }
-        }
-    }
-
-    // Add ridge regularization: X'X + lambda * I
-    for i in 0..NUM_FEATURES {
-        xtx[i][i] += LAMBDA;
-    }
-
-    // Solve (X'X + lambda*I) * w = X'y via Gaussian elimination
-    let weights = solve_linear_system(&mut xtx, &mut xty);
-
-    LearnedHeuristicWeights { weights }
+    acc.solve()
 }
 
 /// Solve Aw = b for w using Gaussian elimination with partial pivoting.

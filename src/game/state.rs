@@ -73,6 +73,9 @@ impl GameState {
 
     pub fn pulled_tile(&self) -> &Option<TileRef> { &self.pulled_tile }
     pub fn current_player_turn(&self) -> Owner { self.current_player_turn }
+    pub fn idle_move_count(&self) -> usize {
+        *self.moves_without_capture_or_placement_stack.last().unwrap_or(&0)
+    }
     pub fn top_player_bag(&self) -> &TileBag { &self.top_player_bag }
     pub fn player_1_discard(&self) -> &DiscardBag { &self.top_player_discard }
     pub fn bottom_player_bag(&self) -> &TileBag { &self.bottom_player_bag }
@@ -94,6 +97,33 @@ impl GameState {
             bottom_player_bag: bag,
             bottom_player_discard: DiscardBag::empty(),
             moves_without_capture_or_placement_stack: vec![0],
+        }
+    }
+
+    /// Reconstruct a GameState from raw snapshot data (for deserialization).
+    /// `tiles` is a list of (coordinates, placed_tile) pairs to place on the board.
+    pub fn from_snapshot(
+        tiles: Vec<(Coordinates, PlacedTile)>,
+        current_player_turn: Owner,
+        top_bag: TileBag,
+        bottom_bag: TileBag,
+        top_discard: DiscardBag,
+        bottom_discard: DiscardBag,
+        idle_moves: usize,
+    ) -> GameState {
+        let mut board = GameBoard::empty();
+        for (coords, placed) in tiles {
+            board.place(coords, placed);
+        }
+        GameState {
+            board,
+            current_player_turn,
+            pulled_tile: None,
+            top_player_bag: top_bag,
+            top_player_discard: top_discard,
+            bottom_player_bag: bottom_bag,
+            bottom_player_discard: bottom_discard,
+            moves_without_capture_or_placement_stack: vec![idle_moves],
         }
     }
     pub fn new(
@@ -350,14 +380,14 @@ impl GameState {
     pub fn all_valid_game_moves_for(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
         self.board.all_valid_moves(
             o,
-            WithNewTiles(self.bag_for_current_player().non_empty()),
+            WithNewTiles(self.bag_for_owner(o).non_empty()),
         )
     }
 
     pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
         self.board.all_valid_moves_ignoring_guard(
             o,
-            WithNewTiles(self.bag_for_current_player().non_empty()),
+            WithNewTiles(self.bag_for_owner(o).non_empty()),
         )
     }
 

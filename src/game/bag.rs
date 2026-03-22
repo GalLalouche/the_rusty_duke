@@ -50,6 +50,9 @@ impl DiscardBag {
     pub fn empty() -> DiscardBag {
         DiscardBag { bag: Vec::new() }
     }
+    pub fn from_tiles(bag: Vec<TileRef>) -> DiscardBag {
+        DiscardBag { bag }
+    }
 
     pub fn add(&mut self, t: TileRef) -> () {
         self.bag.push(t);
