@@ -1110,6 +1110,347 @@ fn feature_cache_roundtrip() {
     let _ = std::fs::remove_file(&path);
 }
 
+// ── heuristic tests ────────────────────────────────────────────────────
+
+use duke_rust::common::coordinates::Coordinates;
+use duke_rust::game::ai::heuristics::Heuristic;
+use duke_rust::game::bag::DiscardBag;
+use duke_rust::game::tile::{PlacedTile, TileType};
+use duke_rust::game::units::tile_from_type;
+
+/// Helper: build a GameState from placed tiles with empty bags and discards.
+fn snapshot_state(
+    tiles: Vec<(Coordinates, PlacedTile)>,
+    current_player: Owner,
+) -> GameState {
+    GameState::from_snapshot(
+        tiles,
+        current_player,
+        TileBag::new(vec![]),
+        TileBag::new(vec![]),
+        DiscardBag::empty(),
+        DiscardBag::empty(),
+        0,
+    )
+}
+
+/// Helper: build a GameState with custom discard bags.
+fn snapshot_state_with_discards(
+    tiles: Vec<(Coordinates, PlacedTile)>,
+    current_player: Owner,
+    top_discard: DiscardBag,
+    bottom_discard: DiscardBag,
+) -> GameState {
+    GameState::from_snapshot(
+        tiles,
+        current_player,
+        TileBag::new(vec![]),
+        TileBag::new(vec![]),
+        top_discard,
+        bottom_discard,
+        0,
+    )
+}
+
+/// Helper: build a GameState with custom bags (for TotalMovementOptions which
+/// adds placement moves when the bag is non-empty).
+fn snapshot_state_with_bags(
+    tiles: Vec<(Coordinates, PlacedTile)>,
+    current_player: Owner,
+    top_bag: TileBag,
+    bottom_bag: TileBag,
+) -> GameState {
+    GameState::from_snapshot(
+        tiles,
+        current_player,
+        top_bag,
+        bottom_bag,
+        DiscardBag::empty(),
+        DiscardBag::empty(),
+        0,
+    )
+}
+
+// ── DukeMovementOptions ────────────────────────────────────────────────
+
+#[test]
+fn duke_movement_options_simple_unblocked() {
+    // BottomPlayer Duke (Initial) at (3,3): slides left/right.
+    //   Left: x=2,1,0 => 3 squares; Right: x=4,5 => 2 squares => 5 total.
+    // TopPlayer Duke (Initial) at (0,0): slides left/right.
+    //   Left: out of bounds; Right: x=1,2,3,4,5 => 5 squares.
+    // No guard issues since dukes are on different rows.
+    let gs = snapshot_state(vec![
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+    ], Owner::BottomPlayer);
+
+    let h = Heuristics::DukeMovementOptions;
+    // BottomPlayer duke has 5 horizontal slide moves
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_val, 5.0,
+        "BottomPlayer duke at (3,3) Initial should have 5 slide moves, got {}", bottom_val);
+    // TopPlayer duke has 5 horizontal slide moves
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    assert_eq!(top_val, 5.0,
+        "TopPlayer duke at (0,0) Initial should have 5 slide moves, got {}", top_val);
+
+    // approx should ignore guard, but no guard here so same result
+    let bottom_approx = h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_approx, 5.0);
+    let top_approx = h.approx_evaluate_for_owner(Owner::TopPlayer, &gs);
+    assert_eq!(top_approx, 5.0);
+}
+
+#[test]
+fn duke_movement_options_blocked_by_own_tile() {
+    // BottomPlayer Duke (Initial) at (3,3): slides left/right.
+    //   Own footman at (4,3) blocks rightward slide at x=4 => right slide stops.
+    //   Left: x=2,1,0 => 3 squares.
+    //   Right: blocked at x=4 => 0 squares.
+    //   Total: 3 moves.
+    // TopPlayer Duke at (0,0) far away.
+    let gs = snapshot_state(vec![
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 4, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+    ], Owner::BottomPlayer);
+
+    let h = Heuristics::DukeMovementOptions;
+    // BottomPlayer duke: left 3 squares, right blocked => 3
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_val, 3.0,
+        "BottomPlayer duke at (3,3) blocked right by own footman should have 3 moves, got {}", bottom_val);
+
+    let bottom_approx = h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_approx, 3.0);
+}
+
+#[test]
+fn duke_movement_options_flipped_duke_slides_vertically() {
+    // BottomPlayer Duke (Flipped) at (2,2): slides top/bottom.
+    //   Top: y=1,0 => 2 squares; Bottom: y=3,4,5 => 3 squares => 5 total.
+    // TopPlayer Duke at (5,5).
+    let mut bottom_duke = PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke));
+    bottom_duke.flip();
+    let gs = snapshot_state(vec![
+        (Coordinates { x: 2, y: 2 }, bottom_duke),
+        (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+    ], Owner::BottomPlayer);
+
+    let h = Heuristics::DukeMovementOptions;
+    // BottomPlayer duke flipped slides vertically: up y=1,0 (2) + down y=3,4 (2) = 4 moves.
+    // (2,5) is excluded because TopPlayer duke at (5,5) Initial slides horizontally along y=5,
+    // so moving to (2,5) would put the BottomPlayer duke in guard.
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_val, 4.0,
+        "Flipped BottomPlayer duke at (2,2) should have 4 legal slide moves (guard), got {}", bottom_val);
+
+    // approx_evaluate ignores guard, so the move to (2,5) is also counted => 5 total.
+    let bottom_approx = h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_approx, 5.0,
+        "Flipped BottomPlayer duke at (2,2) ignoring guard should have 5 slide moves, got {}", bottom_approx);
+}
+
+// ── TotalTilesOnBoard ──────────────────────────────────────────────────
+
+#[test]
+fn total_tiles_on_board_simple() {
+    // BottomPlayer has 2 tiles (Duke + Footman), TopPlayer has 1 tile (Duke).
+    // TotalTilesOnBoard = count * 10.
+    // BottomPlayer: 2 * 10 = 20; TopPlayer: 1 * 10 = 10.
+    let gs = snapshot_state(vec![
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+    ], Owner::BottomPlayer);
+
+    let h = Heuristics::TotalTilesOnBoard;
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_val, 20.0,
+        "BottomPlayer with 2 tiles should score 20.0, got {}", bottom_val);
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    assert_eq!(top_val, 10.0,
+        "TopPlayer with 1 tile should score 10.0, got {}", top_val);
+
+    // approx is identical to evaluate for this heuristic
+    assert_eq!(h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs), 20.0);
+    assert_eq!(h.approx_evaluate_for_owner(Owner::TopPlayer, &gs), 10.0);
+}
+
+#[test]
+fn total_tiles_on_board_symmetric() {
+    // Both players have 3 tiles each (Duke + 2 Footmen).
+    // Each player: 3 * 10 = 30.
+    let gs = snapshot_state(vec![
+        (Coordinates { x: 2, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 1, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
+        (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
+        (Coordinates { x: 2, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 1, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Footman))),
+        (Coordinates { x: 3, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Footman))),
+    ], Owner::BottomPlayer);
+
+    let h = Heuristics::TotalTilesOnBoard;
+    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &gs), 30.0,
+        "BottomPlayer with 3 tiles should score 30.0");
+    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &gs), 30.0,
+        "TopPlayer with 3 tiles should score 30.0");
+
+    // Difference should be 0 for symmetric setup
+    assert_eq!(h.difference(Owner::BottomPlayer, &gs), 0.0);
+}
+
+// ── TotalMovementOptions ───────────────────────────────────────────────
+
+#[test]
+fn total_movement_options_duke_only() {
+    // Only dukes on the board, empty bags => no placement moves.
+    // BottomPlayer Duke (Initial) at (3,3): slides left/right = 5 moves.
+    // TopPlayer Duke (Initial) at (0,0): slides left/right = 5 moves.
+    // TotalMovementOptions counts all valid game moves (tile moves only, no placements
+    // since bags are empty).
+    let gs = snapshot_state(vec![
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+    ], Owner::BottomPlayer);
+
+    let h = Heuristics::TotalMovementOptions;
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_val, 5.0,
+        "BottomPlayer with only duke at (3,3) should have 5 moves, got {}", bottom_val);
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    assert_eq!(top_val, 5.0,
+        "TopPlayer with only duke at (0,0) should have 5 moves, got {}", top_val);
+
+    // approx is identical for TotalMovementOptions
+    assert_eq!(h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs), 5.0);
+}
+
+#[test]
+fn total_movement_options_multiple_pieces_with_bag() {
+    // BottomPlayer: Duke (Initial) at (3,5) + Footman (Initial) at (3,4).
+    //   Duke slides left/right: left x=2,1,0 (3), right x=4,5 (2) = 5 moves.
+    //   Footman (Initial, BottomPlayer): NearStraight Move = up/down/left/right.
+    //     From (3,4): up=(3,3), down=(3,5) own duke blocks, left=(2,4), right=(4,4) = 3 moves.
+    //   Plus placement moves if bag is non-empty.
+    // TopPlayer: Duke at (0,0), no bag.
+    //
+    // With BottomPlayer having tiles in bag, placement moves are possible
+    // near the duke at (3,5): valid offsets that are empty.
+    let gs = snapshot_state_with_bags(
+        vec![
+            (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+            (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        ],
+        Owner::BottomPlayer,
+        TileBag::new(vec![]),  // TopPlayer empty bag
+        TileBag::new(vec![std::sync::Arc::new(tile_from_type(TileType::Pikeman))]),  // BottomPlayer has a tile
+    );
+
+    let h = Heuristics::TotalMovementOptions;
+    // We check the value is > 0 and matches expectations.
+    // Duke: 5 slide moves, Footman: 3 moves (up/left/right, down blocked by duke).
+    // Plus placement moves near duke at (3,5): empty adjacent squares.
+    // Duke at (3,5), adjacent: (2,5), (4,5), (3,4)=occupied. DukeOffset has
+    // Left, Right, Top, Bottom variants => need to check which are valid.
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    // We'll assert it's strictly greater than the duke-only case
+    assert!(bottom_val > 5.0,
+        "BottomPlayer with duke + footman + bag should have > 5 moves, got {}", bottom_val);
+
+    // TopPlayer with just duke at (0,0) and empty bag: 5 slide moves only.
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    assert_eq!(top_val, 5.0,
+        "TopPlayer with only duke at (0,0) and empty bag should have 5 moves, got {}", top_val);
+}
+
+// ── DiscardedUnits ─────────────────────────────────────────────────────
+
+#[test]
+fn discarded_units_empty_discards() {
+    // No discarded tiles => score is 0 * -15 = 0.0 for both players.
+    let gs = snapshot_state(vec![
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+    ], Owner::BottomPlayer);
+
+    let h = Heuristics::DiscardedUnits;
+    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &gs), 0.0,
+        "No discards should give 0.0");
+    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &gs), 0.0,
+        "No discards should give 0.0");
+    assert_eq!(h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs), 0.0);
+}
+
+#[test]
+fn discarded_units_with_discards() {
+    // TopPlayer has 2 discarded tiles => 2 * -15 = -30.0.
+    // BottomPlayer has 1 discarded tile => 1 * -15 = -15.0.
+    use std::sync::Arc;
+    let gs = snapshot_state_with_discards(
+        vec![
+            (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        ],
+        Owner::BottomPlayer,
+        DiscardBag::from_tiles(vec![
+            Arc::new(tile_from_type(TileType::Footman)),
+            Arc::new(tile_from_type(TileType::Pikeman)),
+        ]),
+        DiscardBag::from_tiles(vec![
+            Arc::new(tile_from_type(TileType::Knight)),
+        ]),
+    );
+
+    let h = Heuristics::DiscardedUnits;
+    // TopPlayer has 2 discarded tiles: 2 * -15 = -30
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    assert_eq!(top_val, -30.0,
+        "TopPlayer with 2 discards should score -30.0, got {}", top_val);
+    // BottomPlayer has 1 discarded tile: 1 * -15 = -15
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    assert_eq!(bottom_val, -15.0,
+        "BottomPlayer with 1 discard should score -15.0, got {}", bottom_val);
+
+    // approx is identical for DiscardedUnits
+    assert_eq!(h.approx_evaluate_for_owner(Owner::TopPlayer, &gs), -30.0);
+    assert_eq!(h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs), -15.0);
+
+    // Difference for BottomPlayer: -15 - (-30) = 15 (advantage since fewer discards)
+    assert_eq!(h.difference(Owner::BottomPlayer, &gs), 15.0);
+}
+
+#[test]
+fn discarded_units_three_tiles_discarded() {
+    // TopPlayer has 0 discarded, BottomPlayer has 3 discarded.
+    // BottomPlayer: 3 * -15 = -45.0
+    use std::sync::Arc;
+    let gs = snapshot_state_with_discards(
+        vec![
+            (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        ],
+        Owner::BottomPlayer,
+        DiscardBag::empty(),
+        DiscardBag::from_tiles(vec![
+            Arc::new(tile_from_type(TileType::Footman)),
+            Arc::new(tile_from_type(TileType::Pikeman)),
+            Arc::new(tile_from_type(TileType::Knight)),
+        ]),
+    );
+
+    let h = Heuristics::DiscardedUnits;
+    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &gs), 0.0,
+        "TopPlayer with 0 discards should score 0.0");
+    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &gs), -45.0,
+        "BottomPlayer with 3 discards should score -45.0");
+
+    // Difference for BottomPlayer: -45 - 0 = -45 (disadvantage)
+    assert_eq!(h.difference(Owner::BottomPlayer, &gs), -45.0);
+}
+
 // ── Manhattan distance feature tests ────────────────────────────────────
 
 mod manhattan_tests {
