@@ -68,10 +68,38 @@ fn unflatten_weights(flat: &[f32], l1_size: usize, l2_size: usize) -> NnueWeight
     }
 }
 
+/// Flatten only l3_weight and l3_bias (last layer).
+fn flatten_last_layer(w: &NnueWeights) -> Vec<f32> {
+    let mut flat = Vec::with_capacity(last_layer_count(w.l2_size));
+    flat.extend_from_slice(&w.l3_weight);
+    flat.extend_from_slice(&w.l3_bias);
+    flat
+}
+
+/// Unflatten only l3_weight and l3_bias, keeping everything else from `base`.
+fn unflatten_last_layer(flat: &[f32], base: &NnueWeights) -> NnueWeights {
+    let l2_size = base.l2_size;
+    assert_eq!(flat.len(), l2_size + 1);
+    NnueWeights {
+        l1_size: base.l1_size,
+        l2_size: base.l2_size,
+        l1_weight: base.l1_weight.clone(),
+        l1_bias: base.l1_bias.clone(),
+        l2_weight: base.l2_weight.clone(),
+        l2_bias: base.l2_bias.clone(),
+        l3_weight: flat[..l2_size].to_vec(),
+        l3_bias: flat[l2_size..].to_vec(),
+    }
+}
+
 fn weight_count(l1_size: usize, l2_size: usize) -> usize {
     NUM_FEATURES * l1_size + l1_size       // L1 weight + bias
         + l2_size * l1_size + l2_size      // L2 weight + bias
         + l2_size + 1                      // L3 weight + bias
+}
+
+fn last_layer_count(l2_size: usize) -> usize {
+    l2_size + 1  // l3_weight (l2_size) + l3_bias (1)
 }
 
 /// Create randomly initialized weights using Kaiming-like initialization.
@@ -116,6 +144,7 @@ fn randn_vec(n: usize, rng: &mut StdRng) -> Vec<f32> {
 /// Alternates sides each game. Ties count as 0.5.
 fn evaluate_perturbation(
     weights: &NnueWeights,
+    opponent: &(dyn duke_training::game_setup::GameEvaluator + Sync),
     gs: &duke_rust::game::state::GameState,
     k: u32,
     seed_base: u64,
@@ -130,18 +159,17 @@ fn evaluate_perturbation(
         l3_weight: weights.l3_weight.clone(),
         l3_bias: weights.l3_bias.clone(),
     });
-    let heuristic = StaticHeuristicEvaluator::new();
 
     let nnue_player = Player::Evaluator(&evaluator);
-    let heur_player = Player::Evaluator(&heuristic);
+    let opp_player = Player::Evaluator(opponent);
 
     let mut score = 0.0f32;
     for i in 0..k {
         let mut rng = StdRng::seed_from_u64(seed_base + i as u64);
         let result = if i % 2 == 0 {
-            play_match(gs, &nnue_player, &heur_player, &mut rng, 200)
+            play_match(gs, &nnue_player, &opp_player, &mut rng, 200)
         } else {
-            play_match(gs, &heur_player, &nnue_player, &mut rng, 200)
+            play_match(gs, &opp_player, &nnue_player, &mut rng, 200)
         };
         let nnue_is_top = i % 2 == 0;
         match result {
@@ -187,15 +215,26 @@ fn main() {
     let eval_games: u32 = parse_flag(&args, "--eval-games").unwrap_or(500);
     let checkpoint_dir = parse_flag_string(&args, "--checkpoint-dir")
         .unwrap_or_else(|| "es_checkpoints".to_string());
+    let self_play = args.iter().any(|a| a == "--self-play");
+    let last_layer_only = args.iter().any(|a| a == "--last-layer-only");
 
-    let dim = weight_count(l1_size, l2_size);
+    let dim = if last_layer_only {
+        last_layer_count(l2_size)
+    } else {
+        weight_count(l1_size, l2_size)
+    };
 
     println!("=== Evolutionary Strategies Training ===");
     println!("  network: {}->{}->{}->1", NUM_FEATURES, l1_size, l2_size);
-    println!("  weight dimension: {}", dim);
+    if last_layer_only {
+        println!("  ** LAST-LAYER-ONLY mode: optimizing {} params (l3_weight + l3_bias) **", dim);
+    } else {
+        println!("  weight dimension: {}", dim);
+    }
     println!("  population: {} (x2 with mirroring = {})", pop_size, pop_size * 2);
     println!("  games per perturbation: {}", games_per_eval);
     println!("  sigma: {}, lr: {}", sigma, lr);
+    println!("  mode: {}", if self_play { "self-play" } else { "vs heuristic" });
     println!("  iterations: {}", iterations);
     println!("  eval every {} iters with {} games", eval_interval, eval_games);
     if resume_path.is_some() {
@@ -211,7 +250,25 @@ fn main() {
 
     // Initialize weights
     let mut rng = StdRng::seed_from_u64(42);
-    let mut w: Vec<f32> = if let Some(ref path) = resume_path {
+
+    // In last-layer-only mode, we keep the frozen base weights separately
+    // and only optimize the last layer (l3_weight + l3_bias).
+    let base_weights: Option<NnueWeights> = if last_layer_only {
+        if resume_path.is_none() {
+            panic!("--last-layer-only requires --resume to provide frozen lower layers");
+        }
+        let weights = NnueWeights::load(resume_path.as_ref().unwrap())
+            .expect("Failed to load NNUE weights");
+        assert_eq!(weights.l1_size, l1_size, "l1 mismatch");
+        assert_eq!(weights.l2_size, l2_size, "l2 mismatch");
+        Some(weights)
+    } else {
+        None
+    };
+
+    let mut w: Vec<f32> = if last_layer_only {
+        flatten_last_layer(base_weights.as_ref().unwrap())
+    } else if let Some(ref path) = resume_path {
         let weights = NnueWeights::load(path).expect("Failed to load NNUE weights");
         assert_eq!(weights.l1_size, l1_size, "l1 mismatch");
         assert_eq!(weights.l2_size, l2_size, "l2 mismatch");
@@ -221,9 +278,18 @@ fn main() {
         flatten_weights(&weights)
     };
 
+    // Helper to reconstruct full weights from the optimized vector
+    let reconstruct_weights = |w: &[f32]| -> NnueWeights {
+        if last_layer_only {
+            unflatten_last_layer(w, base_weights.as_ref().unwrap())
+        } else {
+            unflatten_weights(w, l1_size, l2_size)
+        }
+    };
+
     // Evaluate initial win rate
     {
-        let init_weights = unflatten_weights(&w, l1_size, l2_size);
+        let init_weights = reconstruct_weights(&w);
         let init_eval = NnueEvaluator::new(init_weights);
         let nnue_player = Player::Evaluator(&init_eval);
         let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
@@ -264,11 +330,23 @@ fn main() {
                     w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma * ei).collect()
                 };
 
-                let weights = unflatten_weights(&perturbed, l1_size, l2_size);
+                let weights = if last_layer_only {
+                    unflatten_last_layer(&perturbed, base_weights.as_ref().unwrap())
+                } else {
+                    unflatten_weights(&perturbed, l1_size, l2_size)
+                };
 
                 // Unique game seed per perturbation
                 let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
-                let win_rate = evaluate_perturbation(&weights, &gs, games_per_eval, game_seed);
+                let win_rate = if self_play {
+                    // Self-play: perturbation plays against unperturbed base weights
+                    let base_weights_copy = reconstruct_weights(&w);
+                    let base_eval = NnueEvaluator::new(base_weights_copy);
+                    evaluate_perturbation(&weights, &base_eval, &gs, games_per_eval, game_seed)
+                } else {
+                    let heuristic = StaticHeuristicEvaluator::new();
+                    evaluate_perturbation(&weights, &heuristic, &gs, games_per_eval, game_seed)
+                };
 
                 (pert_idx, win_rate, 0.0) // third field unused, identified by idx parity
             })
@@ -326,7 +404,7 @@ fn main() {
 
         // Periodic evaluation + checkpoint
         if (iter + 1) % eval_interval == 0 || iter == iterations - 1 {
-            let eval_weights = unflatten_weights(&w, l1_size, l2_size);
+            let eval_weights = reconstruct_weights(&w);
 
             // Save checkpoint
             let ckpt_path = format!("{}/es_iter_{}.nnue", checkpoint_dir, iter + 1);
@@ -346,7 +424,7 @@ fn main() {
     }
 
     // Save final weights
-    let final_weights = unflatten_weights(&w, l1_size, l2_size);
+    let final_weights = reconstruct_weights(&w);
     let final_path = format!("{}/es_final.nnue", checkpoint_dir);
     final_weights.save(&final_path).expect("Failed to save final weights");
     println!("\nES training complete: {} iterations in {:.1?}", iterations, total_start.elapsed());
