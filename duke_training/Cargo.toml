@@ -29,3 +29,15 @@ path = "src/sweep_lambda.rs"
 [[bin]]
 name = "extract_features"
 path = "src/extract_features.rs"
+
+[[bin]]
+name = "train_from_trajectories"
+path = "src/train_from_trajectories.rs"
+
+[[bin]]
+name = "rl_train"
+path = "src/rl_train.rs"
+
+[[bin]]
+name = "es_train"
+path = "src/es_train.rs"
