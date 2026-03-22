@@ -1,18 +1,20 @@
-//! Sweep ridge regression lambda values on saved game trajectories.
+//! Sweep ridge regression lambda values using cached features.
+//!
+//! Loads pre-extracted features from a .bin file (no GameState reconstruction
+//! or heuristic recomputation needed), then benchmarks each lambda vs heuristic.
 
 use std::time::Instant;
 
+use duke_training::feature_cache::{load_feature_cache, accumulate_from_cache};
 use duke_training::game_setup::{create_bag, create_initial_state, StaticHeuristicEvaluator};
-use duke_training::learned_heuristic::RegressionAccumulator;
 use duke_training::match_runner::{run_matches, Player};
-use duke_training::trajectory_io::load_trajectories;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let traj_path = args.iter().position(|a| a == "--trajectories")
+    let features_path = args.iter().position(|a| a == "--features")
         .and_then(|i| args.get(i + 1))
-        .expect("Usage: sweep_lambda --trajectories <path.dtrj> [--bench-games N]");
+        .expect("Usage: sweep_lambda --features <features.bin> [--bench-games N]");
 
     let bench_games: u32 = args.iter().position(|a| a == "--bench-games")
         .and_then(|i| args.get(i + 1))
@@ -20,15 +22,13 @@ fn main() {
         .unwrap_or(500);
 
     let t = Instant::now();
-    let games = load_trajectories(traj_path).expect("Failed to load trajectories");
-    let total_states: usize = games.iter().map(|g| g.states.len()).sum();
-    println!("Loaded {} games ({} states) in {:.1?}", games.len(), total_states, t.elapsed());
+    let (header, games) = load_feature_cache(features_path).expect("Failed to load feature cache");
+    let total_samples: usize = games.iter().map(|g| g.states.len()).sum();
+    println!("Loaded {} games ({} samples, {} features) in {:.1?}",
+        header.num_games, total_samples, header.num_features, t.elapsed());
 
     let t = Instant::now();
-    let mut acc = RegressionAccumulator::new();
-    for game in &games {
-        acc.add_game(&game.states, &game.result);
-    }
+    let acc = accumulate_from_cache(&games, header.num_features);
     println!("Accumulated {} samples in {:.1?}\n", acc.n_samples(), t.elapsed());
 
     let bag = create_bag();

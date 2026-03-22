@@ -25,3 +25,7 @@ path = "src/train_heuristic.rs"
 [[bin]]
 name = "sweep_lambda"
 path = "src/sweep_lambda.rs"
+
+[[bin]]
+name = "extract_features"
+path = "src/extract_features.rs"

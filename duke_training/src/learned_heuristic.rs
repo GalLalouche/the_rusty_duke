@@ -249,7 +249,18 @@ impl RegressionAccumulator {
         }
     }
 
-    /// Add one game trajectory to the accumulator.
+    /// Add a single pre-extracted feature vector + target to the accumulator.
+    pub fn add_sample(&mut self, features: &[f64; NUM_FEATURES], target: f64) {
+        for i in 0..NUM_FEATURES {
+            self.xty[i] += features[i] * target;
+            for j in i..NUM_FEATURES {
+                self.xtx[i][j] += features[i] * features[j];
+            }
+        }
+        self.n_samples += 1;
+    }
+
+    /// Add one game trajectory to the accumulator (extracts features from GameStates).
     pub fn add_game(&mut self, states: &[GameState], result: &GameResult) {
         for state in states {
             if state.game_result() != GameResult::Ongoing {
@@ -263,14 +274,7 @@ impl RegressionAccumulator {
                 }
                 GameResult::Tie | GameResult::Ongoing => 0.0,
             };
-            for i in 0..NUM_FEATURES {
-                self.xty[i] += features[i] * target;
-                // Upper triangle only (X'X is symmetric)
-                for j in i..NUM_FEATURES {
-                    self.xtx[i][j] += features[i] * features[j];
-                }
-            }
-            self.n_samples += 1;
+            self.add_sample(&features, target);
         }
     }
 

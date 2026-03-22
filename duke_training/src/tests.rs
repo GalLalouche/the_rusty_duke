@@ -1055,3 +1055,61 @@ fn trajectory_roundtrip_preserves_game_states() {
     // Cleanup
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn feature_cache_roundtrip() {
+    use crate::feature_cache::{CachedGame, CachedState, save_feature_cache, load_feature_cache, accumulate_from_cache};
+    use crate::learned_heuristic::{extract_features, NUM_FEATURES};
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    // Play 3 games, extract features
+    let mut cached_games = Vec::new();
+    let mut expected_samples = 0usize;
+    for seed in 0..3u64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let (states, result) = play_random_game(&gs, &mut rng);
+        let mut cached_states = Vec::new();
+        for state in &states {
+            if state.game_result() != GameResult::Ongoing { continue; }
+            let features = extract_features(state);
+            cached_states.push(CachedState {
+                current_player: state.current_player_turn(),
+                features: features.to_vec(),
+            });
+            expected_samples += 1;
+        }
+        cached_games.push(CachedGame { result, states: cached_states });
+    }
+
+    // Save
+    let path = format!("D:/temp/test_feat_cache_{}.bin", std::process::id());
+    save_feature_cache(&path, NUM_FEATURES, &cached_games).unwrap();
+
+    // Load
+    let (header, loaded) = load_feature_cache(&path).unwrap();
+    assert_eq!(header.num_features, NUM_FEATURES);
+    assert_eq!(header.num_games, 3);
+    assert_eq!(loaded.len(), 3);
+
+    // Verify features match
+    for (i, (orig, loaded_game)) in cached_games.iter().zip(loaded.iter()).enumerate() {
+        assert_eq!(orig.result, loaded_game.result, "Game {} result mismatch", i);
+        assert_eq!(orig.states.len(), loaded_game.states.len(), "Game {} state count mismatch", i);
+        for (j, (orig_s, loaded_s)) in orig.states.iter().zip(loaded_game.states.iter()).enumerate() {
+            assert_eq!(orig_s.current_player, loaded_s.current_player,
+                "Game {} state {} player mismatch", i, j);
+            for (k, (&orig_f, &loaded_f)) in orig_s.features.iter().zip(loaded_s.features.iter()).enumerate() {
+                assert!((orig_f - loaded_f).abs() < 1e-10,
+                    "Game {} state {} feature {} mismatch: {} vs {}", i, j, k, orig_f, loaded_f);
+            }
+        }
+    }
+
+    // Verify accumulation works
+    let acc = accumulate_from_cache(&loaded, header.num_features);
+    assert_eq!(acc.n_samples(), expected_samples as u64);
+
+    let _ = std::fs::remove_file(&path);
+}
