@@ -16,7 +16,7 @@
 //!       top_discard_len: u8, then tile_type bytes
 //!       bottom_discard_len: u8, then tile_type bytes
 
-use std::io::{self, Read, Write, BufWriter, BufReader};
+use std::io::{self, Read, Write, BufWriter};
 use std::sync::Arc;
 
 use duke_rust::common::coordinates::Coordinates;
@@ -24,6 +24,8 @@ use duke_rust::game::bag::{DiscardBag, TileBag};
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::{CurrentSide, Owner, PlacedTile, TileType};
 use duke_rust::game::units::tile_from_type;
+
+use crate::serialization;
 
 const MAGIC: &[u8; 4] = b"DTRJ";
 const VERSION: u32 = 2;
@@ -51,7 +53,7 @@ impl TrajectoryWriter {
     }
 
     pub fn write_game(&mut self, states: &[GameState], result: &GameResult) -> io::Result<()> {
-        write_result(&mut self.writer, result)?;
+        serialization::write_result(&mut self.writer, result)?;
         self.writer.write_all(&(states.len() as u16).to_le_bytes())?;
         for gs in states {
             write_game_state(&mut self.writer, gs)?;
@@ -119,7 +121,7 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
 
     let mut games = Vec::with_capacity(num_games);
     for _ in 0..num_games {
-        let result = read_result(&mut cursor)?;
+        let result = serialization::read_result(&mut cursor)?;
         let mut buf2 = [0u8; 2];
         cursor.read_exact(&mut buf2)?;
         let num_states = u16::from_le_bytes(buf2) as usize;
@@ -135,28 +137,6 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
 }
 
 // --- Serialization helpers ---
-
-fn write_result(w: &mut impl Write, result: &GameResult) -> io::Result<()> {
-    let byte = match result {
-        GameResult::Won(Owner::TopPlayer) => 0u8,
-        GameResult::Won(Owner::BottomPlayer) => 1u8,
-        GameResult::Tie => 2u8,
-        GameResult::Ongoing => 3u8,
-    };
-    w.write_all(&[byte])
-}
-
-fn read_result(r: &mut impl Read) -> io::Result<GameResult> {
-    let mut buf = [0u8; 1];
-    r.read_exact(&mut buf)?;
-    match buf[0] {
-        0 => Ok(GameResult::Won(Owner::TopPlayer)),
-        1 => Ok(GameResult::Won(Owner::BottomPlayer)),
-        2 => Ok(GameResult::Tie),
-        3 => Ok(GameResult::Ongoing),
-        b => Err(io::Error::new(io::ErrorKind::InvalidData, format!("Invalid result byte: {}", b))),
-    }
-}
 
 fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
     // Current player
@@ -269,20 +249,7 @@ fn read_tile_ref_list(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile
 }
 
 fn tile_type_from_u8(b: u8) -> io::Result<TileType> {
-    match b {
-        0 => Ok(TileType::Duke),
-        1 => Ok(TileType::Footman),
-        2 => Ok(TileType::Pikeman),
-        3 => Ok(TileType::Knight),
-        4 => Ok(TileType::Champion),
-        5 => Ok(TileType::Dragoon),
-        6 => Ok(TileType::Wizard),
-        7 => Ok(TileType::General),
-        8 => Ok(TileType::Marshall),
-        9 => Ok(TileType::Assassin),
-        10 => Ok(TileType::Priest),
-        11 => Ok(TileType::Bowman),
-        12 => Ok(TileType::Longbowman),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("Invalid TileType byte: {}", b))),
-    }
+    TileType::try_from(b).map_err(|b| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid TileType byte: {}", b))
+    })
 }

@@ -203,7 +203,7 @@ fn encode_state_side_planes_are_correct() {
 // ── fc_td_training tests ────────────────────────────────────────────────
 
 #[test]
-fn train_on_game_returns_loss() {
+fn train_on_batch_single_game_returns_loss() {
     let device = Default::default();
     let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001, DEFAULT_L1, DEFAULT_L2);
 
@@ -211,7 +211,7 @@ fn train_on_game_returns_loss() {
     let mut rng = StdRng::seed_from_u64(0);
     let (states, result) = play_random_game(&gs, &mut rng);
 
-    let loss = trainer.train_on_game(&states, result);
+    let loss = trainer.train_on_batch(&[GameTrajectory { states, result }]);
     assert!(loss.is_finite(), "Loss should be finite, got {}", loss);
     assert!(loss >= 0.0, "Loss should be non-negative, got {}", loss);
 }
@@ -230,10 +230,11 @@ fn train_reduces_loss_on_repeated_game() {
     let states: Vec<GameState> = states.into_iter().take(10).collect();
 
     // Train on the same game trajectory a few times
-    let first_loss = trainer.train_on_game(&states, result);
+    let traj = GameTrajectory { states, result };
+    let first_loss = trainer.train_on_batch(std::slice::from_ref(&traj));
     let mut last_loss = first_loss;
     for _ in 1..5 {
-        last_loss = trainer.train_on_game(&states, result);
+        last_loss = trainer.train_on_batch(std::slice::from_ref(&traj));
     }
 
     assert!(
@@ -281,8 +282,9 @@ fn terminal_state_target_is_correct() {
     // Train a few times (kept low for debug builds)
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
     let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device.clone(), 0.01, DEFAULT_L1, DEFAULT_L2);
+    let traj = GameTrajectory { states: states.clone(), result: game_result };
     for _ in 0..5 {
-        trainer.train_on_game(&states, game_result);
+        trainer.train_on_batch(std::slice::from_ref(&traj));
     }
 
     // Now check the terminal state prediction

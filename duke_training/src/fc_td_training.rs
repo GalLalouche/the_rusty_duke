@@ -37,96 +37,6 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
         }
     }
 
-    /// Encode a list of game states into a batched tensor of shape
-    /// `[batch, TOTAL_FEATURES]`.
-    fn encode_batch(&self, states: &[GameState]) -> Tensor<B, 2> {
-        let tensors: Vec<Tensor<B, 1>> = states
-            .iter()
-            .map(|gs| encode_state_flat::<B>(gs, &self.device))
-            .collect();
-        Tensor::stack(tensors, 0)
-    }
-
-    /// Train on a single completed game trajectory.
-    ///
-    /// `states` - the sequence of game states observed during the game
-    ///            (one per turn, before the move is applied).
-    /// `result` - the final game result (must not be `Ongoing`).
-    ///
-    /// The encoding is always from the current player's perspective, so
-    /// successive states alternate perspective. The TD target for state t is
-    /// `1 - V(s_{t+1})` (opponent's value flipped), or the actual outcome
-    /// for the terminal state.
-    ///
-    /// Returns the average loss for this game.
-    pub fn train_on_game(
-        &mut self,
-        states: &[GameState],
-        result: GameResult,
-    ) -> f32 {
-        if states.len() < 2 {
-            return 0.0;
-        }
-
-        let n = states.len();
-
-        // Encode all states as a batch and run forward pass
-        let batch = self.encode_batch(states);
-        let predictions = self.model.forward(batch); // [n, 1]
-        let predictions = predictions.squeeze::<1>(1); // [n]
-
-        // Detach predictions for building targets (no gradient through targets)
-        let pred_data: Vec<f32> = predictions
-            .clone()
-            .into_data()
-            .to_vec()
-            .expect("Failed to convert predictions to vec");
-
-        // Build TD targets
-        let mut targets = Vec::with_capacity(n);
-        for t in 0..n {
-            if t < n - 1 {
-                // Next state is from opponent's perspective, so flip the value
-                targets.push(1.0 - pred_data[t + 1]);
-            } else {
-                // Terminal state: use actual outcome for the current player
-                let current_player = states[t].current_player_turn();
-                let outcome = match result {
-                    GameResult::Won(winner) => {
-                        if winner == current_player {
-                            1.0f32
-                        } else {
-                            0.0f32
-                        }
-                    }
-                    GameResult::Tie => 0.5f32,
-                    GameResult::Ongoing => unreachable!("Game should be finished"),
-                };
-                targets.push(outcome);
-            }
-        }
-
-        let target_tensor =
-            Tensor::<B, 1>::from_floats(targets.as_slice(), &self.device);
-
-        // MSE loss: mean((predictions - targets)^2)
-        let diff = predictions - target_tensor;
-        let loss = diff.clone().mul(diff).mean();
-
-        let loss_value: f32 = loss
-            .clone()
-            .into_data()
-            .to_vec::<f32>()
-            .expect("loss")[0];
-
-        // Backward pass and optimizer step
-        let grads = loss.backward();
-        let grads = GradientsParams::from_grads(grads, &self.model);
-        self.model = self.optimizer.step(self.lr, self.model.clone(), grads);
-
-        loss_value
-    }
-
     /// Train on a batch of completed game trajectories in a single forward+backward pass.
     ///
     /// Flattens all states from all games, computes TD targets respecting game
@@ -225,6 +135,15 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
 
     pub fn lr(&self) -> f64 {
         self.lr
+    }
+
+    pub fn device(&self) -> &B::Device {
+        &self.device
+    }
+
+    /// Apply gradients with the current learning rate. For use by external training loops.
+    pub fn optimizer_step(&mut self, grads: GradientsParams) -> FcValueNetwork<B> {
+        self.optimizer.step(self.lr, self.model.clone(), grads)
     }
 
     /// Save model weights to a file.

@@ -9,10 +9,12 @@
 //!       current_player: u8 (0=Top, 1=Bottom)
 //!       features: [f64; num_features]
 
-use std::io::{self, Read, Write, BufWriter, BufReader};
+use std::io::{self, Read, Write, BufWriter};
 
 use duke_rust::game::state::GameResult;
 use duke_rust::game::tile::Owner;
+
+use crate::serialization;
 
 const MAGIC: &[u8; 4] = b"FEAT";
 const VERSION: u32 = 1;
@@ -54,7 +56,7 @@ impl FeatureCacheWriter {
     }
 
     pub fn write_game(&mut self, game: &CachedGame) -> io::Result<()> {
-        write_result(&mut self.writer, &game.result)?;
+        serialization::write_result(&mut self.writer, &game.result)?;
         self.writer.write_all(&(game.states.len() as u32).to_le_bytes())?;
         for state in &game.states {
             let player_byte: u8 = match state.current_player {
@@ -101,30 +103,12 @@ pub fn save_feature_cache(
     num_features: usize,
     games: &[CachedGame],
 ) -> io::Result<()> {
-    let f = std::fs::File::create(path)?;
-    let mut w = BufWriter::new(f);
-
-    w.write_all(MAGIC)?;
-    w.write_all(&VERSION.to_le_bytes())?;
-    w.write_all(&(num_features as u32).to_le_bytes())?;
-    w.write_all(&(games.len() as u32).to_le_bytes())?;
-
+    let mut writer = FeatureCacheWriter::new(path, num_features)?;
     for game in games {
-        write_result(&mut w, &game.result)?;
-        w.write_all(&(game.states.len() as u32).to_le_bytes())?;
-        for state in &game.states {
-            let player_byte: u8 = match state.current_player {
-                Owner::TopPlayer => 0,
-                Owner::BottomPlayer => 1,
-            };
-            w.write_all(&[player_byte])?;
-            for &val in &state.features {
-                w.write_all(&val.to_le_bytes())?;
-            }
-        }
+        writer.write_game(game)?;
     }
-
-    w.flush()
+    writer.finish()?;
+    Ok(())
 }
 
 /// Load feature cache, returning header info and all games.
@@ -161,7 +145,7 @@ pub fn load_feature_cache(path: &str) -> io::Result<(FeatureCacheHeader, Vec<Cac
     let mut buf8 = [0u8; 8];
 
     for _ in 0..num_games {
-        let result = read_result(&mut cursor)?;
+        let result = serialization::read_result(&mut cursor)?;
         cursor.read_exact(&mut buf4)?;
         let num_states = u32::from_le_bytes(buf4) as usize;
 
@@ -217,26 +201,3 @@ pub fn accumulate_from_cache(games: &[CachedGame], num_features: usize) -> crate
     acc
 }
 
-// --- Helpers ---
-
-fn write_result(w: &mut impl Write, result: &GameResult) -> io::Result<()> {
-    let byte = match result {
-        GameResult::Won(Owner::TopPlayer) => 0u8,
-        GameResult::Won(Owner::BottomPlayer) => 1u8,
-        GameResult::Tie => 2u8,
-        GameResult::Ongoing => 3u8,
-    };
-    w.write_all(&[byte])
-}
-
-fn read_result(r: &mut impl Read) -> io::Result<GameResult> {
-    let mut buf = [0u8; 1];
-    r.read_exact(&mut buf)?;
-    match buf[0] {
-        0 => Ok(GameResult::Won(Owner::TopPlayer)),
-        1 => Ok(GameResult::Won(Owner::BottomPlayer)),
-        2 => Ok(GameResult::Tie),
-        3 => Ok(GameResult::Ongoing),
-        b => Err(io::Error::new(io::ErrorKind::InvalidData, format!("Invalid result byte: {}", b))),
-    }
-}

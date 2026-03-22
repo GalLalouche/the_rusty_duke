@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -40,7 +41,29 @@ impl TileType {
     pub fn is_duke(self) -> bool {
         self == TileType::Duke
     }
+}
 
+impl TryFrom<u8> for TileType {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(TileType::Duke),
+            1 => Ok(TileType::Footman),
+            2 => Ok(TileType::Pikeman),
+            3 => Ok(TileType::Knight),
+            4 => Ok(TileType::Champion),
+            5 => Ok(TileType::Dragoon),
+            6 => Ok(TileType::Wizard),
+            7 => Ok(TileType::General),
+            8 => Ok(TileType::Marshall),
+            9 => Ok(TileType::Assassin),
+            10 => Ok(TileType::Priest),
+            11 => Ok(TileType::Bowman),
+            12 => Ok(TileType::Longbowman),
+            other => Err(other),
+        }
+    }
 }
 
 #[derive(Debug)]

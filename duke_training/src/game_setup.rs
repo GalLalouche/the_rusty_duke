@@ -137,12 +137,29 @@ pub fn play_random_game(gs: &GameState, rng: &mut StdRng) -> (Vec<GameState>, Ga
 /// Play a game using self-play with epsilon-greedy exploration.
 ///
 /// Accepts any `GameEvaluator` (NNUE, heuristic, etc.) for move selection.
+/// Both players use the same evaluator.
 pub fn play_selfplay_game<E: GameEvaluator + ?Sized>(
     gs: &GameState,
     evaluator: &E,
     rng: &mut StdRng,
     epsilon: f64,
 ) -> (Vec<GameState>, GameResult) {
+    play_two_player_game(gs, evaluator, evaluator, rng, epsilon)
+}
+
+/// Play a game with two different evaluators (top_eval vs bottom_eval).
+///
+/// `top_eval` selects moves when it is TopPlayer's turn, `bottom_eval` when BottomPlayer's.
+/// Epsilon-greedy: with probability `epsilon`, a random move is played instead.
+pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Sized>(
+    gs: &GameState,
+    top_eval: &E1,
+    bottom_eval: &E2,
+    rng: &mut StdRng,
+    epsilon: f64,
+) -> (Vec<GameState>, GameResult) {
+    use duke_rust::game::tile::Owner;
+
     let ai = StupidSyncAi {};
     let mut game = gs.clone();
     let mut states = Vec::new();
@@ -151,7 +168,6 @@ pub fn play_selfplay_game<E: GameEvaluator + ?Sized>(
         match game.game_result() {
             GameResult::Ongoing => {
                 if states.len() as u32 >= MAX_TURNS {
-                    eprintln!("WARNING: play_selfplay_game exceeded {} turns, forcing draw", MAX_TURNS);
                     states.push(game.clone());
                     return (states, GameResult::Tie);
                 }
@@ -160,7 +176,11 @@ pub fn play_selfplay_game<E: GameEvaluator + ?Sized>(
                 if rng.gen::<f64>() < epsilon {
                     ai.play_next_move(rng, &mut game);
                 } else {
-                    let mv = greedy_move(&game, evaluator, rng);
+                    let current = game.current_player_turn();
+                    let mv = match current {
+                        Owner::TopPlayer => greedy_move(&game, top_eval, rng),
+                        Owner::BottomPlayer => greedy_move(&game, bottom_eval, rng),
+                    };
                     mv.play(&mut game, rng);
                 }
             }
