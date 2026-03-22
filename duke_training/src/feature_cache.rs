@@ -35,7 +35,67 @@ pub struct FeatureCacheHeader {
     pub num_games: usize,
 }
 
-/// Save extracted features to a binary cache file.
+/// Streaming feature cache writer — crash-safe with periodic sync.
+pub struct FeatureCacheWriter {
+    writer: BufWriter<std::fs::File>,
+    num_features: usize,
+    num_games: u32,
+}
+
+impl FeatureCacheWriter {
+    pub fn new(path: &str, num_features: usize) -> io::Result<Self> {
+        let f = std::fs::File::create(path)?;
+        let mut writer = BufWriter::new(f);
+        writer.write_all(MAGIC)?;
+        writer.write_all(&VERSION.to_le_bytes())?;
+        writer.write_all(&(num_features as u32).to_le_bytes())?;
+        writer.write_all(&0u32.to_le_bytes())?; // placeholder game count
+        Ok(Self { writer, num_features, num_games: 0 })
+    }
+
+    pub fn write_game(&mut self, game: &CachedGame) -> io::Result<()> {
+        write_result(&mut self.writer, &game.result)?;
+        self.writer.write_all(&(game.states.len() as u32).to_le_bytes())?;
+        for state in &game.states {
+            let player_byte: u8 = match state.current_player {
+                Owner::TopPlayer => 0,
+                Owner::BottomPlayer => 1,
+            };
+            self.writer.write_all(&[player_byte])?;
+            for &val in &state.features {
+                self.writer.write_all(&val.to_le_bytes())?;
+            }
+        }
+        self.num_games += 1;
+        Ok(())
+    }
+
+    pub fn sync(&mut self) -> io::Result<()> {
+        use std::io::Seek;
+        self.writer.flush()?;
+        let f = self.writer.get_mut();
+        let pos = f.stream_position()?;
+        // Patch game count at offset 12 (after magic + version + num_features)
+        f.seek(io::SeekFrom::Start(12))?;
+        f.write_all(&self.num_games.to_le_bytes())?;
+        f.flush()?;
+        f.seek(io::SeekFrom::Start(pos))?;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> io::Result<u32> {
+        self.sync()?;
+        Ok(self.num_games)
+    }
+}
+
+impl Drop for FeatureCacheWriter {
+    fn drop(&mut self) {
+        let _ = self.sync();
+    }
+}
+
+/// Save extracted features to a binary cache file (batch, non-streaming).
 pub fn save_feature_cache(
     path: &str,
     num_features: usize,

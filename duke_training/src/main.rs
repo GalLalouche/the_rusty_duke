@@ -13,7 +13,7 @@ use duke_training::game_setup::{
     create_bag, create_initial_state, play_random_game, play_selfplay_game,
     GameEvaluator, StaticHeuristicEvaluator,
 };
-use duke_training::feature_cache::{CachedGame, CachedState, save_feature_cache};
+use duke_training::feature_cache::{CachedGame, CachedState, FeatureCacheWriter};
 use duke_training::learned_heuristic::{extract_features, NUM_FEATURES};
 use duke_training::nnue::NnueEvaluator;
 use duke_training::trajectory_io::TrajectoryWriter;
@@ -168,9 +168,15 @@ fn main() {
         .expect("Failed to create trajectory file");
     println!("Saving trajectories to: {}", trajectory_path);
 
-    // In heuristic mode, also collect features inline (cheap since heuristics are already computed)
+    // In heuristic mode, also stream features to disk (cheap since heuristics are already computed)
     let extract_inline = config.play_mode == PlayMode::Heuristic;
-    let mut cached_games: Vec<CachedGame> = if extract_inline { Vec::new() } else { Vec::new() };
+    let mut feature_writer = if extract_inline {
+        let features_path = format!("{}/features.bin", config.checkpoint_dir);
+        Some(FeatureCacheWriter::new(&features_path, NUM_FEATURES)
+            .expect("Failed to create feature cache file"))
+    } else {
+        None
+    };
 
     let start = Instant::now();
     let mut total_loss = 0.0f32;
@@ -216,7 +222,7 @@ fn main() {
         for traj in &trajectories {
             traj_writer.write_game(&traj.states, &traj.result)
                 .expect("Failed to write trajectory");
-            if extract_inline {
+            if let Some(ref mut fw) = feature_writer {
                 let mut cached_states = Vec::with_capacity(traj.states.len());
                 for state in &traj.states {
                     if state.game_result() != GameResult::Ongoing { continue; }
@@ -225,7 +231,8 @@ fn main() {
                         features: extract_features(state).to_vec(),
                     });
                 }
-                cached_games.push(CachedGame { result: traj.result, states: cached_states });
+                fw.write_game(&CachedGame { result: traj.result, states: cached_states })
+                    .expect("Failed to write features");
             }
             match traj.result {
                 GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
@@ -267,8 +274,11 @@ fn main() {
             let new_weights = export_weights(&trainer.model, config.l1_size, config.l2_size);
             new_weights.save(&nnue_path).expect("Failed to save NNUE weights");
 
-            // Sync trajectory file so it's recoverable on crash
+            // Sync files so they're recoverable on crash
             traj_writer.sync().expect("Failed to sync trajectory file");
+            if let Some(ref mut fw) = feature_writer {
+                fw.sync().expect("Failed to sync feature cache");
+            }
 
             if config.play_mode == PlayMode::SelfPlay {
                 nnue_evaluator = NnueEvaluator::new(new_weights);
@@ -289,13 +299,10 @@ fn main() {
         println!("Final avg loss: {:.6}", total_loss as f64 / config.total_games as f64);
     }
 
-    // Save feature cache if we extracted inline (heuristic mode)
-    if extract_inline {
-        let features_path = format!("{}/features.bin", config.checkpoint_dir);
-        save_feature_cache(&features_path, NUM_FEATURES, &cached_games)
-            .expect("Failed to save feature cache");
-        let n_samples: usize = cached_games.iter().map(|g| g.states.len()).sum();
-        println!("Feature cache saved: {} ({} samples)", features_path, n_samples);
+    // Finalize feature cache if we extracted inline (heuristic mode)
+    if let Some(fw) = feature_writer {
+        let n = fw.finish().expect("Failed to finalize feature cache");
+        println!("Feature cache saved: {} games", n);
     }
     println!("Trajectories saved: {} ({} games)", trajectory_path, traj_count);
 }
