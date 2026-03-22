@@ -13,6 +13,8 @@ use duke_training::game_setup::{
     create_bag, create_initial_state, play_random_game, play_selfplay_game,
     GameEvaluator, StaticHeuristicEvaluator,
 };
+use duke_training::feature_cache::{CachedGame, CachedState, save_feature_cache};
+use duke_training::learned_heuristic::{extract_features, NUM_FEATURES};
 use duke_training::nnue::NnueEvaluator;
 use duke_training::trajectory_io::TrajectoryWriter;
 use duke_training::weight_export::export_weights;
@@ -166,6 +168,10 @@ fn main() {
         .expect("Failed to create trajectory file");
     println!("Saving trajectories to: {}", trajectory_path);
 
+    // In heuristic mode, also collect features inline (cheap since heuristics are already computed)
+    let extract_inline = config.play_mode == PlayMode::Heuristic;
+    let mut cached_games: Vec<CachedGame> = if extract_inline { Vec::new() } else { Vec::new() };
+
     let start = Instant::now();
     let mut total_loss = 0.0f32;
     let mut recent_loss = 0.0f32;
@@ -206,10 +212,21 @@ fn main() {
         total_loss += loss * batch_size as f32;
         recent_loss += loss * batch_size as f32;
 
-        // Save to disk and update stats
+        // Save to disk, extract features if heuristic mode, update stats
         for traj in &trajectories {
             traj_writer.write_game(&traj.states, &traj.result)
                 .expect("Failed to write trajectory");
+            if extract_inline {
+                let mut cached_states = Vec::with_capacity(traj.states.len());
+                for state in &traj.states {
+                    if state.game_result() != GameResult::Ongoing { continue; }
+                    cached_states.push(CachedState {
+                        current_player: state.current_player_turn(),
+                        features: extract_features(state).to_vec(),
+                    });
+                }
+                cached_games.push(CachedGame { result: traj.result, states: cached_states });
+            }
             match traj.result {
                 GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
                 GameResult::Won(duke_rust::game::tile::Owner::BottomPlayer) => wins[1] += 1,
@@ -272,6 +289,13 @@ fn main() {
         println!("Final avg loss: {:.6}", total_loss as f64 / config.total_games as f64);
     }
 
-    // Feature extraction and regression are now separate steps via extract_features binary
+    // Save feature cache if we extracted inline (heuristic mode)
+    if extract_inline {
+        let features_path = format!("{}/features.bin", config.checkpoint_dir);
+        save_feature_cache(&features_path, NUM_FEATURES, &cached_games)
+            .expect("Failed to save feature cache");
+        let n_samples: usize = cached_games.iter().map(|g| g.states.len()).sum();
+        println!("Feature cache saved: {} ({} samples)", features_path, n_samples);
+    }
     println!("Trajectories saved: {} ({} games)", trajectory_path, traj_count);
 }
