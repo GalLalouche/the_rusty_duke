@@ -13,7 +13,6 @@ use duke_training::game_setup::{
     create_bag, create_initial_state, play_random_game, play_selfplay_game,
     GameEvaluator, StaticHeuristicEvaluator,
 };
-use duke_training::learned_heuristic::RegressionAccumulator;
 use duke_training::nnue::NnueEvaluator;
 use duke_training::trajectory_io::TrajectoryWriter;
 use duke_training::weight_export::export_weights;
@@ -160,9 +159,6 @@ fn main() {
         }
     }
 
-    // Accumulate data for learned heuristic regression (free — no extra games needed)
-    let mut regression_acc = RegressionAccumulator::new();
-
     // Save game trajectories to disk for offline replay
     let trajectory_path = format!("{}/trajectories.dtrj", config.checkpoint_dir);
     std::fs::create_dir_all(&config.checkpoint_dir).expect("Failed to create checkpoints dir");
@@ -210,9 +206,8 @@ fn main() {
         total_loss += loss * batch_size as f32;
         recent_loss += loss * batch_size as f32;
 
-        // Accumulate regression, save to disk, and update stats in one pass
+        // Save to disk and update stats
         for traj in &trajectories {
-            regression_acc.add_game(&traj.states, &traj.result);
             traj_writer.write_game(&traj.states, &traj.result)
                 .expect("Failed to write trajectory");
             match traj.result {
@@ -277,15 +272,6 @@ fn main() {
         println!("Final avg loss: {:.6}", total_loss as f64 / config.total_games as f64);
     }
 
-    // Save regression accumulator (X'X + X'y) for instant lambda sweeps later
-    let reg_path = format!("{}/regression.bin", config.checkpoint_dir);
-    regression_acc.save(&reg_path).expect("Failed to save regression accumulator");
-    println!("Regression accumulator saved: {} ({} samples)", reg_path, regression_acc.n_samples());
-
-    // Solve and save learned heuristic weights (free regression from the same games)
-    let learned_weights = regression_acc.solve();
-    let lr_path = format!("{}/learned_heuristic.json", config.checkpoint_dir);
-    learned_weights.save(&lr_path).expect("Failed to save learned heuristic weights");
-    println!("Learned heuristic saved: {} ({} samples)", lr_path, regression_acc.n_samples());
+    // Feature extraction and regression are now separate steps via extract_features binary
     println!("Trajectories saved: {} ({} games)", trajectory_path, traj_count);
 }
