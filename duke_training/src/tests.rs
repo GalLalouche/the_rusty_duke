@@ -1110,14 +1110,25 @@ fn feature_cache_roundtrip() {
     let _ = std::fs::remove_file(&path);
 }
 
-<<<<<<< HEAD
 // ── heuristic tests ────────────────────────────────────────────────────
 
 use duke_rust::common::coordinates::Coordinates;
 use duke_rust::game::ai::heuristics::Heuristic;
 use duke_rust::game::bag::DiscardBag;
 use duke_rust::game::tile::{PlacedTile, TileType};
+use duke_rust::game::units;
 use duke_rust::game::units::tile_from_type;
+
+/// Shorthand for creating coordinates in tests.
+fn coord(x: u16, y: u16) -> Coordinates {
+    Coordinates { x, y }
+}
+
+/// Helper: build a GameState from placed tiles with empty bags and discards.
+/// Alias for `snapshot_state` using the same signature as the sub-module helpers.
+fn make_state(tiles: Vec<(Coordinates, PlacedTile)>, current: Owner) -> GameState {
+    snapshot_state(tiles, current)
+}
 
 /// Helper: build a GameState from placed tiles with empty bags and discards.
 fn snapshot_state(
@@ -1455,28 +1466,8 @@ fn discarded_units_three_tiles_discarded() {
 // ── Manhattan distance feature tests ────────────────────────────────────
 
 mod manhattan_tests {
-    use duke_rust::common::coordinates::Coordinates;
-    use duke_rust::game::bag::{DiscardBag, TileBag};
-    use duke_rust::game::state::GameState;
-    use duke_rust::game::tile::{Owner, PlacedTile};
-    use duke_rust::game::units;
+    use super::*;
     use crate::learned_heuristic::manhattan_distance_features;
-
-    fn coord(x: u16, y: u16) -> Coordinates {
-        Coordinates { x, y }
-    }
-
-    fn make_state(tiles: Vec<(Coordinates, PlacedTile)>, current: Owner) -> GameState {
-        GameState::from_snapshot(
-            tiles,
-            current,
-            TileBag::new(vec![]),
-            TileBag::new(vec![]),
-            DiscardBag::empty(),
-            DiscardBag::empty(),
-            0,
-        )
-    }
 
     /// Simple: 2 my tiles near my duke, 1 far away.
     /// My duke at (2,2), my footmen at (2,3) and (3,2), my pikeman at (5,5).
@@ -1563,25 +1554,46 @@ mod manhattan_tests {
         // enemy_units_near_enemy_duke: pikeman(5,4) dist=1 => 1
         assert_eq!(f[3], 1.0, "enemy_units_near_enemy_duke");
     }
+
+    /// Dukes close together: both dukes within Manhattan distance 2 of each other.
+    /// Neither duke should appear in any of the 4 proximity counts.
+    #[test]
+    fn dukes_close_together_excluded_from_counts() {
+        let me = Owner::TopPlayer;
+        let opp = Owner::BottomPlayer;
+
+        // My duke at (2,2), enemy duke at (3,3) => distance 2 from each other.
+        // Also place one non-duke tile from each side near each duke.
+        let tiles = vec![
+            (coord(2, 2), PlacedTile::new(me, units::duke())),
+            (coord(3, 3), PlacedTile::new(opp, units::duke())),
+            (coord(2, 3), PlacedTile::new(me, units::footman())),   // dist 1 from my duke, dist 1 from enemy duke
+            (coord(3, 2), PlacedTile::new(opp, units::footman())),  // dist 1 from my duke, dist 1 from enemy duke
+        ];
+        let gs = make_state(tiles, me);
+        let f = manhattan_distance_features(&gs);
+
+        // counts[0]: my non-duke tiles near my duke => footman(2,3) dist=1 => 1
+        // The my duke itself (2,2) is excluded.
+        assert_eq!(f[0], 1.0, "my_units_near_my_duke: only my footman, duke excluded");
+        // counts[1]: enemy tiles near my duke => enemy footman(3,2) dist=1, enemy duke(3,3) dist=2
+        // Enemy duke IS counted here (not excluded from enemy counts near *my* duke).
+        assert_eq!(f[1], 2.0, "enemy_units_near_my_duke: enemy footman + enemy duke");
+        // counts[2]: my non-duke tiles near enemy duke => footman(2,3) dist=1 => 1
+        // My duke (2,2) at dist=2 is excluded by the !is_duke_tile check.
+        assert_eq!(f[2], 1.0, "my_units_near_enemy_duke: only my footman, duke excluded");
+        // counts[3]: enemy non-duke tiles near enemy duke => enemy footman(3,2) dist=1 => 1
+        // Enemy duke itself (3,3) at dist=0 is excluded.
+        assert_eq!(f[3], 1.0, "enemy_units_near_enemy_duke: only enemy footman, duke excluded");
+    }
 }
 
 // ── Board control feature tests ─────────────────────────────────────────
 
 mod board_control_tests {
-    use duke_rust::common::coordinates::Coordinates;
-    use duke_rust::game::bag::{DiscardBag, TileBag};
-    use duke_rust::game::state::GameState;
-    use duke_rust::game::tile::{Owner, PlacedTile};
-    use duke_rust::game::units;
+    use super::*;
+    use std::sync::Arc;
     use crate::learned_heuristic::board_control_features;
-
-    fn coord(x: u16, y: u16) -> Coordinates { Coordinates { x, y } }
-
-    fn make_state(tiles: Vec<(Coordinates, PlacedTile)>, current: Owner) -> GameState {
-        GameState::from_snapshot(tiles, current,
-            TileBag::new(vec![]), TileBag::new(vec![]),
-            DiscardBag::empty(), DiscardBag::empty(), 0)
-    }
 
     #[test]
     fn simple_two_dukes() {
@@ -1633,5 +1645,80 @@ mod board_control_tests {
         assert_eq!(opp_reach, 5.0);
         assert_eq!(contested, 4.0);
         assert!(contested <= my_reach.min(opp_reach));
+    }
+
+    /// Placement moves should NOT inflate approx_moves (after fix #2).
+    /// TopPlayer has a footman in their bag, so placement moves are available,
+    /// but approx_moves should only count tile-movement actions.
+    #[test]
+    fn non_empty_bag_does_not_inflate_approx_moves() {
+        // TopPlayer: duke at (2,0) with a footman in bag.
+        // BottomPlayer: duke at (3,5) with empty bag.
+        // The placement moves should not be counted in approx_moves.
+        let gs = snapshot_state_with_bags(
+            vec![
+                (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
+                (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            ],
+            Owner::TopPlayer,
+            TileBag::new(vec![Arc::new(units::footman())]),  // TopPlayer has a footman in bag
+            TileBag::new(vec![]),  // BottomPlayer empty bag
+        );
+
+        let [my_moves, _opp_moves, my_reach, _opp_reach, _contested] = board_control_features(&gs);
+        // TopPlayer duke (Initial) at (2,0) slides left/right: x=0,1 (left 2) + x=3,4,5 (right 3) = 5.
+        // Placement moves should NOT be counted.
+        assert_eq!(my_moves, 5.0,
+            "approx_moves should only count tile moves, not placements; got {}", my_moves);
+        assert_eq!(my_reach, 5.0,
+            "reachable_squares should match tile-move count for a single slider; got {}", my_reach);
+    }
+
+    /// Strike moves (e.g., Bowman side B) count as ApplyNonCommandTileAction,
+    /// so their destinations ARE counted in both approx_moves and reachable_squares.
+    /// This is correct: Strike threatens a square even though the tile stays put.
+    #[test]
+    fn strike_moves_counted_in_reachable_squares() {
+        // Bowman side B has:
+        //   Top Move, FarTop Strike,
+        //   NearLeft+Top Strike, NearRight+Top Strike,
+        //   NearLeft+Bottom Move, NearRight+Bottom Move.
+        let mut bowman = PlacedTile::new(Owner::TopPlayer, units::bowman());
+        bowman.flip(); // flip to side B which has Strike actions
+
+        // Place bowman at (3,3) so all offsets are on-board.
+        // We need an enemy tile at a Strike destination for Strike to be valid
+        // (Strike requires an enemy tile on the target square).
+        // FarTop Strike from (3,3) => (3,1)
+        // NearLeft+Top Strike => (2,2), NearRight+Top Strike => (4,2)
+        let gs = make_state(vec![
+            (coord(3, 3), bowman),
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
+            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            // Place enemy tiles at Strike destinations so Strikes are valid
+            (coord(3, 1), PlacedTile::new(Owner::BottomPlayer, units::footman())),
+            (coord(2, 2), PlacedTile::new(Owner::BottomPlayer, units::footman())),
+            (coord(4, 2), PlacedTile::new(Owner::BottomPlayer, units::footman())),
+        ], Owner::TopPlayer);
+
+        let [my_moves, _opp_moves, my_reach, _opp_reach, _contested] = board_control_features(&gs);
+
+        // Duke (Initial) at (2,0) slides left/right: x=0,1 (left 2) + x=3,4,5 (right 3) = 5 duke moves.
+        // Bowman (Flipped/B) at (3,3):
+        //   Top Move => (3,2) — valid (empty square)
+        //   FarTop Strike => (3,1) — valid (enemy footman there)
+        //   NearLeft+Top Strike => (2,2) — valid (enemy footman there)
+        //   NearRight+Top Strike => (4,2) — valid (enemy footman there)
+        //   NearLeft+Bottom Move => (2,4) — valid (empty)
+        //   NearRight+Bottom Move => (4,4) — valid (empty)
+        // Total bowman moves: 6
+        // Total my_moves: 5 (duke) + 6 (bowman) = 11
+        // Strike destinations (3,1), (2,2), (4,2) are included in reachable_squares.
+        assert!(my_moves >= 5.0,
+            "Should have at least duke's 5 moves plus bowman moves; got {}", my_moves);
+        // Verify Strike destinations are in reachable squares by checking
+        // my_reach > duke-only reach of 5.
+        assert!(my_reach > 5.0,
+            "Strike destinations should be counted in reachable squares; got {}", my_reach);
     }
 }

@@ -205,8 +205,8 @@ pub fn manhattan_distance_features(gs: &GameState) -> [f64; 4] {
         }
 
         if dist_en <= 2 {
-            if is_mine {
-                counts[2] += 1.0; // my tile near enemy duke
+            if is_mine && !is_duke_tile {
+                counts[2] += 1.0; // my non-duke near enemy duke
             } else if !is_mine && !is_duke_tile {
                 counts[3] += 1.0; // enemy non-duke near enemy duke
             }
@@ -214,6 +214,62 @@ pub fn manhattan_distance_features(gs: &GameState) -> [f64; 4] {
     }
 
     counts
+}
+
+/// Number of cheap features (no move generation, no guard checking).
+pub const NUM_CHEAP_FEATURES: usize = 15;
+
+/// Extract only cheap features — O(tiles), no move generation or guard checking.
+///
+/// Returns 15 features:
+///  [0] my_tile_count
+///  [1] opp_tile_count
+///  [2] my_bag_size
+///  [3] opp_bag_size
+///  [4] my_discard_count
+///  [5] opp_discard_count
+///  [6] my_adjacency (orthogonal adjacent own-tile pairs)
+///  [7] opp_adjacency
+///  [8] my_center_control (tiles in center 4 squares)
+///  [9] opp_center_control
+/// [10] my_units_near_my_duke (Manhattan dist <= 2, excl duke)
+/// [11] enemy_units_near_my_duke
+/// [12] my_units_near_enemy_duke (excl duke)
+/// [13] enemy_units_near_enemy_duke (excl duke)
+/// [14] bias (always 1.0)
+pub fn extract_cheap_features(gs: &GameState) -> [f64; NUM_CHEAP_FEATURES] {
+    let me = gs.current_player_turn();
+    let opp = me.next_player();
+
+    let my_tiles = gs.get_tiles_for_owner(me);
+    let opp_tiles = gs.get_tiles_for_owner(opp);
+
+    let my_tile_count = my_tiles.len() as f64;
+    let opp_tile_count = opp_tiles.len() as f64;
+
+    let my_bag = gs.bag_for_owner(me).remaining().len() as f64;
+    let opp_bag = gs.bag_for_owner(opp).remaining().len() as f64;
+
+    let my_discard = gs.discard_bag_for(me).len() as f64;
+    let opp_discard = gs.discard_bag_for(opp).len() as f64;
+
+    let my_adj = count_adjacent_pairs_from(&my_tiles) as f64;
+    let opp_adj = count_adjacent_pairs_from(&opp_tiles) as f64;
+
+    let my_center = count_center_tiles_from(&my_tiles) as f64;
+    let opp_center = count_center_tiles_from(&opp_tiles) as f64;
+
+    let manhattan = manhattan_distance_features(gs);
+
+    [
+        my_tile_count, opp_tile_count,
+        my_bag, opp_bag,
+        my_discard, opp_discard,
+        my_adj, opp_adj,
+        my_center, opp_center,
+        manhattan[0], manhattan[1], manhattan[2], manhattan[3],
+        1.0, // bias
+    ]
 }
 
 /// Compute approx move counts and board control features in one pass.
@@ -229,10 +285,12 @@ pub fn board_control_features(gs: &GameState) -> [f64; 5] {
     let mut my_reach = [false; 36];
     let mut opp_reach = [false; 36];
 
+    // Only count tile-movement moves (not placements) so that approx_moves
+    // is consistent with reachable_squares — both measure on-board tile actions.
     let mut my_approx_moves = 0u32;
     for pm in gs.all_valid_game_moves_for_ignoring_guard(owner) {
-        my_approx_moves += 1;
         if let PossibleMove::ApplyNonCommandTileAction { dst, .. } = &pm {
+            my_approx_moves += 1;
             let idx = dst.y as usize * 6 + dst.x as usize;
             my_reach[idx] = true;
         }
@@ -240,8 +298,8 @@ pub fn board_control_features(gs: &GameState) -> [f64; 5] {
 
     let mut opp_approx_moves = 0u32;
     for pm in gs.all_valid_game_moves_for_ignoring_guard(opp) {
-        opp_approx_moves += 1;
         if let PossibleMove::ApplyNonCommandTileAction { dst, .. } = &pm {
+            opp_approx_moves += 1;
             let idx = dst.y as usize * 6 + dst.x as usize;
             opp_reach[idx] = true;
         }
