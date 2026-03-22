@@ -216,6 +216,85 @@ pub fn manhattan_distance_features(gs: &GameState) -> [f64; 4] {
     counts
 }
 
+/// Per-tile-type discard counts for both players.
+/// Returns 26 values: [my_duke_discards, my_footman_discards, ..., opp_duke_discards, opp_footman_discards, ...]
+/// 13 tile types × 2 players.
+pub fn discard_vector(gs: &GameState) -> [f64; 26] {
+    use strum::EnumCount;
+    let me = gs.current_player_turn();
+    let opp = me.next_player();
+
+    let mut counts = [0.0f64; 26];
+
+    for tile in gs.discard_bag_for(me).existing() {
+        counts[tile.tile_type().index()] += 1.0;
+    }
+    for tile in gs.discard_bag_for(opp).existing() {
+        counts[13 + tile.tile_type().index()] += 1.0;
+    }
+
+    counts
+}
+
+/// Duke mobility (ignoring guard) for both players.
+/// Returns [my_duke_mobility, opp_duke_mobility].
+pub fn duke_mobility_no_guard(gs: &GameState) -> [f64; 2] {
+    let me = gs.current_player_turn();
+    let opp = me.next_player();
+    [
+        Heuristics::DukeMovementOptions.approx_evaluate_for_owner(me, gs),
+        Heuristics::DukeMovementOptions.approx_evaluate_for_owner(opp, gs),
+    ]
+}
+
+/// Total feature count for the new combined feature set.
+/// Manhattan(4) + board_control(9) + duke_mobility(2) + discard_vector(26) = 41
+pub const NUM_COMBINED_FEATURES: usize = 41;
+
+/// Extract the combined feature set: all new features, per-player, no guard checking.
+pub fn extract_combined_features(gs: &GameState) -> [f64; NUM_COMBINED_FEATURES] {
+    let manhattan = manhattan_distance_features(gs);
+    let control = board_control_features(gs);
+    let duke_mob = duke_mobility_no_guard(gs);
+    let discards = discard_vector(gs);
+
+    let mut f = [0.0f64; NUM_COMBINED_FEATURES];
+    f[0..4].copy_from_slice(&manhattan);
+    f[4..13].copy_from_slice(&control);
+    f[13..15].copy_from_slice(&duke_mob);
+    f[15..41].copy_from_slice(&discards);
+    f
+}
+
+/// Learned weight vector for the combined 41-feature set.
+#[derive(Debug, Clone)]
+pub struct CombinedWeights {
+    pub weights: [f64; NUM_COMBINED_FEATURES],
+}
+
+impl Default for CombinedWeights {
+    fn default() -> Self {
+        Self { weights: [0.0; NUM_COMBINED_FEATURES] }
+    }
+}
+
+impl CombinedWeights {
+    pub fn evaluate_raw(&self, gs: &GameState) -> f64 {
+        let features = extract_combined_features(gs);
+        let mut score = 0.0;
+        for i in 0..NUM_COMBINED_FEATURES {
+            score += self.weights[i] * features[i];
+        }
+        score
+    }
+}
+
+impl GameEvaluator for CombinedWeights {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        self.evaluate_raw(gs) as f32
+    }
+}
+
 /// Number of cheap features (no move generation, no guard checking).
 pub const NUM_CHEAP_FEATURES: usize = 15;
 
@@ -273,12 +352,21 @@ pub fn extract_cheap_features(gs: &GameState) -> [f64; NUM_CHEAP_FEATURES] {
 }
 
 /// Compute approx move counts and board control features in one pass.
-/// Returns: [my_approx_moves, opp_approx_moves, my_reachable_squares, opp_reachable_squares, contested_squares]
+/// Returns 9 values:
+///   [0] my_approx_moves
+///   [1] opp_approx_moves
+///   [2] my_reachable_squares
+///   [3] opp_reachable_squares
+///   [4] contested_squares
+///   [5] my_defended   — how many of my tiles sit on squares I can reach
+///   [6] my_threatened — how many enemy tiles sit on squares I can reach
+///   [7] opp_defended  — how many of opponent's tiles sit on squares opponent can reach
+///   [8] opp_threatened — how many of my tiles sit on squares opponent can reach
 ///
 /// Moves are computed while ignoring the guard constraint (the expensive part),
 /// making this a cheap approximation. Only tile-move destinations (not placements)
 /// contribute to the reachable-squares arrays.
-pub fn board_control_features(gs: &GameState) -> [f64; 5] {
+pub fn board_control_features(gs: &GameState) -> [f64; 9] {
     let owner = gs.current_player_turn();
     let opp = owner.next_player();
 
@@ -320,12 +408,41 @@ pub fn board_control_features(gs: &GameState) -> [f64; 5] {
         }
     }
 
+    // Defended/threatened: iterate over all tiles on the board
+    let mut my_defended = 0u32;
+    let mut my_threatened = 0u32;
+    let mut opp_defended = 0u32;
+    let mut opp_threatened = 0u32;
+    for (coords, tile) in gs.board().active_coordinates() {
+        let idx = coords.y as usize * 6 + coords.x as usize;
+        let is_mine = tile.owner == owner;
+        if is_mine {
+            if my_reach[idx] {
+                my_defended += 1;
+            }
+            if opp_reach[idx] {
+                opp_threatened += 1;
+            }
+        } else {
+            if my_reach[idx] {
+                my_threatened += 1;
+            }
+            if opp_reach[idx] {
+                opp_defended += 1;
+            }
+        }
+    }
+
     [
         my_approx_moves as f64,
         opp_approx_moves as f64,
         my_reachable as f64,
         opp_reachable as f64,
         contested as f64,
+        my_defended as f64,
+        my_threatened as f64,
+        opp_defended as f64,
+        opp_threatened as f64,
     ]
 }
 
