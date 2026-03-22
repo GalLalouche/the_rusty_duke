@@ -1110,6 +1110,7 @@ fn feature_cache_roundtrip() {
     let _ = std::fs::remove_file(&path);
 }
 
+<<<<<<< HEAD
 // ── heuristic tests ────────────────────────────────────────────────────
 
 use duke_rust::common::coordinates::Coordinates;
