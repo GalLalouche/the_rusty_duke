@@ -10,9 +10,10 @@
 //! 5. Update: w += lr / (N * sigma) * sum((reward_plus_i - reward_minus_i) * epsilon_i)
 //!
 //! Usage: es_train [--resume <nnue_path>] [--l1 256] [--l2 32]
+//!                 [--layers 64,64,32]  — configurable hidden layer sizes
 //!                 [--pop 50] [--games 10] [--sigma 0.01] [--lr 0.01]
 //!                 [--iterations 200] [--eval-interval 20] [--eval-games 500]
-//!                 [--checkpoint-dir <dir>]
+//!                 [--checkpoint-dir <dir>] [--time-limit 3600]
 //!                 [--append-combined]  — use 1147-input network (1106 NNUE + 41 combined)
 //!                 [--input-features combined]  — use 41 combined features only
 
@@ -111,61 +112,207 @@ fn last_layer_count(l2_size: usize) -> usize {
 /// Total input size: 1106 NNUE features + 41 combined features = 1147
 const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES; // 1147
 
-/// Weight count for an appended-input network: input_size->l1->l2->1
-fn appended_weight_count(l1_size: usize, l2_size: usize) -> usize {
-    APPENDED_INPUT_SIZE * l1_size + l1_size   // L1 weight + bias
-        + l2_size * l1_size + l2_size         // L2 weight + bias
-        + l2_size + 1                         // L3 weight + bias
-}
+// Old AppendedNnueEvaluator code removed; appended mode now uses GenericMlp via run_generic_sparse_training.
 
-/// Evaluator for the 1147-input network. Stores flattened weights.
-/// Layout: [l1_weight (1147*l1), l1_bias (l1), l2_weight (l2*l1), l2_bias (l2), l3_weight (l2), l3_bias (1)]
-struct AppendedNnueEvaluator {
+
+// ── Generic MLP network (N hidden layers) ────────────────────────────────
+// A self-contained input->H1->H2->...->Hn->1 network with ReLU hidden layers
+// and sigmoid output. Operates entirely on Vec<f32>.
+
+/// Generic MLP weight container supporting arbitrary hidden layer depths.
+struct GenericMlp {
+    input_size: usize,
+    /// Hidden layer sizes, e.g. [64, 64, 32] for 3 hidden layers
+    hidden_layers: Vec<usize>,
+    /// Flat weight vector: [h1_w, h1_b, h2_w, h2_b, ..., out_w, out_b]
     weights: Vec<f32>,
-    l1_size: usize,
-    l2_size: usize,
 }
 
-impl AppendedNnueEvaluator {
-    fn new(weights: Vec<f32>, l1_size: usize, l2_size: usize) -> Self {
-        assert_eq!(weights.len(), appended_weight_count(l1_size, l2_size),
-            "weight vector length mismatch: expected {}, got {}",
-            appended_weight_count(l1_size, l2_size), weights.len());
-        Self { weights, l1_size, l2_size }
+impl GenericMlp {
+    /// Compute total parameter count for input_size -> hidden_layers -> 1.
+    fn param_count(input_size: usize, hidden_layers: &[usize]) -> usize {
+        assert!(!hidden_layers.is_empty(), "Need at least one hidden layer");
+        let mut count = 0;
+        let mut prev = input_size;
+        for &h in hidden_layers {
+            count += prev * h + h; // weight + bias
+            prev = h;
+        }
+        count += prev + 1; // output weight + bias
+        count
     }
 
-    /// Forward pass: computes features and evaluates in one step.
-    /// Uses stack arrays to avoid heap allocation in the hot path.
-    fn evaluate_state(&self, gs: &GameState) -> f32 {
-        let l1 = self.l1_size;
-        let l2 = self.l2_size;
+    fn from_flat(flat: Vec<f32>, input_size: usize, hidden_layers: Vec<usize>) -> Self {
+        let expected = Self::param_count(input_size, &hidden_layers);
+        assert_eq!(
+            flat.len(), expected,
+            "flat weight vector size mismatch: expected {}, got {}",
+            expected, flat.len()
+        );
+        Self { input_size, hidden_layers, weights: flat }
+    }
+
+    fn random(input_size: usize, hidden_layers: Vec<usize>, rng: &mut StdRng) -> Self {
+        let n = Self::param_count(input_size, &hidden_layers);
+        let mut flat = Vec::with_capacity(n);
+
+        let mut prev = input_size;
+        for &h in &hidden_layers {
+            // Kaiming init: scale = sqrt(2 / fan_in)
+            let scale = (2.0 / prev as f64).sqrt() as f32;
+            for _ in 0..(prev * h) {
+                flat.push(rng.gen::<f32>() * 2.0 * scale - scale);
+            }
+            // Bias = 0
+            for _ in 0..h { flat.push(0.0); }
+            prev = h;
+        }
+
+        // Output layer weights: fan_in = last hidden
+        let scale_out = (2.0 / prev as f64).sqrt() as f32;
+        for _ in 0..prev {
+            flat.push(rng.gen::<f32>() * 2.0 * scale_out - scale_out);
+        }
+        // Output bias
+        flat.push(0.0);
+
+        assert_eq!(flat.len(), n);
+        Self { input_size, hidden_layers, weights: flat }
+    }
+
+    /// Forward pass with f64 input (for combined features): input -> H1(ReLU) -> ... -> sigmoid
+    fn forward_f64(&self, input: &[f64]) -> f32 {
+        assert_eq!(input.len(), self.input_size);
         let w = &self.weights;
+        let mut off = 0;
 
-        // Compute weight offsets
-        let l1_weight_end = APPENDED_INPUT_SIZE * l1;
-        let l1_bias_end = l1_weight_end + l1;
-        let l2_weight_end = l1_bias_end + l2 * l1;
-        let l2_bias_end = l2_weight_end + l2;
-        let l3_weight_end = l2_bias_end + l2;
+        // First hidden layer: f64 input -> f32
+        let h_size = self.hidden_layers[0];
+        let hw = &w[off..off + self.input_size * h_size];
+        off += self.input_size * h_size;
+        let hb = &w[off..off + h_size];
+        off += h_size;
 
-        let l1_weight = &w[..l1_weight_end];
-        let l1_bias = &w[l1_weight_end..l1_bias_end];
-        let l2_weight = &w[l1_bias_end..l2_weight_end];
-        let l2_bias = &w[l2_weight_end..l2_bias_end];
-        let l3_weight = &w[l2_bias_end..l3_weight_end];
-        let l3_bias = w[l3_weight_end];
+        let mut prev_act = vec![0.0f32; h_size];
+        for j in 0..h_size {
+            let mut sum = hb[j];
+            for i in 0..self.input_size {
+                sum += hw[i * h_size + j] * input[i] as f32;
+            }
+            prev_act[j] = sum.max(0.0); // ReLU
+        }
 
-        // L1: start with bias, accumulate sparse board features
-        assert!(l1 <= 1024);
-        let mut l1_out = [0.0f32; 1024];
-        l1_out[..l1].copy_from_slice(l1_bias);
+        // Subsequent hidden layers: f32 -> f32
+        for layer_idx in 1..self.hidden_layers.len() {
+            let prev_size = self.hidden_layers[layer_idx - 1];
+            let cur_size = self.hidden_layers[layer_idx];
+            let lw = &w[off..off + prev_size * cur_size];
+            off += prev_size * cur_size;
+            let lb = &w[off..off + cur_size];
+            off += cur_size;
 
-        // Sparse board features (binary, indices into first 1080 dimensions)
+            let mut cur_act = vec![0.0f32; cur_size];
+            for j in 0..cur_size {
+                let mut sum = lb[j];
+                for i in 0..prev_size {
+                    sum += lw[i * cur_size + j] * prev_act[i];
+                }
+                cur_act[j] = sum.max(0.0); // ReLU
+            }
+            prev_act = cur_act;
+        }
+
+        // Output layer: last_hidden -> 1, sigmoid
+        let last_h = *self.hidden_layers.last().unwrap();
+        let out_w = &w[off..off + last_h];
+        off += last_h;
+        let out_b = w[off];
+
+        let mut logit = out_b;
+        for i in 0..last_h {
+            logit += out_w[i] * prev_act[i];
+        }
+
+        1.0 / (1.0 + (-logit).exp())
+    }
+
+    /// Forward pass with f32 input: input -> H1(ReLU) -> ... -> sigmoid
+    fn forward_f32(&self, input: &[f32]) -> f32 {
+        assert_eq!(input.len(), self.input_size);
+        let w = &self.weights;
+        let mut off = 0;
+
+        // First hidden layer
+        let h_size = self.hidden_layers[0];
+        let hw = &w[off..off + self.input_size * h_size];
+        off += self.input_size * h_size;
+        let hb = &w[off..off + h_size];
+        off += h_size;
+
+        let mut prev_act = vec![0.0f32; h_size];
+        for j in 0..h_size {
+            let mut sum = hb[j];
+            for i in 0..self.input_size {
+                sum += hw[i * h_size + j] * input[i];
+            }
+            prev_act[j] = sum.max(0.0);
+        }
+
+        // Subsequent hidden layers
+        for layer_idx in 1..self.hidden_layers.len() {
+            let prev_size = self.hidden_layers[layer_idx - 1];
+            let cur_size = self.hidden_layers[layer_idx];
+            let lw = &w[off..off + prev_size * cur_size];
+            off += prev_size * cur_size;
+            let lb = &w[off..off + cur_size];
+            off += cur_size;
+
+            let mut cur_act = vec![0.0f32; cur_size];
+            for j in 0..cur_size {
+                let mut sum = lb[j];
+                for i in 0..prev_size {
+                    sum += lw[i * cur_size + j] * prev_act[i];
+                }
+                cur_act[j] = sum.max(0.0);
+            }
+            prev_act = cur_act;
+        }
+
+        // Output layer
+        let last_h = *self.hidden_layers.last().unwrap();
+        let out_w = &w[off..off + last_h];
+        off += last_h;
+        let out_b = w[off];
+
+        let mut logit = out_b;
+        for i in 0..last_h {
+            logit += out_w[i] * prev_act[i];
+        }
+
+        1.0 / (1.0 + (-logit).exp())
+    }
+
+    /// Forward pass optimized for sparse NNUE-style inputs (1106 or 1147 dims).
+    /// Uses active_board_features for sparse binary features,
+    /// bag_features for dense bag dims, and optionally combined features.
+    fn forward_sparse(&self, gs: &GameState, include_combined: bool) -> f32 {
+        let w = &self.weights;
+        let h1 = self.hidden_layers[0];
+
+        // L1: sparse accumulation
+        let l1_w = &w[0..self.input_size * h1];
+        let l1_b = &w[self.input_size * h1..self.input_size * h1 + h1];
+        let mut off = self.input_size * h1 + h1;
+
+        let mut prev_act = vec![0.0f32; h1];
+        prev_act.copy_from_slice(l1_b);
+
+        // Sparse board features (binary)
         let board_feats = active_board_features(gs);
         for &feat in board_feats.as_slice() {
-            let col = &l1_weight[feat * l1..(feat + 1) * l1];
-            for j in 0..l1 {
-                l1_out[j] += col[j];
+            let col = &l1_w[feat * h1..(feat + 1) * h1];
+            for j in 0..h1 {
+                prev_act[j] += col[j];
             }
         }
 
@@ -174,436 +321,94 @@ impl AppendedNnueEvaluator {
         for (i, &val) in bag.iter().enumerate() {
             if val != 0.0 {
                 let feat = BOARD_FEATURES + i;
-                let col = &l1_weight[feat * l1..(feat + 1) * l1];
-                for j in 0..l1 {
-                    l1_out[j] += col[j] * val;
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                for j in 0..h1 {
+                    prev_act[j] += col[j] * val;
                 }
             }
         }
 
-        // Combined features (dense, dimensions 1106..1147)
-        let combined = extract_combined_features(gs);
-        for (i, &val) in combined.iter().enumerate() {
-            let fval = val as f32;
-            if fval != 0.0 {
-                let feat = TOTAL_FEATURES + i;
-                let col = &l1_weight[feat * l1..(feat + 1) * l1];
-                if fval == 1.0 {
-                    for j in 0..l1 {
-                        l1_out[j] += col[j];
-                    }
-                } else {
-                    for j in 0..l1 {
-                        l1_out[j] += col[j] * fval;
+        // Combined features (if appended mode, dimensions 1106..1147)
+        if include_combined {
+            let combined = extract_combined_features(gs);
+            for (i, &val) in combined.iter().enumerate() {
+                let fval = val as f32;
+                if fval != 0.0 {
+                    let feat = TOTAL_FEATURES + i;
+                    let col = &l1_w[feat * h1..(feat + 1) * h1];
+                    if fval == 1.0 {
+                        for j in 0..h1 {
+                            prev_act[j] += col[j];
+                        }
+                    } else {
+                        for j in 0..h1 {
+                            prev_act[j] += col[j] * fval;
+                        }
                     }
                 }
             }
         }
 
-        // ReLU L1
-        for j in 0..l1 {
-            l1_out[j] = l1_out[j].max(0.0);
+        // ReLU
+        for j in 0..h1 {
+            prev_act[j] = prev_act[j].max(0.0);
         }
 
-        // L2: row-major matmul + ReLU
-        assert!(l2 <= 128);
-        let mut l2_out = [0.0f32; 128];
-        for i in 0..l2 {
-            let mut sum = l2_bias[i];
-            let row = &l2_weight[i * l1..(i + 1) * l1];
-            for j in 0..l1 {
-                sum += row[j] * l1_out[j];
+        // Subsequent hidden layers
+        for layer_idx in 1..self.hidden_layers.len() {
+            let prev_size = self.hidden_layers[layer_idx - 1];
+            let cur_size = self.hidden_layers[layer_idx];
+            let lw = &w[off..off + prev_size * cur_size];
+            off += prev_size * cur_size;
+            let lb = &w[off..off + cur_size];
+            off += cur_size;
+
+            let mut cur_act = vec![0.0f32; cur_size];
+            for j in 0..cur_size {
+                let mut sum = lb[j];
+                for i in 0..prev_size {
+                    sum += lw[i * cur_size + j] * prev_act[i];
+                }
+                cur_act[j] = sum.max(0.0);
             }
-            l2_out[i] = sum.max(0.0);
+            prev_act = cur_act;
         }
 
-        // L3: output + sigmoid
-        let mut output = l3_bias;
-        for j in 0..l2 {
-            output += l3_weight[j] * l2_out[j];
+        // Output layer
+        let last_h = *self.hidden_layers.last().unwrap();
+        let out_w = &w[off..off + last_h];
+        off += last_h;
+        let out_b = w[off];
+
+        let mut logit = out_b;
+        for i in 0..last_h {
+            logit += out_w[i] * prev_act[i];
         }
 
-        1.0 / (1.0 + (-output).exp())
-    }
-
-    /// Save weights to a binary file with header.
-    fn save(&self, path: &str) -> std::io::Result<()> {
-        use std::io::Write;
-        let mut f = std::fs::File::create(path)?;
-        f.write_all(b"DKAP")?; // magic for "DuKe APpended"
-        f.write_all(&1u32.to_le_bytes())?; // version
-        f.write_all(&(self.l1_size as u32).to_le_bytes())?;
-        f.write_all(&(self.l2_size as u32).to_le_bytes())?;
-        f.write_all(&(APPENDED_INPUT_SIZE as u32).to_le_bytes())?;
-        for &val in &self.weights {
-            f.write_all(&val.to_le_bytes())?;
-        }
-        Ok(())
-    }
-
-    /// Load weights from a binary file.
-    fn load(path: &str) -> std::io::Result<Self> {
-        use std::io::Read;
-        let mut f = std::fs::File::open(path)?;
-        let mut magic = [0u8; 4];
-        f.read_exact(&mut magic)?;
-        if &magic != b"DKAP" {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid DKAP file magic"));
-        }
-        let mut buf4 = [0u8; 4];
-        f.read_exact(&mut buf4)?;
-        let version = u32::from_le_bytes(buf4);
-        if version != 1 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                format!("Unsupported DKAP version {}", version)));
-        }
-        f.read_exact(&mut buf4)?;
-        let l1_size = u32::from_le_bytes(buf4) as usize;
-        f.read_exact(&mut buf4)?;
-        let l2_size = u32::from_le_bytes(buf4) as usize;
-        f.read_exact(&mut buf4)?;
-        let input_size = u32::from_le_bytes(buf4) as usize;
-        if input_size != APPENDED_INPUT_SIZE {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                format!("Input size mismatch: file has {}, expected {}", input_size, APPENDED_INPUT_SIZE)));
-        }
-        let n = appended_weight_count(l1_size, l2_size);
-        let mut buf = vec![0u8; n * 4];
-        f.read_exact(&mut buf)?;
-        let weights: Vec<f32> = buf.chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        Ok(Self { weights, l1_size, l2_size })
-    }
-}
-
-impl GameEvaluator for AppendedNnueEvaluator {
-    fn evaluate(&self, gs: &GameState) -> f32 {
-        self.evaluate_state(gs)
-    }
-}
-
-/// Create random weights for the appended network using Kaiming init.
-fn random_appended_weights(l1_size: usize, l2_size: usize, rng: &mut StdRng) -> Vec<f32> {
-    let n = appended_weight_count(l1_size, l2_size);
-    let mut weights = Vec::with_capacity(n);
-
-    let rand_vec = |n: usize, fan_in: usize, rng: &mut StdRng| -> Vec<f32> {
-        let scale = (2.0 / fan_in as f64).sqrt() as f32;
-        (0..n).map(|_| rng.gen::<f32>() * 2.0 * scale - scale).collect()
-    };
-
-    // L1 weight + bias
-    weights.extend(rand_vec(APPENDED_INPUT_SIZE * l1_size, APPENDED_INPUT_SIZE, rng));
-    weights.extend(vec![0.0f32; l1_size]);
-    // L2 weight + bias
-    weights.extend(rand_vec(l2_size * l1_size, l1_size, rng));
-    weights.extend(vec![0.0f32; l2_size]);
-    // L3 weight + bias
-    weights.extend(rand_vec(l2_size, l2_size, rng));
-    weights.push(0.0);
-
-    assert_eq!(weights.len(), n);
-    weights
-}
-
-/// Play K games of an appended-NNUE evaluator vs opponent. Returns win rate.
-fn evaluate_appended_perturbation(
-    evaluator: &AppendedNnueEvaluator,
-    opponent: &(dyn GameEvaluator + Sync),
-    gs: &GameState,
-    k: u32,
-    seed_base: u64,
-) -> f32 {
-    let nnue_player = Player::Evaluator(evaluator);
-    let opp_player = Player::Evaluator(opponent);
-
-    let mut score = 0.0f32;
-    for i in 0..k {
-        let mut rng = StdRng::seed_from_u64(seed_base + i as u64);
-        let result = if i % 2 == 0 {
-            play_match(gs, &nnue_player, &opp_player, &mut rng, 200)
-        } else {
-            play_match(gs, &opp_player, &nnue_player, &mut rng, 200)
-        };
-        let nnue_is_top = i % 2 == 0;
-        match result {
-            GameResult::Won(Owner::TopPlayer) => {
-                if nnue_is_top { score += 1.0; }
-            }
-            GameResult::Won(Owner::BottomPlayer) => {
-                if !nnue_is_top { score += 1.0; }
-            }
-            _ => { score += 0.5; }
-        }
-    }
-    score / k as f32
-}
-
-/// Run the ES training loop in append-combined mode (1147-input network).
-fn run_appended_training(
-    l1_size: usize,
-    l2_size: usize,
-    pop_size: usize,
-    games_per_eval: u32,
-    sigma: f32,
-    lr: f32,
-    iterations: u32,
-    eval_interval: u32,
-    eval_games: u32,
-    checkpoint_dir: &str,
-    gs: &GameState,
-) {
-    let dim = appended_weight_count(l1_size, l2_size);
-
-    println!("=== Evolutionary Strategies Training (APPENDED 1147) ===");
-    println!("  network: {}->{}->{}->1", APPENDED_INPUT_SIZE, l1_size, l2_size);
-    println!("  weight dimension: {}", dim);
-    println!("  population: {} (x2 with mirroring = {})", pop_size, pop_size * 2);
-    println!("  games per perturbation: {}", games_per_eval);
-    println!("  sigma: {}, lr: {}", sigma, lr);
-    println!("  mode: vs heuristic");
-    println!("  iterations: {}", iterations);
-    println!("  eval every {} iters with {} games", eval_interval, eval_games);
-    println!("  starting from random weights");
-
-    std::fs::create_dir_all(checkpoint_dir).expect("Failed to create checkpoint dir");
-
-    let mut rng = StdRng::seed_from_u64(42);
-    let mut w = random_appended_weights(l1_size, l2_size, &mut rng);
-
-    // Evaluate initial win rate
-    {
-        let init_eval = AppendedNnueEvaluator::new(w.clone(), l1_size, l2_size);
-        let nnue_player = Player::Evaluator(&init_eval);
-        let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
-        print!("  INIT: ");
-        run_matches(gs, &nnue_player, &heur_player, eval_games, "Appended1147 vs Heuristic");
-    }
-
-    let total_start = Instant::now();
-
-    for iter in 0..iterations {
-        let iter_start = Instant::now();
-
-        let perturbation_seeds: Vec<u64> = (0..pop_size)
-            .map(|_| rng.gen::<u64>())
-            .collect();
-        let game_seed_base: u64 = rng.gen();
-
-        let results: Vec<(usize, f32, f32)> = (0..pop_size * 2)
-            .into_par_iter()
-            .map(|idx| {
-                let pert_idx = idx / 2;
-                let is_positive = idx % 2 == 0;
-                let pert_seed = perturbation_seeds[pert_idx];
-
-                let mut pert_rng = StdRng::seed_from_u64(pert_seed);
-                let epsilon = randn_vec(dim, &mut pert_rng);
-
-                let perturbed: Vec<f32> = if is_positive {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi + sigma * ei).collect()
-                } else {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma * ei).collect()
-                };
-
-                let evaluator = AppendedNnueEvaluator::new(perturbed, l1_size, l2_size);
-                let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
-                let heuristic = StaticHeuristicEvaluator::new();
-                let win_rate = evaluate_appended_perturbation(&evaluator, &heuristic, gs, games_per_eval, game_seed);
-
-                (pert_idx, win_rate, 0.0)
-            })
-            .collect();
-
-        let mut reward_plus = vec![0.0f32; pop_size];
-        let mut reward_minus = vec![0.0f32; pop_size];
-        for (i, &(pert_idx, win_rate, _)) in results.iter().enumerate() {
-            if i % 2 == 0 {
-                reward_plus[pert_idx] = win_rate;
-            } else {
-                reward_minus[pert_idx] = win_rate;
-            }
-        }
-
-        let scale = lr / (pop_size as f32 * sigma);
-        let mut grad = vec![0.0f32; dim];
-
-        for i in 0..pop_size {
-            let diff = reward_plus[i] - reward_minus[i];
-            if diff.abs() < 1e-12 {
-                continue;
-            }
-            let mut pert_rng = StdRng::seed_from_u64(perturbation_seeds[i]);
-            let epsilon = randn_vec(dim, &mut pert_rng);
-
-            for j in 0..dim {
-                grad[j] += diff * epsilon[j];
-            }
-        }
-
-        for j in 0..dim {
-            w[j] += scale * grad[j];
-        }
-
-        let avg_plus: f32 = reward_plus.iter().sum::<f32>() / pop_size as f32;
-        let avg_minus: f32 = reward_minus.iter().sum::<f32>() / pop_size as f32;
-        let max_wr = reward_plus.iter().chain(reward_minus.iter())
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max);
-
-        let games_this_iter = pop_size as u32 * 2 * games_per_eval;
-        println!(
-            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} ({} games in {:.1?})",
-            iter + 1, iterations,
-            avg_plus, avg_minus, max_wr,
-            games_this_iter, iter_start.elapsed()
-        );
-
-        if (iter + 1) % eval_interval == 0 || iter == iterations - 1 {
-            let eval = AppendedNnueEvaluator::new(w.clone(), l1_size, l2_size);
-
-            let ckpt_path = format!("{}/es_appended_iter_{}.bin", checkpoint_dir, iter + 1);
-            eval.save(&ckpt_path).expect("Failed to save checkpoint");
-            println!("  Saved checkpoint: {}", ckpt_path);
-
-            let nnue_player = Player::Evaluator(&eval);
-            let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
-            print!("  EVAL: ");
-            run_matches(
-                gs, &nnue_player, &heur_player, eval_games,
-                &format!("Appended1147(ES iter={}) vs Heuristic", iter + 1),
-            );
-        }
-    }
-
-    // Save final weights
-    let final_eval = AppendedNnueEvaluator::new(w, l1_size, l2_size);
-    let final_path = format!("{}/es_appended_final.bin", checkpoint_dir);
-    final_eval.save(&final_path).expect("Failed to save final weights");
-    println!("\nES appended training complete: {} iterations in {:.1?}", iterations, total_start.elapsed());
-    println!("Final weights saved to: {}", final_path);
-}
-
-// ── Combined-features small network (41 inputs) ─────────────────────────
-// A self-contained input_size->L1->L2->1 network with ReLU hidden layers
-// and sigmoid output. Operates entirely on Vec<f32>.
-
-/// Compact weight container for the combined-features network.
-struct CombinedNet {
-    input_size: usize,
-    l1_size: usize,
-    l2_size: usize,
-    /// Flat weight vector: [l1_w, l1_b, l2_w, l2_b, l3_w, l3_b]
-    weights: Vec<f32>,
-}
-
-impl CombinedNet {
-    fn param_count(input_size: usize, l1_size: usize, l2_size: usize) -> usize {
-        input_size * l1_size + l1_size         // L1 weight + bias
-            + l1_size * l2_size + l2_size      // L2 weight + bias
-            + l2_size + 1                      // L3 weight + bias (output)
-    }
-
-    fn from_flat(flat: Vec<f32>, input_size: usize, l1_size: usize, l2_size: usize) -> Self {
-        assert_eq!(
-            flat.len(),
-            Self::param_count(input_size, l1_size, l2_size),
-            "flat weight vector size mismatch: expected {}, got {}",
-            Self::param_count(input_size, l1_size, l2_size), flat.len()
-        );
-        Self { input_size, l1_size, l2_size, weights: flat }
-    }
-
-    fn random(input_size: usize, l1_size: usize, l2_size: usize, rng: &mut StdRng) -> Self {
-        let n = Self::param_count(input_size, l1_size, l2_size);
-        let mut flat = Vec::with_capacity(n);
-
-        // L1 weights: Kaiming init with fan_in = input_size
-        let scale1 = (2.0 / input_size as f64).sqrt() as f32;
-        for _ in 0..(input_size * l1_size) {
-            flat.push(rng.gen::<f32>() * 2.0 * scale1 - scale1);
-        }
-        // L1 bias
-        for _ in 0..l1_size { flat.push(0.0); }
-
-        // L2 weights: fan_in = l1_size
-        let scale2 = (2.0 / l1_size as f64).sqrt() as f32;
-        for _ in 0..(l1_size * l2_size) {
-            flat.push(rng.gen::<f32>() * 2.0 * scale2 - scale2);
-        }
-        // L2 bias
-        for _ in 0..l2_size { flat.push(0.0); }
-
-        // L3 weights: fan_in = l2_size
-        let scale3 = (2.0 / l2_size as f64).sqrt() as f32;
-        for _ in 0..l2_size {
-            flat.push(rng.gen::<f32>() * 2.0 * scale3 - scale3);
-        }
-        // L3 bias
-        flat.push(0.0);
-
-        assert_eq!(flat.len(), n);
-        Self { input_size, l1_size, l2_size, weights: flat }
-    }
-
-    /// Forward pass: input -> L1(ReLU) -> L2(ReLU) -> sigmoid output in [0, 1].
-    fn forward(&self, input: &[f64; NUM_COMBINED_FEATURES]) -> f32 {
-        let w = &self.weights;
-        let mut off = 0;
-
-        // L1: input_size -> l1_size, ReLU
-        let l1_w = &w[off..off + self.input_size * self.l1_size];
-        off += self.input_size * self.l1_size;
-        let l1_b = &w[off..off + self.l1_size];
-        off += self.l1_size;
-
-        let mut h1 = vec![0.0f32; self.l1_size];
-        for j in 0..self.l1_size {
-            let mut sum = l1_b[j];
-            for i in 0..self.input_size {
-                sum += l1_w[i * self.l1_size + j] * input[i] as f32;
-            }
-            h1[j] = sum.max(0.0); // ReLU
-        }
-
-        // L2: l1_size -> l2_size, ReLU
-        let l2_w = &w[off..off + self.l1_size * self.l2_size];
-        off += self.l1_size * self.l2_size;
-        let l2_b = &w[off..off + self.l2_size];
-        off += self.l2_size;
-
-        let mut h2 = vec![0.0f32; self.l2_size];
-        for j in 0..self.l2_size {
-            let mut sum = l2_b[j];
-            for i in 0..self.l1_size {
-                sum += l2_w[i * self.l2_size + j] * h1[i];
-            }
-            h2[j] = sum.max(0.0); // ReLU
-        }
-
-        // L3: l2_size -> 1, sigmoid
-        let l3_w = &w[off..off + self.l2_size];
-        off += self.l2_size;
-        let l3_b = w[off];
-
-        let mut logit = l3_b;
-        for i in 0..self.l2_size {
-            logit += l3_w[i] * h2[i];
-        }
-
-        // Sigmoid
         1.0 / (1.0 + (-logit).exp())
     }
 
-    /// Save weights as a simple binary file: [magic, input_size, l1_size, l2_size, f32 weights...]
+    /// Format the architecture as a string like "1106->64->64->32->1"
+    fn arch_string(&self) -> String {
+        let mut s = format!("{}", self.input_size);
+        for &h in &self.hidden_layers {
+            s.push_str(&format!("->{}", h));
+        }
+        s.push_str("->1");
+        s
+    }
+
+    /// Save weights as a binary file: [magic "GMLP", version, num_layers, input_size, h1, h2, ..., f32 weights...]
     fn save(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
         let mut f = std::fs::File::create(path)?;
-        f.write_all(b"CNET")?;
+        f.write_all(b"GMLP")?; // magic for Generic MLP
+        f.write_all(&1u32.to_le_bytes())?; // version
+        f.write_all(&(self.hidden_layers.len() as u32).to_le_bytes())?;
         f.write_all(&(self.input_size as u32).to_le_bytes())?;
-        f.write_all(&(self.l1_size as u32).to_le_bytes())?;
-        f.write_all(&(self.l2_size as u32).to_le_bytes())?;
+        for &h in &self.hidden_layers {
+            f.write_all(&(h as u32).to_le_bytes())?;
+        }
         for &val in &self.weights {
             f.write_all(&val.to_le_bytes())?;
         }
@@ -617,37 +422,46 @@ impl CombinedNet {
         let mut f = std::fs::File::open(path)?;
         let mut magic = [0u8; 4];
         f.read_exact(&mut magic)?;
-        if &magic != b"CNET" {
+        if &magic != b"GMLP" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Not a CNET file",
+                "Not a GMLP file",
             ));
         }
         let mut buf4 = [0u8; 4];
         f.read_exact(&mut buf4)?;
+        let version = u32::from_le_bytes(buf4);
+        if version != 1 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                format!("Unsupported GMLP version {}", version)));
+        }
+        f.read_exact(&mut buf4)?;
+        let num_layers = u32::from_le_bytes(buf4) as usize;
+        f.read_exact(&mut buf4)?;
         let input_size = u32::from_le_bytes(buf4) as usize;
-        f.read_exact(&mut buf4)?;
-        let l1_size = u32::from_le_bytes(buf4) as usize;
-        f.read_exact(&mut buf4)?;
-        let l2_size = u32::from_le_bytes(buf4) as usize;
+        let mut hidden_layers = Vec::with_capacity(num_layers);
+        for _ in 0..num_layers {
+            f.read_exact(&mut buf4)?;
+            hidden_layers.push(u32::from_le_bytes(buf4) as usize);
+        }
 
-        let n = Self::param_count(input_size, l1_size, l2_size);
+        let n = Self::param_count(input_size, &hidden_layers);
         let mut weights = vec![0.0f32; n];
         for val in &mut weights {
             f.read_exact(&mut buf4)?;
             *val = f32::from_le_bytes(buf4);
         }
-        Ok(Self { input_size, l1_size, l2_size, weights })
+        Ok(Self { input_size, hidden_layers, weights })
     }
 }
 
-/// Evaluator that wraps a CombinedNet: extracts combined features then forward-passes.
+/// Evaluator that wraps a GenericMlp: extracts combined features then forward-passes.
 struct CombinedNetEvaluator {
-    net: CombinedNet,
+    net: GenericMlp,
 }
 
 impl CombinedNetEvaluator {
-    fn new(net: CombinedNet) -> Self {
+    fn new(net: GenericMlp) -> Self {
         Self { net }
     }
 }
@@ -655,17 +469,41 @@ impl CombinedNetEvaluator {
 impl GameEvaluator for CombinedNetEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
         let features = extract_combined_features(gs);
-        self.net.forward(&features)
+        self.net.forward_f64(&features)
+    }
+}
+
+/// Evaluator that wraps a GenericMlp for sparse NNUE features (1106 inputs).
+struct GenericNnueEvaluator {
+    net: GenericMlp,
+}
+
+impl GameEvaluator for GenericNnueEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        self.net.forward_sparse(gs, false)
+    }
+}
+
+/// Evaluator that wraps a GenericMlp for appended features (1147 inputs).
+struct GenericAppendedEvaluator {
+    net: GenericMlp,
+}
+
+impl GameEvaluator for GenericAppendedEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        self.net.forward_sparse(gs, true)
     }
 }
 
 /// Play K games of a candidate evaluator vs an opponent and return win rate in [0, 1].
+/// `max_turns` controls per-game turn limit.
 fn evaluate_generic(
     candidate: &(dyn GameEvaluator + Sync),
     opponent: &(dyn GameEvaluator + Sync),
     gs: &GameState,
     k: u32,
     seed_base: u64,
+    max_turns: u32,
 ) -> f32 {
     let cand_player = Player::Evaluator(candidate);
     let opp_player = Player::Evaluator(opponent);
@@ -674,9 +512,9 @@ fn evaluate_generic(
     for i in 0..k {
         let mut rng = StdRng::seed_from_u64(seed_base + i as u64);
         let result = if i % 2 == 0 {
-            play_match(gs, &cand_player, &opp_player, &mut rng, 200)
+            play_match(gs, &cand_player, &opp_player, &mut rng, max_turns)
         } else {
-            play_match(gs, &opp_player, &cand_player, &mut rng, 200)
+            play_match(gs, &opp_player, &cand_player, &mut rng, max_turns)
         };
         let cand_is_top = i % 2 == 0;
         match result {
@@ -694,8 +532,7 @@ fn evaluate_generic(
 
 /// Run the ES training loop with 41 combined features as input.
 fn run_combined_training(
-    l1_size: usize,
-    l2_size: usize,
+    hidden_layers: &[usize],
     pop_size: usize,
     games_per_eval: u32,
     sigma: f32,
@@ -709,10 +546,11 @@ fn run_combined_training(
     resume_path: Option<&str>,
 ) {
     let input_size = NUM_COMBINED_FEATURES; // 41
-    let dim = CombinedNet::param_count(input_size, l1_size, l2_size);
+    let dim = GenericMlp::param_count(input_size, hidden_layers);
 
     println!("=== ES Training (Combined Features) ===");
-    println!("  network: {}->{}->{}->1 ({} params)", input_size, l1_size, l2_size, dim);
+    let tmp_net = GenericMlp::from_flat(vec![0.0; dim], input_size, hidden_layers.to_vec());
+    println!("  network: {} ({} params)", tmp_net.arch_string(), dim);
     println!("  population: {} (x2 with mirroring = {})", pop_size, pop_size * 2);
     println!("  games per perturbation: {}", games_per_eval);
     println!("  sigma: {}, lr: {}", sigma, lr);
@@ -734,18 +572,17 @@ fn run_combined_training(
 
     // Initialize flat weight vector
     let mut w: Vec<f32> = if let Some(path) = resume_path {
-        let net = CombinedNet::load(path).expect("Failed to load combined net weights");
+        let net = GenericMlp::load(path).expect("Failed to load combined net weights");
         assert_eq!(net.input_size, input_size, "input_size mismatch");
-        assert_eq!(net.l1_size, l1_size, "l1 mismatch");
-        assert_eq!(net.l2_size, l2_size, "l2 mismatch");
+        assert_eq!(net.hidden_layers, hidden_layers, "hidden_layers mismatch");
         net.weights
     } else {
-        CombinedNet::random(input_size, l1_size, l2_size, &mut rng).weights
+        GenericMlp::random(input_size, hidden_layers.to_vec(), &mut rng).weights
     };
 
     // Evaluate initial win rate
     {
-        let init_net = CombinedNet::from_flat(w.clone(), input_size, l1_size, l2_size);
+        let init_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
         let init_eval = CombinedNetEvaluator::new(init_net);
         let cand_player = Player::Evaluator(&init_eval);
         let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
@@ -792,12 +629,12 @@ fn run_combined_training(
                     w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma * ei).collect()
                 };
 
-                let net = CombinedNet::from_flat(perturbed, input_size, l1_size, l2_size);
+                let net = GenericMlp::from_flat(perturbed, input_size, hidden_layers.to_vec());
                 let evaluator = CombinedNetEvaluator::new(net);
 
                 let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
                 let heuristic = StaticHeuristicEvaluator::new();
-                let win_rate = evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed);
+                let win_rate = evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, 200);
 
                 (pert_idx, win_rate, 0.0)
             })
@@ -849,9 +686,9 @@ fn run_combined_training(
 
         // Periodic evaluation + checkpoint
         if (iter + 1) % eval_interval == 0 || iter == iterations - 1 {
-            let eval_net = CombinedNet::from_flat(w.clone(), input_size, l1_size, l2_size);
+            let eval_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
 
-            let ckpt_path = format!("{}/es_combined_iter_{}.cnet", checkpoint_dir, iter + 1);
+            let ckpt_path = format!("{}/es_combined_iter_{}.gmlp", checkpoint_dir, iter + 1);
             eval_net.save(&ckpt_path).expect("Failed to save checkpoint");
             println!("  Saved checkpoint: {}", ckpt_path);
 
@@ -867,8 +704,8 @@ fn run_combined_training(
     }
 
     // Save final weights
-    let final_net = CombinedNet::from_flat(w.clone(), input_size, l1_size, l2_size);
-    let final_path = format!("{}/es_combined_final.cnet", checkpoint_dir);
+    let final_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
+    let final_path = format!("{}/es_combined_final.gmlp", checkpoint_dir);
     final_net.save(&final_path).expect("Failed to save final weights");
     println!("\nES combined training complete: {} iters in {:.1?}", last_iter, total_start.elapsed());
     println!("Final weights saved to: {}", final_path);
@@ -890,6 +727,211 @@ fn random_weights(l1_size: usize, l2_size: usize, rng: &mut StdRng) -> NnueWeigh
         l3_weight: rand_vec(l2_size, l2_size, rng),
         l3_bias: vec![0.0; 1],
     }
+}
+
+/// Run the ES training loop using GenericMlp with sparse NNUE features.
+/// `input_size` should be NUM_FEATURES (1106) for standard or APPENDED_INPUT_SIZE (1147) for appended.
+/// `include_combined` controls whether combined features are appended.
+fn run_generic_sparse_training(
+    input_size: usize,
+    include_combined: bool,
+    hidden_layers: &[usize],
+    pop_size: usize,
+    games_per_eval: u32,
+    sigma: f32,
+    lr: f32,
+    iterations: u32,
+    eval_interval: u32,
+    eval_games: u32,
+    checkpoint_dir: &str,
+    gs: &GameState,
+    time_limit_secs: Option<u64>,
+    resume_path: Option<&str>,
+) {
+    let dim = GenericMlp::param_count(input_size, hidden_layers);
+    let mode_name = if include_combined { "Appended" } else { "NNUE" };
+
+    let tmp_net = GenericMlp::from_flat(vec![0.0; dim], input_size, hidden_layers.to_vec());
+    println!("=== ES Training ({} Features, GenericMlp) ===", mode_name);
+    println!("  network: {} ({} params)", tmp_net.arch_string(), dim);
+    println!("  population: {} (x2 with mirroring = {})", pop_size, pop_size * 2);
+    println!("  games per perturbation: {}", games_per_eval);
+    println!("  sigma: {}, lr: {}", sigma, lr);
+    println!("  mode: vs heuristic");
+    println!("  iterations: {}", iterations);
+    if let Some(tl) = time_limit_secs {
+        println!("  time limit: {} seconds", tl);
+    }
+    println!("  eval every {} iters with {} games", eval_interval, eval_games);
+    if resume_path.is_some() {
+        println!("  resuming from: {}", resume_path.unwrap());
+    } else {
+        println!("  starting from random weights");
+    }
+
+    std::fs::create_dir_all(checkpoint_dir).expect("Failed to create checkpoint dir");
+
+    let mut rng = StdRng::seed_from_u64(42);
+
+    // Initialize flat weight vector
+    let mut w: Vec<f32> = if let Some(path) = resume_path {
+        let net = GenericMlp::load(path).expect("Failed to load weights");
+        assert_eq!(net.input_size, input_size, "input_size mismatch");
+        assert_eq!(net.hidden_layers, hidden_layers, "hidden_layers mismatch");
+        net.weights
+    } else {
+        GenericMlp::random(input_size, hidden_layers.to_vec(), &mut rng).weights
+    };
+
+    // Evaluate initial win rate
+    {
+        let init_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
+        if include_combined {
+            let eval = GenericAppendedEvaluator { net: init_net };
+            let cand_player = Player::Evaluator(&eval);
+            let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
+            print!("  INIT: ");
+            run_matches(gs, &cand_player, &heur_player, eval_games, &format!("{} vs Heuristic", mode_name));
+        } else {
+            let eval = GenericNnueEvaluator { net: init_net };
+            let cand_player = Player::Evaluator(&eval);
+            let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
+            print!("  INIT: ");
+            run_matches(gs, &cand_player, &heur_player, eval_games, &format!("{} vs Heuristic", mode_name));
+        }
+    }
+
+    let total_start = Instant::now();
+    let mut last_iter = 0u32;
+
+    for iter in 0..iterations {
+        // Check time limit
+        if let Some(tl) = time_limit_secs {
+            if total_start.elapsed().as_secs() >= tl {
+                println!("Time limit reached ({} s), stopping at iter {}", tl, iter);
+                break;
+            }
+        }
+
+        last_iter = iter + 1;
+        let iter_start = Instant::now();
+
+        let perturbation_seeds: Vec<u64> = (0..pop_size)
+            .map(|_| rng.gen::<u64>())
+            .collect();
+        let game_seed_base: u64 = rng.gen();
+
+        let results: Vec<(usize, f32, f32)> = (0..pop_size * 2)
+            .into_par_iter()
+            .map(|idx| {
+                let pert_idx = idx / 2;
+                let is_positive = idx % 2 == 0;
+                let pert_seed = perturbation_seeds[pert_idx];
+
+                let mut pert_rng = StdRng::seed_from_u64(pert_seed);
+                let epsilon = randn_vec(dim, &mut pert_rng);
+
+                let perturbed: Vec<f32> = if is_positive {
+                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi + sigma * ei).collect()
+                } else {
+                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma * ei).collect()
+                };
+
+                let net = GenericMlp::from_flat(perturbed, input_size, hidden_layers.to_vec());
+                let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
+                let heuristic = StaticHeuristicEvaluator::new();
+
+                // Appended mode uses 50-turn cap because combined feature extraction
+                // is expensive (involves full move generation per eval).
+                let train_max_turns = if include_combined { 50 } else { 200 };
+                let win_rate = if include_combined {
+                    let evaluator = GenericAppendedEvaluator { net };
+                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns)
+                } else {
+                    let evaluator = GenericNnueEvaluator { net };
+                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns)
+                };
+
+                (pert_idx, win_rate, 0.0)
+            })
+            .collect();
+
+        let mut reward_plus = vec![0.0f32; pop_size];
+        let mut reward_minus = vec![0.0f32; pop_size];
+        for (i, &(pert_idx, win_rate, _)) in results.iter().enumerate() {
+            if i % 2 == 0 {
+                reward_plus[pert_idx] = win_rate;
+            } else {
+                reward_minus[pert_idx] = win_rate;
+            }
+        }
+
+        let scale = lr / (pop_size as f32 * sigma);
+        let mut grad = vec![0.0f32; dim];
+
+        for i in 0..pop_size {
+            let diff = reward_plus[i] - reward_minus[i];
+            if diff.abs() < 1e-12 { continue; }
+            let mut pert_rng = StdRng::seed_from_u64(perturbation_seeds[i]);
+            let epsilon = randn_vec(dim, &mut pert_rng);
+            for j in 0..dim {
+                grad[j] += diff * epsilon[j];
+            }
+        }
+
+        for j in 0..dim {
+            w[j] += scale * grad[j];
+        }
+
+        let avg_plus: f32 = reward_plus.iter().sum::<f32>() / pop_size as f32;
+        let avg_minus: f32 = reward_minus.iter().sum::<f32>() / pop_size as f32;
+        let max_wr = reward_plus.iter().chain(reward_minus.iter())
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let games_this_iter = pop_size as u32 * 2 * games_per_eval;
+        println!(
+            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} ({} games in {:.1?})",
+            iter + 1, iterations,
+            avg_plus, avg_minus, max_wr,
+            games_this_iter, iter_start.elapsed()
+        );
+
+        if (iter + 1) % eval_interval == 0 || iter == iterations - 1 {
+            let eval_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
+
+            let ckpt_path = format!("{}/es_iter_{}.gmlp", checkpoint_dir, iter + 1);
+            eval_net.save(&ckpt_path).expect("Failed to save checkpoint");
+            println!("  Saved checkpoint: {}", ckpt_path);
+
+            if include_combined {
+                let eval = GenericAppendedEvaluator { net: eval_net };
+                let cand_player = Player::Evaluator(&eval);
+                let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
+                print!("  EVAL: ");
+                run_matches(
+                    gs, &cand_player, &heur_player, eval_games,
+                    &format!("{}(ES iter={}) vs Heuristic", mode_name, iter + 1),
+                );
+            } else {
+                let eval = GenericNnueEvaluator { net: eval_net };
+                let cand_player = Player::Evaluator(&eval);
+                let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
+                print!("  EVAL: ");
+                run_matches(
+                    gs, &cand_player, &heur_player, eval_games,
+                    &format!("{}(ES iter={}) vs Heuristic", mode_name, iter + 1),
+                );
+            }
+        }
+    }
+
+    // Save final weights
+    let final_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
+    let final_path = format!("{}/es_final.gmlp", checkpoint_dir);
+    final_net.save(&final_path).expect("Failed to save final weights");
+    println!("\nES {} training complete: {} iters in {:.1?}", mode_name, last_iter, total_start.elapsed());
+    println!("Final weights saved to: {}", final_path);
 }
 
 // ── Gaussian noise generation ────────────────────────────────────────────
@@ -994,12 +1036,26 @@ fn main() {
         .unwrap_or_else(|| "nnue".to_string());
     let time_limit_secs: Option<u64> = parse_flag(&args, "--time-limit");
 
+    // Parse --layers flag: comma-separated hidden layer sizes (e.g. "64,64,32")
+    let layers_str: Option<String> = parse_flag_string(&args, "--layers");
+    let hidden_layers: Vec<usize> = if let Some(ref s) = layers_str {
+        s.split(',')
+            .map(|x| x.trim().parse::<usize>().expect("Invalid layer size in --layers"))
+            .collect()
+    } else {
+        vec![l1_size, l2_size]
+    };
+
+    if hidden_layers.is_empty() {
+        panic!("--layers must specify at least one hidden layer size");
+    }
+
     // Dispatch to combined-features mode (41 inputs)
     if input_features == "combined" {
         let bag = create_bag();
         let gs = create_initial_state(&bag);
         run_combined_training(
-            l1_size, l2_size, pop_size, games_per_eval,
+            &hidden_layers, pop_size, games_per_eval,
             sigma, lr, iterations, eval_interval, eval_games,
             &checkpoint_dir, &gs, time_limit_secs,
             resume_path.as_deref(),
@@ -1007,18 +1063,37 @@ fn main() {
         return;
     }
 
-    // Dispatch to appended-input mode if requested
+    // Dispatch to appended-input mode if requested (uses GenericMlp with 1147 inputs)
     if append_combined {
         let bag = create_bag();
         let gs = create_initial_state(&bag);
-        run_appended_training(
-            l1_size, l2_size, pop_size, games_per_eval,
-            sigma, lr, iterations, eval_interval, eval_games,
-            &checkpoint_dir, &gs,
+        run_generic_sparse_training(
+            APPENDED_INPUT_SIZE, true, &hidden_layers,
+            pop_size, games_per_eval, sigma, lr, iterations,
+            eval_interval, eval_games, &checkpoint_dir, &gs,
+            time_limit_secs, resume_path.as_deref(),
         );
         return;
     }
 
+    // Standard NNUE path (1106 sparse features)
+    // If --layers was explicitly set, or if there are more than 2 hidden layers,
+    // use the GenericMlp path which supports any depth.
+    let use_generic = layers_str.is_some() || hidden_layers.len() > 2;
+
+    if use_generic {
+        let bag = create_bag();
+        let gs = create_initial_state(&bag);
+        run_generic_sparse_training(
+            NUM_FEATURES, false, &hidden_layers,
+            pop_size, games_per_eval, sigma, lr, iterations,
+            eval_interval, eval_games, &checkpoint_dir, &gs,
+            time_limit_secs, resume_path.as_deref(),
+        );
+        return;
+    }
+
+    // Legacy 2-hidden-layer NNUE path (kept for backward compatibility with .nnue files)
     let dim = if last_layer_only {
         last_layer_count(l2_size)
     } else {
@@ -1037,6 +1112,9 @@ fn main() {
     println!("  sigma: {}, lr: {}", sigma, lr);
     println!("  mode: {}", if self_play { "self-play" } else { "vs heuristic" });
     println!("  iterations: {}", iterations);
+    if let Some(tl) = time_limit_secs {
+        println!("  time limit: {} seconds", tl);
+    }
     println!("  eval every {} iters with {} games", eval_interval, eval_games);
     if resume_path.is_some() {
         println!("  resuming from: {}", resume_path.as_ref().unwrap());
@@ -1099,8 +1177,18 @@ fn main() {
     }
 
     let total_start = Instant::now();
+    let mut last_iter = 0u32;
 
     for iter in 0..iterations {
+        // Check time limit
+        if let Some(tl) = time_limit_secs {
+            if total_start.elapsed().as_secs() >= tl {
+                println!("Time limit reached ({} s), stopping at iter {}", tl, iter);
+                break;
+            }
+        }
+
+        last_iter = iter + 1;
         let iter_start = Instant::now();
 
         // Generate perturbation seeds (one per population member)
@@ -1228,6 +1316,6 @@ fn main() {
     let final_weights = reconstruct_weights(&w);
     let final_path = format!("{}/es_final.nnue", checkpoint_dir);
     final_weights.save(&final_path).expect("Failed to save final weights");
-    println!("\nES training complete: {} iterations in {:.1?}", iterations, total_start.elapsed());
+    println!("\nES training complete: {} iterations in {:.1?}", last_iter, total_start.elapsed());
     println!("Final weights saved to: {}", final_path);
 }

@@ -171,16 +171,113 @@ Best: 57.6% win rate at iters 50 and 250
 | LR 5-param (regression) | 39.1% | closed-form, instant |
 | LR elastic net (15p) | 40.6% | best with regularization |
 | Equal-weight heuristic | ~39%* | the opponent |
-| **Combined41 ES (32x8)** | **57.6%** | **best overall, beats heuristic** |
+| Combined41 ES (32x8) | 57.6% | beats heuristic, 1.6k params |
+| **Appended1147 ES (128x32)** | **65.6%** | **best overall, still climbing** |
 
 *Equal-weight heuristic shows ~39% win / ~31% loss / ~30% tie head-to-head due to top/bottom asymmetry.
 
+# Experiment 5: Appended Features NNUE (1147 inputs = 1106 board + 41 combined, 128x32)
+- Architecture: 1147->128->32->1 (hand-rolled MLP with ReLU hidden layers, sigmoid output)
+- Input features: 1106 sparse board encoding + 41 combined features appended
+- Parameters: 151,105
+- ES config: pop=200, games=10, sigma=0.02, lr=0.02
+- Duration: ~28 min (161 iterations logged, killed at 30 min; evals through iter 150)
+- Eval games: 500 per checkpoint (vs heuristic opponent)
+- Iteration time: ~10s/iter (4000 games per iteration)
+
+| Iter | Win% | Loss% | Tie% |
+|------|------|-------|------|
+| 0 (init) | 6.4 | 89.4 | 4.2 |
+| 25 | 48.8 | 23.4 | 27.8 |
+| 50 | 53.8 | 30.2 | 16.0 |
+| 75 | 56.6 | 24.4 | 19.0 |
+| 100 | 53.8 | 26.0 | 20.2 |
+| 125 | 59.6 | 22.8 | 17.6 |
+| 150 | 65.6 | 21.8 | 12.6 |
+
+Best: **65.6%** at iter 150, still climbing steeply. No plateau yet.
+
+Training win rates at termination (iter 161): avg_wr+ ~0.667, avg_wr- ~0.668
+
+## Observations
+- Explosive early learning: 6.4% -> 48.8% in 25 iterations (~4 min), faster than any previous experiment.
+- The appended version surpasses the 41-only network (57.6%) by iter 125 and keeps climbing.
+- The raw board features provide fine-grained tactical information that the aggregated 41 features miss.
+- Despite 151k params (vs 1.6k for Combined41), ES makes steady progress because the 41 features bootstrap the learning.
+- Tie rate drops from 28% to 13% as the model improves, indicating more decisive/confident play.
+- Training avg win rates reached ~67% by iter 161, suggesting next eval (iter 175) would likely show further improvement.
+- Still improving at termination -- more training time would likely push higher.
+- Checkpoints saved to D:/temp/es_appended_1147/ (best: es_appended_iter_150.bin at 65.6%).
+
 # Key Takeaways
 
-1. **Combined features crush sparse encoding** — 41 hand-crafted features with a 1.6k param network (57.6%) massively outperform 1106 sparse features with a 36k param network (27.8%)
-2. **ES works for NNUE** — direct win-rate optimization beats TD learning
-3. **Fewer params = faster ES** — 1.6k params converge in 50 iters vs 450+ for 36k params
-4. **Feature engineering > feature learning** — the combined features encode domain knowledge (duke proximity, board control, discards) that ES cannot discover from sparse binary encoding alone
-5. **First model to beat the heuristic** — the Combined41 network is the only ES-trained model to consistently win >50% vs the heuristic opponent
+1. **Appended features (1106+41) is the best approach** — 65.6% win rate at iter 150, still climbing
+2. **Combined features bootstrap learning** — the 41 features give the network a head start, the 1106 features add tactical depth
+3. **EvSearch works for large networks** when features provide strong signal — 151k params with 200 perturbations works because the gradient direction is dominated by the informative 41 features
+4. **Feature engineering + feature learning** — best of both worlds beats either alone
+5. **More training time needed** — the appended version has not plateaued, unlike the 41-only version
 6. **TD learning alone is insufficient** — 5 epochs barely moves the needle (9.5%)
 7. **Self-play ES diverges** — optimizes for beating itself, not general play
+
+# Planned Overnight Experiments (2026-03-23)
+
+Testing deeper GenericMlp networks with configurable `--layers` flag.
+All use standard NNUE encoding (1106 sparse features), pop=200, games=10, sigma=0.02, lr=0.02, eval every 25 iters, 1 hour each.
+
+| # | Architecture | Hidden Layers | Params | Checkpoint Dir |
+|---|-------------|---------------|--------|----------------|
+| 1 | 1106->64->64->32->1 | 3 | 77,121 | D:/temp/overnight_64_64_32 |
+| 2 | 1106->128->64->32->1 | 3 | 152,065 | D:/temp/overnight_128_64_32 |
+| 3 | 1106->64->64->64->32->1 | 4 | 81,281 | D:/temp/overnight_64_64_64_32 |
+| 4 | 1106->32->32->16->8->1 | 4 | 37,153 | D:/temp/overnight_32_32_16_8 |
+| 5 | 1106->256->64->1 | 2 | 299,905 | D:/temp/overnight_256_64 |
+
+Goal: Determine whether deeper (3-4 hidden layer) architectures learn better than the standard 2-layer NNUE. Experiment 5 serves as a 2-layer control.
+
+Script: D:/temp/overnight_run.sh
+Log: D:/temp/overnight_output.log
+Binary: J:/dev/git/duke_rust/target/release/es_train.exe (pre-built, not cargo run)
+
+# Experiment 6: Appended Features NNUE v2 (1147 inputs, 128x32, 50-turn cap)
+- Architecture: 1147->128->32->1 (GenericMlp via run_generic_sparse_training)
+- Input features: 1106 sparse board encoding + 41 combined features appended
+- Parameters: 151,105
+- ES config: pop=200, games=10, sigma=0.01, lr=0.01
+- Training game turn cap: 50 (reduced from 200 to prevent tail-latency stalls from expensive combined-feature extraction per move evaluation)
+- Eval game turn cap: 200 (full-length)
+- Duration: 30 min (1800s time limit), 294 iterations completed
+- Iteration time: ~5.5-7.5s/iter (4000 games per iteration)
+- Eval games: 500 per checkpoint (vs heuristic opponent)
+- Checkpoint dir: D:/temp/es_appended_1147/
+
+| Iter | Win% | Loss% | Tie% |
+|------|------|-------|------|
+| 0 (init) | 4.8 | 89.2 | 6.0 |
+| 25 | 31.4 | 31.4 | 37.2 |
+| 50 | 29.4 | 35.0 | 35.6 |
+| 75 | 39.6 | 28.6 | 31.8 |
+| 100 | 43.4 | 30.4 | 26.2 |
+| 125 | 43.2 | 28.8 | 28.0 |
+| 150 | 42.8 | 29.2 | 28.0 |
+| 175 | 46.4 | 23.4 | 30.2 |
+| 200 | 49.2 | 24.4 | 26.4 |
+| 225 | 45.4 | 25.2 | 29.4 |
+| 250 | 50.2 | 22.2 | 27.6 |
+| 275 | 42.4 | 25.8 | 31.8 |
+
+Best: **50.2%** at iter 250 (2.26:1 win/loss ratio)
+
+Training avg_wr at termination (iter 294): ~0.62-0.64
+
+## Observations
+- Lower than Experiment 5 peak (50.2% vs 65.6%), likely due to the 50-turn training cap which limits the model's ability to learn long-game strategy.
+- The 50-turn cap was necessary: with 200-turn games and combined-feature extraction (which does full move generation per evaluation), single games occasionally took 10+ minutes causing entire iterations to stall.
+- Steady improvement: 4.8% -> 50.2% over 250 iterations.
+- Higher tie rates (26-37%) than Experiment 5 (12-28%), consistent with shorter training games producing more conservative play.
+- The dip at iter 50 (29.4%) and iter 275 (42.4%) suggest eval noise of ~8-10% at 500 games.
+- Still improving at termination, but the curve is flattening around 45-50%.
+- Note: sigma=0.01 and lr=0.01 were used (vs sigma=0.02, lr=0.02 in Experiment 5). The smaller hyperparameters may have contributed to slower convergence.
+- Checkpoints: D:/temp/es_appended_1147/es_iter_250.gmlp (best), es_final.gmlp (iter 294)
+
+## Performance Note
+The combined-feature extraction (extract_combined_features) calls board_control_features which invokes all_valid_game_moves_for_ignoring_guard for both players. This makes each evaluation ~3-5x more expensive than pure NNUE evaluation, creating tail-latency issues in rayon parallel iterations when individual games run long. The 50-turn cap mitigates this but limits strategic depth.
