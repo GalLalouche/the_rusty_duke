@@ -612,6 +612,22 @@ fn run_combined_training(
     let total_start = Instant::now();
     let mut last_iter = 0u32;
 
+    // Adaptive sigma: increase when stuck, reset when improving
+    let sigma_base = sigma;
+    let mut sigma_current = sigma;
+    let mut best_eval_wr = 0.0f32;
+    let mut evals_without_improvement = 0u32;
+    let sigma_patience = 3u32;
+    let sigma_grow = 2.0f32;
+    let sigma_max = sigma_base * 8.0;
+
+    // Adam optimizer state
+    let mut adam_m = vec![0.0f32; dim]; // first moment
+    let mut adam_v = vec![0.0f32; dim]; // second moment
+    let adam_beta1 = 0.9f32;
+    let adam_beta2 = 0.999f32;
+    let adam_eps = 1e-8f32;
+
     for iter in 0..iterations {
         // Check time limit
         if let Some(tl) = time_limit_secs {
@@ -632,6 +648,7 @@ fn run_combined_training(
         let game_seed_base: u64 = rng.gen();
 
         // Evaluate all perturbations in parallel
+        let sigma_snap = sigma_current; // capture for closure
         let results: Vec<(usize, f32, f32)> = (0..pop_size * 2)
             .into_par_iter()
             .map(|idx| {
@@ -643,9 +660,9 @@ fn run_combined_training(
                 let epsilon = randn_vec(dim, &mut pert_rng);
 
                 let perturbed: Vec<f32> = if is_positive {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi + sigma * ei).collect()
+                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi + sigma_snap * ei).collect()
                 } else {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma * ei).collect()
+                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma_snap * ei).collect()
                 };
 
                 let net = GenericMlp::from_flat(perturbed, input_size, hidden_layers.to_vec());
@@ -670,8 +687,8 @@ fn run_combined_training(
             }
         }
 
-        // Compute gradient and update
-        let scale = lr / (pop_size as f32 * sigma);
+        // Compute gradient
+        let grad_scale = 1.0 / (pop_size as f32 * sigma_current);
         let mut grad = vec![0.0f32; dim];
 
         for i in 0..pop_size {
@@ -683,9 +700,18 @@ fn run_combined_training(
                 grad[j] += diff * epsilon[j];
             }
         }
-
         for j in 0..dim {
-            w[j] += scale * grad[j];
+            grad[j] *= grad_scale;
+        }
+
+        // Adam update
+        let t = (iter + 1) as f32;
+        for j in 0..dim {
+            adam_m[j] = adam_beta1 * adam_m[j] + (1.0 - adam_beta1) * grad[j];
+            adam_v[j] = adam_beta2 * adam_v[j] + (1.0 - adam_beta2) * grad[j] * grad[j];
+            let m_hat = adam_m[j] / (1.0 - adam_beta1.powf(t));
+            let v_hat = adam_v[j] / (1.0 - adam_beta2.powf(t));
+            w[j] += lr * m_hat / (v_hat.sqrt() + adam_eps);
         }
 
         // Stats
@@ -697,9 +723,9 @@ fn run_combined_training(
 
         let games_this_iter = pop_size as u32 * 2 * games_per_eval;
         println!(
-            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} ({} games in {:.1?})",
+            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} ({} games in {:.1?})",
             iter + 1, iterations,
-            avg_plus, avg_minus, max_wr,
+            avg_plus, avg_minus, max_wr, sigma_current,
             games_this_iter, iter_start.elapsed()
         );
 
@@ -715,10 +741,24 @@ fn run_combined_training(
             let cand_player = Player::Evaluator(&eval_comb);
             let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
             print!("  EVAL: ");
-            run_matches(
+            let eval_result = run_matches(
                 gs, &cand_player, &heur_player, eval_games,
                 &format!("Combined41(ES iter={}) vs Heuristic", iter + 1),
             );
+
+            // Adaptive sigma: track improvement
+            let eval_wr = eval_result.player_a_wins as f32 / eval_games as f32;
+            if eval_wr > best_eval_wr + 0.01 {
+                best_eval_wr = eval_wr;
+                evals_without_improvement = 0;
+                sigma_current = sigma_base; // reset to base on improvement
+            } else {
+                evals_without_improvement += 1;
+                if evals_without_improvement >= sigma_patience {
+                    sigma_current = (sigma_current * sigma_grow).min(sigma_max);
+                    println!("  Sigma adapted: {:.4} (no improvement for {} evals)", sigma_current, evals_without_improvement);
+                }
+            }
         }
     }
 
@@ -910,9 +950,9 @@ fn run_generic_sparse_training(
 
         let games_this_iter = pop_size as u32 * 2 * games_per_eval;
         println!(
-            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} ({} games in {:.1?})",
+            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} ({} games in {:.1?})",
             iter + 1, iterations,
-            avg_plus, avg_minus, max_wr,
+            avg_plus, avg_minus, max_wr, sigma,
             games_this_iter, iter_start.elapsed()
         );
 
@@ -1259,9 +1299,9 @@ fn main() {
 
         let games_this_iter = pop_size as u32 * 2 * games_per_eval;
         println!(
-            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} ({} games in {:.1?})",
+            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} ({} games in {:.1?})",
             iter + 1, iterations,
-            avg_plus, avg_minus, max_wr,
+            avg_plus, avg_minus, max_wr, sigma,
             games_this_iter, iter_start.elapsed()
         );
 
