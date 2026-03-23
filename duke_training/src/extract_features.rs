@@ -1,6 +1,6 @@
 //! Extract heuristic features from saved game trajectories and cache to disk.
 //!
-//! Usage: extract_features --trajectories <path.dtrj> --output <features.bin> [--cheap]
+//! Usage: extract_features --trajectories <path.dtrj> --output <features.bin> [--combined]
 
 use std::time::Instant;
 
@@ -16,7 +16,7 @@ fn main() {
     let traj_path = args.iter().position(|a| a == "--trajectories")
         .and_then(|i| args.get(i + 1))
         .map(|s| s.as_str())
-        .expect("Usage: extract_features --trajectories <path.dtrj> [--output <features.bin>] [--cheap]");
+        .expect("Usage: extract_features --trajectories <path.dtrj> [--output <features.bin>] [--combined]");
 
     let output_path = args.iter().position(|a| a == "--output")
         .and_then(|i| args.get(i + 1))
