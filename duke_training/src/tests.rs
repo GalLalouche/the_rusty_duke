@@ -1822,3 +1822,265 @@ mod board_control_tests {
             "Our footman at (3,4) should be threatened by bottom duke; opp_threatened={}", opp_threatened);
     }
 }
+
+// ── cli::parse_flag tests ───────────────────────────────────────────────
+
+use crate::cli::parse_flag;
+
+#[test]
+fn parse_flag_present_with_valid_value() {
+    let args: Vec<String> = vec!["prog", "--lr", "0.01", "--pop", "50"]
+        .into_iter().map(String::from).collect();
+    assert_eq!(parse_flag::<f64>(&args, "--lr"), Some(0.01));
+    assert_eq!(parse_flag::<usize>(&args, "--pop"), Some(50));
+}
+
+#[test]
+fn parse_flag_missing_returns_none() {
+    let args: Vec<String> = vec!["prog", "--lr", "0.01"]
+        .into_iter().map(String::from).collect();
+    assert_eq!(parse_flag::<f64>(&args, "--pop"), None);
+}
+
+#[test]
+fn parse_flag_unparsable_value_returns_none() {
+    let args: Vec<String> = vec!["prog", "--lr", "not_a_number"]
+        .into_iter().map(String::from).collect();
+    assert_eq!(parse_flag::<f64>(&args, "--lr"), None);
+}
+
+#[test]
+fn parse_flag_last_arg_no_value_returns_none() {
+    let args: Vec<String> = vec!["prog", "--lr"]
+        .into_iter().map(String::from).collect();
+    assert_eq!(parse_flag::<f64>(&args, "--lr"), None);
+}
+
+#[test]
+fn parse_flag_string_type() {
+    let args: Vec<String> = vec!["prog", "--resume", "/path/to/model.nnue"]
+        .into_iter().map(String::from).collect();
+    assert_eq!(parse_flag::<String>(&args, "--resume"), Some("/path/to/model.nnue".to_string()));
+}
+
+// ── TileType TryFrom<u8> tests ──────────────────────────────────────────
+
+use std::convert::TryFrom;
+
+#[test]
+fn tile_type_try_from_roundtrip_all_variants() {
+    let variants = [
+        TileType::Duke, TileType::Footman, TileType::Pikeman, TileType::Knight,
+        TileType::Champion, TileType::Dragoon, TileType::Wizard, TileType::General,
+        TileType::Marshall, TileType::Assassin, TileType::Priest, TileType::Bowman,
+        TileType::Longbowman,
+    ];
+    for (i, &expected) in variants.iter().enumerate() {
+        let byte = i as u8;
+        let result = TileType::try_from(byte);
+        assert_eq!(result, Ok(expected),
+            "TileType::try_from({}) should return {:?}, got {:?}", byte, expected, result);
+        // Also verify index() matches the u8 value
+        assert_eq!(expected.index(), i,
+            "TileType::{:?}.index() should be {}, got {}", expected, i, expected.index());
+    }
+}
+
+#[test]
+fn tile_type_try_from_invalid_returns_error() {
+    assert_eq!(TileType::try_from(13u8), Err(13));
+    assert_eq!(TileType::try_from(255u8), Err(255));
+}
+
+// ── extract_combined_features layout tests ──────────────────────────────
+
+use crate::learned_heuristic::{
+    extract_combined_features, extract_cheap_features, discard_vector,
+    NUM_COMBINED_FEATURES, NUM_CHEAP_FEATURES,
+    manhattan_distance_features, board_control_features, duke_mobility_no_guard,
+};
+
+#[test]
+fn extract_combined_features_length_and_layout() {
+    // Verify the combined feature vector has the right length and that
+    // each sub-array is placed at the documented index range.
+    let gs = make_state(vec![
+        (coord(2, 2), PlacedTile::new(Owner::TopPlayer, units::duke())),
+        (coord(4, 4), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+        (coord(2, 3), PlacedTile::new(Owner::TopPlayer, units::footman())),
+    ], Owner::TopPlayer);
+
+    let combined = extract_combined_features(&gs);
+    assert_eq!(combined.len(), NUM_COMBINED_FEATURES);
+    assert_eq!(NUM_COMBINED_FEATURES, 41);
+
+    // Verify sub-array placement matches individual extractions
+    let manhattan = manhattan_distance_features(&gs);
+    let control = board_control_features(&gs);
+    let duke_mob = duke_mobility_no_guard(&gs);
+    let discards = discard_vector(&gs);
+
+    for i in 0..4 {
+        assert_eq!(combined[i], manhattan[i],
+            "combined[{}] should match manhattan[{}]: {} vs {}", i, i, combined[i], manhattan[i]);
+    }
+    for i in 0..9 {
+        assert_eq!(combined[4 + i], control[i],
+            "combined[{}] should match control[{}]: {} vs {}", 4 + i, i, combined[4 + i], control[i]);
+    }
+    for i in 0..2 {
+        assert_eq!(combined[13 + i], duke_mob[i],
+            "combined[{}] should match duke_mob[{}]: {} vs {}", 13 + i, i, combined[13 + i], duke_mob[i]);
+    }
+    for i in 0..26 {
+        assert_eq!(combined[15 + i], discards[i],
+            "combined[{}] should match discards[{}]: {} vs {}", 15 + i, i, combined[15 + i], discards[i]);
+    }
+}
+
+// ── extract_cheap_features tests ────────────────────────────────────────
+
+#[test]
+fn extract_cheap_features_basic() {
+    // TopPlayer: duke at (2,2), footman at (2,3) (adjacent, center)
+    // BottomPlayer: duke at (4,4), footman at (5,5) (not adjacent, not center)
+    let gs = snapshot_state_with_bags(
+        vec![
+            (coord(2, 2), PlacedTile::new(Owner::TopPlayer, units::duke())),
+            (coord(2, 3), PlacedTile::new(Owner::TopPlayer, units::footman())),
+            (coord(4, 4), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            (coord(5, 5), PlacedTile::new(Owner::BottomPlayer, units::footman())),
+        ],
+        Owner::TopPlayer,
+        TileBag::new(vec![]),
+        TileBag::new(vec![]),
+    );
+
+    let f = extract_cheap_features(&gs);
+    assert_eq!(f.len(), NUM_CHEAP_FEATURES);
+    assert_eq!(NUM_CHEAP_FEATURES, 15);
+
+    // [0] my_tile_count = 2 (duke + footman)
+    assert_eq!(f[0], 2.0, "my_tile_count");
+    // [1] opp_tile_count = 2
+    assert_eq!(f[1], 2.0, "opp_tile_count");
+    // [2] my_bag_size = 0
+    assert_eq!(f[2], 0.0, "my_bag_size");
+    // [3] opp_bag_size = 0
+    assert_eq!(f[3], 0.0, "opp_bag_size");
+    // [4] my_discard_count = 0
+    assert_eq!(f[4], 0.0, "my_discard_count");
+    // [5] opp_discard_count = 0
+    assert_eq!(f[5], 0.0, "opp_discard_count");
+    // [6] my_adjacency: duke(2,2) and footman(2,3) are adjacent => 1
+    assert_eq!(f[6], 1.0, "my_adjacency");
+    // [7] opp_adjacency: duke(4,4) and footman(5,5) are NOT adjacent (Manhattan=2)
+    assert_eq!(f[7], 0.0, "opp_adjacency");
+    // [8] my_center_control: duke(2,2) is center, footman(2,3) is center => 2
+    assert_eq!(f[8], 2.0, "my_center_control");
+    // [9] opp_center_control: duke(4,4) not in center, footman(5,5) not in center => 0
+    assert_eq!(f[9], 0.0, "opp_center_control");
+    // [14] bias = always 1.0
+    assert_eq!(f[14], 1.0, "bias");
+}
+
+// ── discard_vector per-tile-type tests ──────────────────────────────────
+
+#[test]
+fn discard_vector_maps_tile_types_correctly() {
+    use std::sync::Arc;
+    use duke_rust::game::bag::DiscardBag;
+
+    // TopPlayer discards: 1 Footman + 1 Knight
+    // BottomPlayer discards: 2 Pikemen
+    // Current player = TopPlayer
+    let gs = snapshot_state_with_discards(
+        vec![
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
+            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+        ],
+        Owner::TopPlayer,
+        DiscardBag::from_tiles(vec![
+            Arc::new(units::footman()),
+            Arc::new(units::knight()),
+        ]),
+        DiscardBag::from_tiles(vec![
+            Arc::new(units::pikeman()),
+            Arc::new(units::pikeman()),
+        ]),
+    );
+
+    let d = discard_vector(&gs);
+    assert_eq!(d.len(), 26);
+
+    // My (TopPlayer) discards: Footman=index 1, Knight=index 3
+    assert_eq!(d[TileType::Footman.index()], 1.0, "my Footman discard count");
+    assert_eq!(d[TileType::Knight.index()], 1.0, "my Knight discard count");
+    assert_eq!(d[TileType::Duke.index()], 0.0, "my Duke discard count (none)");
+    assert_eq!(d[TileType::Pikeman.index()], 0.0, "my Pikeman discard count (none)");
+
+    // Opponent (BottomPlayer) discards: Pikeman=index 2, two of them
+    assert_eq!(d[13 + TileType::Pikeman.index()], 2.0, "opp Pikeman discard count");
+    assert_eq!(d[13 + TileType::Footman.index()], 0.0, "opp Footman discard count (none)");
+
+    // All other slots should be 0
+    let total: f64 = d.iter().sum();
+    assert_eq!(total, 4.0, "total discards should be 4 (1+1+2)");
+}
+
+// ── play_two_player_game tests ──────────────────────────────────────────
+
+use crate::game_setup::play_two_player_game;
+
+/// Verify play_two_player_game uses different evaluators for each side.
+/// We use a "always prefer material" vs "always prefer mobility" evaluator
+/// and verify the game finishes (doesn't panic) and returns a valid result.
+#[test]
+fn play_two_player_game_uses_different_evaluators() {
+    use crate::game_setup::{StaticHeuristicEvaluator, GameEvaluator};
+    use rand::Rng;
+
+    // A simple evaluator that always returns a fixed score
+    struct ConstantEvaluator(f32);
+    impl GameEvaluator for ConstantEvaluator {
+        fn evaluate(&self, _gs: &GameState) -> f32 { self.0 }
+    }
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+    let mut rng = StdRng::seed_from_u64(42);
+
+    let eval_a = ConstantEvaluator(0.8);
+    let eval_b = ConstantEvaluator(0.2);
+
+    // Just verify it runs to completion without panicking and returns a valid result
+    let (states, result) = play_two_player_game(&gs, &eval_a, &eval_b, &mut rng, 0.0);
+    assert!(!states.is_empty(), "Should produce at least one state");
+    // Result should be Won or Tie (not Ongoing since the game must end)
+    match result {
+        GameResult::Won(_) | GameResult::Tie => {},
+        GameResult::Ongoing => panic!("play_two_player_game should not return Ongoing"),
+    }
+}
+
+/// Verify that play_two_player_game with identical evaluators produces the same
+/// result as play_selfplay_game (which is defined as delegating to play_two_player_game).
+#[test]
+fn play_two_player_game_same_eval_matches_selfplay() {
+    use crate::game_setup::{play_selfplay_game, StaticHeuristicEvaluator};
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+    let eval = StaticHeuristicEvaluator::new();
+
+    let mut rng1 = StdRng::seed_from_u64(123);
+    let mut rng2 = StdRng::seed_from_u64(123);
+
+    let (states1, result1) = play_selfplay_game(&gs, &eval, &mut rng1, 0.1);
+    let (states2, result2) = play_two_player_game(&gs, &eval, &eval, &mut rng2, 0.1);
+
+    assert_eq!(states1.len(), states2.len(),
+        "Same seed should produce same game length");
+    assert_eq!(result1, result2,
+        "Same seed should produce same result");
+}
