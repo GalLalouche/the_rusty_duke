@@ -19,8 +19,6 @@ pub enum Player<'a> {
     Evaluator(&'a (dyn GameEvaluator + Sync)),
 }
 
-// Player is Sync because &(dyn GameEvaluator + Sync) is Sync
-unsafe impl Sync for Player<'_> {}
 
 /// Play a single match between a top player and a bottom player.
 ///

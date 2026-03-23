@@ -26,6 +26,7 @@ use rayon::prelude::*;
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
 
+use duke_training::cli::parse_flag;
 use duke_training::encoding::{active_board_features, bag_features, BOARD_FEATURES, TOTAL_FEATURES};
 use duke_training::game_setup::{
     create_bag, create_initial_state, GameEvaluator, StaticHeuristicEvaluator,
@@ -119,6 +120,9 @@ const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES; // 11
 // A self-contained input->H1->H2->...->Hn->1 network with ReLU hidden layers
 // and sigmoid output. Operates entirely on Vec<f32>.
 
+/// Maximum hidden layer size for stack allocation in forward passes.
+const MAX_HIDDEN: usize = 1024;
+
 /// Generic MLP weight container supporting arbitrary hidden layer depths.
 struct GenericMlp {
     input_size: usize,
@@ -149,6 +153,9 @@ impl GenericMlp {
             "flat weight vector size mismatch: expected {}, got {}",
             expected, flat.len()
         );
+        for &h in &hidden_layers {
+            assert!(h <= MAX_HIDDEN, "hidden layer size {} exceeds MAX_HIDDEN {}", h, MAX_HIDDEN);
+        }
         Self { input_size, hidden_layers, weights: flat }
     }
 
@@ -193,13 +200,17 @@ impl GenericMlp {
         let hb = &w[off..off + h_size];
         off += h_size;
 
-        let mut prev_act = vec![0.0f32; h_size];
+        // Use two stack buffers and ping-pong between them (no heap allocation).
+        let mut buf_a = [0.0f32; MAX_HIDDEN];
+        let mut buf_b = [0.0f32; MAX_HIDDEN];
+        let mut use_a = true; // buf_a holds the current layer's activations
+
         for j in 0..h_size {
             let mut sum = hb[j];
             for i in 0..self.input_size {
                 sum += hw[i * h_size + j] * input[i] as f32;
             }
-            prev_act[j] = sum.max(0.0); // ReLU
+            buf_a[j] = sum.max(0.0); // ReLU
         }
 
         // Subsequent hidden layers: f32 -> f32
@@ -211,15 +222,15 @@ impl GenericMlp {
             let lb = &w[off..off + cur_size];
             off += cur_size;
 
-            let mut cur_act = vec![0.0f32; cur_size];
+            let (src, dst) = if use_a { (&buf_a, &mut buf_b) } else { (&buf_b, &mut buf_a) };
             for j in 0..cur_size {
                 let mut sum = lb[j];
                 for i in 0..prev_size {
-                    sum += lw[i * cur_size + j] * prev_act[i];
+                    sum += lw[i * cur_size + j] * src[i];
                 }
-                cur_act[j] = sum.max(0.0); // ReLU
+                dst[j] = sum.max(0.0); // ReLU
             }
-            prev_act = cur_act;
+            use_a = !use_a;
         }
 
         // Output layer: last_hidden -> 1, sigmoid
@@ -228,9 +239,10 @@ impl GenericMlp {
         off += last_h;
         let out_b = w[off];
 
+        let prev = if use_a { &buf_a } else { &buf_b };
         let mut logit = out_b;
         for i in 0..last_h {
-            logit += out_w[i] * prev_act[i];
+            logit += out_w[i] * prev[i];
         }
 
         1.0 / (1.0 + (-logit).exp())
@@ -242,6 +254,10 @@ impl GenericMlp {
         let w = &self.weights;
         let mut off = 0;
 
+        let mut buf_a = [0.0f32; MAX_HIDDEN];
+        let mut buf_b = [0.0f32; MAX_HIDDEN];
+        let mut use_a = true;
+
         // First hidden layer
         let h_size = self.hidden_layers[0];
         let hw = &w[off..off + self.input_size * h_size];
@@ -249,13 +265,12 @@ impl GenericMlp {
         let hb = &w[off..off + h_size];
         off += h_size;
 
-        let mut prev_act = vec![0.0f32; h_size];
         for j in 0..h_size {
             let mut sum = hb[j];
             for i in 0..self.input_size {
                 sum += hw[i * h_size + j] * input[i];
             }
-            prev_act[j] = sum.max(0.0);
+            buf_a[j] = sum.max(0.0);
         }
 
         // Subsequent hidden layers
@@ -267,15 +282,15 @@ impl GenericMlp {
             let lb = &w[off..off + cur_size];
             off += cur_size;
 
-            let mut cur_act = vec![0.0f32; cur_size];
+            let (src, dst) = if use_a { (&buf_a, &mut buf_b) } else { (&buf_b, &mut buf_a) };
             for j in 0..cur_size {
                 let mut sum = lb[j];
                 for i in 0..prev_size {
-                    sum += lw[i * cur_size + j] * prev_act[i];
+                    sum += lw[i * cur_size + j] * src[i];
                 }
-                cur_act[j] = sum.max(0.0);
+                dst[j] = sum.max(0.0);
             }
-            prev_act = cur_act;
+            use_a = !use_a;
         }
 
         // Output layer
@@ -284,9 +299,10 @@ impl GenericMlp {
         off += last_h;
         let out_b = w[off];
 
+        let prev = if use_a { &buf_a } else { &buf_b };
         let mut logit = out_b;
         for i in 0..last_h {
-            logit += out_w[i] * prev_act[i];
+            logit += out_w[i] * prev[i];
         }
 
         1.0 / (1.0 + (-logit).exp())
@@ -304,15 +320,15 @@ impl GenericMlp {
         let l1_b = &w[self.input_size * h1..self.input_size * h1 + h1];
         let mut off = self.input_size * h1 + h1;
 
-        let mut prev_act = vec![0.0f32; h1];
-        prev_act.copy_from_slice(l1_b);
+        let mut buf_a = [0.0f32; MAX_HIDDEN];
+        buf_a[..h1].copy_from_slice(l1_b);
 
         // Sparse board features (binary)
         let board_feats = active_board_features(gs);
         for &feat in board_feats.as_slice() {
             let col = &l1_w[feat * h1..(feat + 1) * h1];
             for j in 0..h1 {
-                prev_act[j] += col[j];
+                buf_a[j] += col[j];
             }
         }
 
@@ -323,7 +339,7 @@ impl GenericMlp {
                 let feat = BOARD_FEATURES + i;
                 let col = &l1_w[feat * h1..(feat + 1) * h1];
                 for j in 0..h1 {
-                    prev_act[j] += col[j] * val;
+                    buf_a[j] += col[j] * val;
                 }
             }
         }
@@ -338,11 +354,11 @@ impl GenericMlp {
                     let col = &l1_w[feat * h1..(feat + 1) * h1];
                     if fval == 1.0 {
                         for j in 0..h1 {
-                            prev_act[j] += col[j];
+                            buf_a[j] += col[j];
                         }
                     } else {
                         for j in 0..h1 {
-                            prev_act[j] += col[j] * fval;
+                            buf_a[j] += col[j] * fval;
                         }
                     }
                 }
@@ -351,10 +367,12 @@ impl GenericMlp {
 
         // ReLU
         for j in 0..h1 {
-            prev_act[j] = prev_act[j].max(0.0);
+            buf_a[j] = buf_a[j].max(0.0);
         }
 
-        // Subsequent hidden layers
+        // Subsequent hidden layers (ping-pong between buf_a and buf_b)
+        let mut buf_b = [0.0f32; MAX_HIDDEN];
+        let mut use_a = true;
         for layer_idx in 1..self.hidden_layers.len() {
             let prev_size = self.hidden_layers[layer_idx - 1];
             let cur_size = self.hidden_layers[layer_idx];
@@ -363,15 +381,15 @@ impl GenericMlp {
             let lb = &w[off..off + cur_size];
             off += cur_size;
 
-            let mut cur_act = vec![0.0f32; cur_size];
+            let (src, dst) = if use_a { (&buf_a, &mut buf_b) } else { (&buf_b, &mut buf_a) };
             for j in 0..cur_size {
                 let mut sum = lb[j];
                 for i in 0..prev_size {
-                    sum += lw[i * cur_size + j] * prev_act[i];
+                    sum += lw[i * cur_size + j] * src[i];
                 }
-                cur_act[j] = sum.max(0.0);
+                dst[j] = sum.max(0.0);
             }
-            prev_act = cur_act;
+            use_a = !use_a;
         }
 
         // Output layer
@@ -380,9 +398,10 @@ impl GenericMlp {
         off += last_h;
         let out_b = w[off];
 
+        let prev = if use_a { &buf_a } else { &buf_b };
         let mut logit = out_b;
         for i in 0..last_h {
-            logit += out_w[i] * prev_act[i];
+            logit += out_w[i] * prev[i];
         }
 
         1.0 / (1.0 + (-logit).exp())
@@ -954,62 +973,17 @@ fn randn_vec(n: usize, rng: &mut StdRng) -> Vec<f32> {
 
 // ── Win-rate evaluation ──────────────────────────────────────────────────
 
-/// Play K games of NNUE vs Heuristic and return win rate in [0, 1].
-/// Alternates sides each game. Ties count as 0.5.
+/// Play K games of NNUE vs opponent and return win rate in [0, 1].
+/// Delegates to `evaluate_generic` after wrapping the weights in an evaluator.
 fn evaluate_perturbation(
-    weights: &NnueWeights,
+    weights: NnueWeights,
     opponent: &(dyn duke_training::game_setup::GameEvaluator + Sync),
     gs: &duke_rust::game::state::GameState,
     k: u32,
     seed_base: u64,
 ) -> f32 {
-    let evaluator = NnueEvaluator::new(NnueWeights {
-        l1_size: weights.l1_size,
-        l2_size: weights.l2_size,
-        l1_weight: weights.l1_weight.clone(),
-        l1_bias: weights.l1_bias.clone(),
-        l2_weight: weights.l2_weight.clone(),
-        l2_bias: weights.l2_bias.clone(),
-        l3_weight: weights.l3_weight.clone(),
-        l3_bias: weights.l3_bias.clone(),
-    });
-
-    let nnue_player = Player::Evaluator(&evaluator);
-    let opp_player = Player::Evaluator(opponent);
-
-    let mut score = 0.0f32;
-    for i in 0..k {
-        let mut rng = StdRng::seed_from_u64(seed_base + i as u64);
-        let result = if i % 2 == 0 {
-            play_match(gs, &nnue_player, &opp_player, &mut rng, 200)
-        } else {
-            play_match(gs, &opp_player, &nnue_player, &mut rng, 200)
-        };
-        let nnue_is_top = i % 2 == 0;
-        match result {
-            GameResult::Won(Owner::TopPlayer) => {
-                if nnue_is_top { score += 1.0; }
-            }
-            GameResult::Won(Owner::BottomPlayer) => {
-                if !nnue_is_top { score += 1.0; }
-            }
-            _ => { score += 0.5; }
-        }
-    }
-    score / k as f32
-}
-
-// ── CLI argument parsing ─────────────────────────────────────────────────
-
-fn parse_flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-}
-
-fn parse_flag_string(args: &[String], flag: &str) -> Option<String> {
-    parse_flag(args, flag)
+    let evaluator = NnueEvaluator::new(weights);
+    evaluate_generic(&evaluator, opponent, gs, k, seed_base, 200)
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
@@ -1019,7 +993,7 @@ fn main() {
 
     let l1_size: usize = parse_flag(&args, "--l1").unwrap_or(256);
     let l2_size: usize = parse_flag(&args, "--l2").unwrap_or(32);
-    let resume_path = parse_flag_string(&args, "--resume");
+    let resume_path = parse_flag::<String>(&args, "--resume");
     let pop_size: usize = parse_flag(&args, "--pop").unwrap_or(50);
     let games_per_eval: u32 = parse_flag(&args, "--games").unwrap_or(10);
     let sigma: f32 = parse_flag(&args, "--sigma").unwrap_or(0.01);
@@ -1027,17 +1001,17 @@ fn main() {
     let iterations: u32 = parse_flag(&args, "--iterations").unwrap_or(200);
     let eval_interval: u32 = parse_flag(&args, "--eval-interval").unwrap_or(20);
     let eval_games: u32 = parse_flag(&args, "--eval-games").unwrap_or(500);
-    let checkpoint_dir = parse_flag_string(&args, "--checkpoint-dir")
+    let checkpoint_dir = parse_flag::<String>(&args, "--checkpoint-dir")
         .unwrap_or_else(|| "es_checkpoints".to_string());
     let self_play = args.iter().any(|a| a == "--self-play");
     let last_layer_only = args.iter().any(|a| a == "--last-layer-only");
     let append_combined = args.iter().any(|a| a == "--append-combined");
-    let input_features = parse_flag_string(&args, "--input-features")
+    let input_features = parse_flag::<String>(&args, "--input-features")
         .unwrap_or_else(|| "nnue".to_string());
     let time_limit_secs: Option<u64> = parse_flag(&args, "--time-limit");
 
     // Parse --layers flag: comma-separated hidden layer sizes (e.g. "64,64,32")
-    let layers_str: Option<String> = parse_flag_string(&args, "--layers");
+    let layers_str: Option<String> = parse_flag::<String>(&args, "--layers");
     let hidden_layers: Vec<usize> = if let Some(ref s) = layers_str {
         s.split(',')
             .map(|x| x.trim().parse::<usize>().expect("Invalid layer size in --layers"))
@@ -1231,10 +1205,10 @@ fn main() {
                     // Self-play: perturbation plays against unperturbed base weights
                     let base_weights_copy = reconstruct_weights(&w);
                     let base_eval = NnueEvaluator::new(base_weights_copy);
-                    evaluate_perturbation(&weights, &base_eval, &gs, games_per_eval, game_seed)
+                    evaluate_perturbation(weights, &base_eval, &gs, games_per_eval, game_seed)
                 } else {
                     let heuristic = StaticHeuristicEvaluator::new();
-                    evaluate_perturbation(&weights, &heuristic, &gs, games_per_eval, game_seed)
+                    evaluate_perturbation(weights, &heuristic, &gs, games_per_eval, game_seed)
                 };
 
                 (pert_idx, win_rate, 0.0) // third field unused, identified by idx parity
