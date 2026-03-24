@@ -670,6 +670,7 @@ fn run_dense_training(
     resume_path: Option<&str>,
     seed: u64,
     initial_opponent_epsilon: f32,
+    training_opponent: &TrainingOpponent,
 ) {
     let input_size = feature_mode.input_size();
     let dim = GenericMlp::param_count(input_size, hidden_layers);
@@ -792,20 +793,36 @@ fn run_dense_training(
                 let net = GenericMlp::from_flat(perturbed, input_size, hidden_layers.to_vec());
 
                 let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
-                let heuristic = StaticHeuristicEvaluator::new();
                 // Guard features are expensive (guard checking per eval), use 50-turn cap
                 let train_max_turns = match feature_mode {
                     DenseFeatureMode::Guard => 50,
                     DenseFeatureMode::Combined => 200,
                 };
-                let win_rate = match feature_mode {
-                    DenseFeatureMode::Combined => {
-                        let evaluator = CombinedNetEvaluator::new(net);
-                        evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                let win_rate = match training_opponent {
+                    TrainingOpponent::Random => {
+                        let fallback = StaticHeuristicEvaluator::new();
+                        match feature_mode {
+                            DenseFeatureMode::Combined => {
+                                let evaluator = CombinedNetEvaluator::new(net);
+                                evaluate_generic(&evaluator, &fallback, gs, games_per_eval, game_seed, train_max_turns, 1.0)
+                            }
+                            DenseFeatureMode::Guard => {
+                                let evaluator = GuardFeatureEvaluator::new(net);
+                                evaluate_generic(&evaluator, &fallback, gs, games_per_eval, game_seed, train_max_turns, 1.0)
+                            }
+                        }
                     }
-                    DenseFeatureMode::Guard => {
-                        let evaluator = GuardFeatureEvaluator::new(net);
-                        evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                    TrainingOpponent::Eval(opp_eval) => {
+                        match feature_mode {
+                            DenseFeatureMode::Combined => {
+                                let evaluator = CombinedNetEvaluator::new(net);
+                                evaluate_generic(&evaluator, *opp_eval, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                            }
+                            DenseFeatureMode::Guard => {
+                                let evaluator = GuardFeatureEvaluator::new(net);
+                                evaluate_generic(&evaluator, *opp_eval, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                            }
+                        }
                     }
                 };
 
@@ -972,6 +989,7 @@ fn run_generic_sparse_training(
     time_limit_secs: Option<u64>,
     resume_path: Option<&str>,
     seed: u64,
+    training_opponent: &TrainingOpponent,
 ) {
     let dim = GenericMlp::param_count(input_size, hidden_layers);
     let mode_name = if include_combined { "Appended" } else { "NNUE" };
@@ -1087,17 +1105,30 @@ fn run_generic_sparse_training(
 
                 let net = GenericMlp::from_flat(perturbed, input_size, hidden_layers.to_vec());
                 let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
-                let heuristic = StaticHeuristicEvaluator::new();
 
                 // Appended mode uses 50-turn cap because combined feature extraction
                 // is expensive (involves full move generation per eval).
                 let train_max_turns = if include_combined { 50 } else { 200 };
-                let win_rate = if include_combined {
-                    let evaluator = GenericAppendedEvaluator { net };
-                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
-                } else {
-                    let evaluator = GenericNnueEvaluator { net };
-                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                let win_rate = match training_opponent {
+                    TrainingOpponent::Random => {
+                        let fallback = StaticHeuristicEvaluator::new();
+                        if include_combined {
+                            let evaluator = GenericAppendedEvaluator { net };
+                            evaluate_generic(&evaluator, &fallback, gs, games_per_eval, game_seed, train_max_turns, 1.0)
+                        } else {
+                            let evaluator = GenericNnueEvaluator { net };
+                            evaluate_generic(&evaluator, &fallback, gs, games_per_eval, game_seed, train_max_turns, 1.0)
+                        }
+                    }
+                    TrainingOpponent::Eval(opp_eval) => {
+                        if include_combined {
+                            let evaluator = GenericAppendedEvaluator { net };
+                            evaluate_generic(&evaluator, *opp_eval, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                        } else {
+                            let evaluator = GenericNnueEvaluator { net };
+                            evaluate_generic(&evaluator, *opp_eval, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                        }
+                    }
                 };
 
                 (pert_idx, win_rate, 0.0)
@@ -1255,6 +1286,66 @@ fn evaluate_perturbation(
     evaluate_generic(&evaluator, opponent, gs, k, seed_base, 200, opponent_epsilon)
 }
 
+// ── Opponent loading ─────────────────────────────────────────────────────
+
+/// Load an opponent evaluator from a file path or keyword.
+///
+/// Returns `None` for the "random" keyword (caller should use `Player::Random`),
+/// or `Some(evaluator)` for all other cases.
+///
+/// Supported formats:
+///   - "base" or absent  -> StaticHeuristicEvaluator
+///   - "random"          -> None (caller uses Player::Random)
+///   - path ending .gmlp -> GenericMlp, dispatched by input_size
+///   - path ending .nnue -> NnueWeights wrapped in NnueEvaluator
+fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>>, String) {
+    match spec {
+        "base" => {
+            let eval = StaticHeuristicEvaluator::new();
+            (Some(Box::new(eval)), "Base heuristic".to_string())
+        }
+        "random" => {
+            (None, "Random".to_string())
+        }
+        path if path.ends_with(".gmlp") => {
+            let net = GenericMlp::load(path).expect("Failed to load .gmlp opponent");
+            let desc = format!("GMLP ({})", net.arch_string());
+            let eval: Box<dyn GameEvaluator + Sync + Send> = match net.input_size {
+                41 => Box::new(CombinedNetEvaluator::new(net)),
+                65 => Box::new(GuardFeatureEvaluator::new(net)),
+                1106 => Box::new(GenericNnueEvaluator { net }),
+                1147 => Box::new(GenericAppendedEvaluator { net }),
+                other => panic!(
+                    "Unknown input_size {} in .gmlp file '{}'. Expected 41, 65, 1106, or 1147.",
+                    other, path
+                ),
+            };
+            (Some(eval), desc)
+        }
+        path if path.ends_with(".nnue") => {
+            let weights = NnueWeights::load(path).expect("Failed to load .nnue opponent");
+            let desc = format!("NNUE ({}->{}->{}->1)", NUM_FEATURES, weights.l1_size, weights.l2_size);
+            let eval = NnueEvaluator::new(weights);
+            (Some(Box::new(eval)), desc)
+        }
+        other => {
+            panic!(
+                "Unknown opponent '{}'. Use 'base', 'random', or a path ending in .gmlp / .nnue",
+                other
+            );
+        }
+    }
+}
+
+/// Describes the training opponent for use in parallel closures.
+/// Either a shared reference to a boxed evaluator, or "random" / "base" keywords.
+enum TrainingOpponent<'a> {
+    /// Use `Player::Random` (no evaluator needed).
+    Random,
+    /// Use this evaluator reference as the opponent.
+    Eval(&'a (dyn GameEvaluator + Sync)),
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1286,6 +1377,19 @@ fn main() {
     });
     let opponent_epsilon: f32 = parse_flag(&args, "--opponent-epsilon").unwrap_or(0.0);
 
+    // Parse --opponent flag: path to a saved model, "base", or "random"
+    let opponent_spec = parse_flag::<String>(&args, "--opponent")
+        .unwrap_or_else(|| "base".to_string());
+
+    let (opponent_box, opponent_desc) = load_opponent(&opponent_spec);
+    let training_opponent: TrainingOpponent = if opponent_box.is_none() {
+        TrainingOpponent::Random
+    } else {
+        TrainingOpponent::Eval(opponent_box.as_ref().unwrap().as_ref())
+    };
+
+    println!("Training opponent: {}", opponent_desc);
+
     // Parse --layers flag: comma-separated hidden layer sizes (e.g. "64,64,32")
     let layers_str: Option<String> = parse_flag::<String>(&args, "--layers");
     let hidden_layers: Vec<usize> = if let Some(ref s) = layers_str {
@@ -1310,6 +1414,7 @@ fn main() {
             sigma, lr, iterations, eval_interval, eval_games,
             &checkpoint_dir, &gs, time_limit_secs,
             resume_path.as_deref(), seed, opponent_epsilon,
+            &training_opponent,
         );
         return;
     }
@@ -1324,6 +1429,7 @@ fn main() {
             sigma, lr, iterations, eval_interval, eval_games,
             &checkpoint_dir, &gs, time_limit_secs,
             resume_path.as_deref(), seed, opponent_epsilon,
+            &training_opponent,
         );
         return;
     }
@@ -1337,6 +1443,7 @@ fn main() {
             pop_size, games_per_eval, sigma, lr, iterations,
             eval_interval, eval_games, &checkpoint_dir, &gs,
             opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
+            &training_opponent,
         );
         return;
     }
@@ -1354,6 +1461,7 @@ fn main() {
             pop_size, games_per_eval, sigma, lr, iterations,
             eval_interval, eval_games, &checkpoint_dir, &gs,
             opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
+            &training_opponent,
         );
         return;
     }
@@ -1501,8 +1609,18 @@ fn main() {
                     let base_eval = NnueEvaluator::new(base_weights_copy);
                     evaluate_perturbation(weights, &base_eval, &gs, games_per_eval, game_seed, opp_eps)
                 } else {
-                    let heuristic = StaticHeuristicEvaluator::new();
-                    evaluate_perturbation(weights, &heuristic, &gs, games_per_eval, game_seed, opp_eps)
+                    match &training_opponent {
+                        TrainingOpponent::Random => {
+                            // Play against random: use a dummy heuristic for the
+                            // evaluate_generic opponent slot but with epsilon=1.0
+                            // so every opponent move is random.
+                            let heuristic = StaticHeuristicEvaluator::new();
+                            evaluate_perturbation(weights, &heuristic, &gs, games_per_eval, game_seed, 1.0)
+                        }
+                        TrainingOpponent::Eval(opp_eval) => {
+                            evaluate_perturbation(weights, *opp_eval, &gs, games_per_eval, game_seed, opp_eps)
+                        }
+                    }
                 };
 
                 (pert_idx, win_rate, 0.0) // third field unused, identified by idx parity
