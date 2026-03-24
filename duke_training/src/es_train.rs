@@ -16,6 +16,7 @@
 //!                 [--checkpoint-dir <dir>] [--time-limit 3600]
 //!                 [--append-combined]  — use 1147-input network (1106 NNUE + 41 combined)
 //!                 [--input-features combined]  — use 41 combined features only
+//!                 [--input-features guard]  — use 65 features (24 expensive + 41 combined)
 
 use std::time::Instant;
 
@@ -23,16 +24,20 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
+use duke_rust::game::ai::player::ArtificialPlayer;
+use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
 
 use duke_training::cli::parse_flag;
 use duke_training::encoding::{active_board_features, bag_features, BOARD_FEATURES, TOTAL_FEATURES};
 use duke_training::game_setup::{
-    create_bag, create_initial_state, GameEvaluator, StaticHeuristicEvaluator,
+    create_bag, create_initial_state, greedy_move, GameEvaluator, StaticHeuristicEvaluator,
 };
-use duke_training::learned_heuristic::{extract_combined_features, NUM_COMBINED_FEATURES};
-use duke_training::match_runner::{play_match, run_matches, Player};
+use duke_training::learned_heuristic::{
+    extract_combined_features, extract_features, NUM_COMBINED_FEATURES,
+};
+use duke_training::match_runner::{run_matches, Player};
 use duke_training::nnue::{NnueEvaluator, NnueWeights, NUM_FEATURES};
 
 // ── Flatten / unflatten ──────────────────────────────────────────────────
@@ -464,6 +469,12 @@ impl GenericMlp {
             hidden_layers.push(u32::from_le_bytes(buf4) as usize);
         }
 
+        for &h in &hidden_layers {
+            if h > MAX_HIDDEN {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                    format!("hidden layer size {} exceeds MAX_HIDDEN {}", h, MAX_HIDDEN)));
+            }
+        }
         let n = Self::param_count(input_size, &hidden_layers);
         let mut weights = vec![0.0f32; n];
         for val in &mut weights {
@@ -492,6 +503,32 @@ impl GameEvaluator for CombinedNetEvaluator {
     }
 }
 
+/// Evaluator that wraps a GenericMlp: extracts all 65 features (24 expensive + 41 combined)
+/// then forward-passes. This is the richest feature set with the most signal.
+struct GuardFeatureEvaluator {
+    net: GenericMlp,
+}
+
+impl GuardFeatureEvaluator {
+    fn new(net: GenericMlp) -> Self {
+        Self { net }
+    }
+}
+
+/// Total guard feature count: 24 expensive + 41 combined = 65.
+const NUM_GUARD_ALL_FEATURES: usize = 24 + NUM_COMBINED_FEATURES;
+
+impl GameEvaluator for GuardFeatureEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        let expensive = extract_features(gs);       // 24 values
+        let combined = extract_combined_features(gs); // 41 values
+        let mut features = [0.0f64; NUM_GUARD_ALL_FEATURES];
+        features[..24].copy_from_slice(&expensive);
+        features[24..].copy_from_slice(&combined);
+        self.net.forward_f64(&features)
+    }
+}
+
 /// Evaluator that wraps a GenericMlp for sparse NNUE features (1106 inputs).
 struct GenericNnueEvaluator {
     net: GenericMlp,
@@ -514,8 +551,53 @@ impl GameEvaluator for GenericAppendedEvaluator {
     }
 }
 
+/// Play a single match where the candidate always plays greedily but the opponent
+/// uses epsilon-greedy: with probability `opponent_epsilon` it makes a random move,
+/// otherwise it picks its best greedy move.
+fn play_match_with_epsilon(
+    gs: &GameState,
+    candidate: &(dyn GameEvaluator + Sync),
+    opponent: &(dyn GameEvaluator + Sync),
+    candidate_is_top: bool,
+    rng: &mut StdRng,
+    max_turns: u32,
+    opponent_epsilon: f32,
+) -> GameResult {
+    let ai = StupidSyncAi {};
+    let mut game = gs.clone();
+    let mut turns = 0u32;
+
+    loop {
+        match game.game_result() {
+            GameResult::Ongoing => {
+                if turns >= max_turns {
+                    return GameResult::Tie;
+                }
+                let current = game.current_player_turn();
+                let is_candidate = (current == Owner::TopPlayer) == candidate_is_top;
+                if is_candidate {
+                    // Candidate always plays greedily
+                    let mv = greedy_move(&game, candidate, rng);
+                    mv.play(&mut game, rng);
+                } else {
+                    // Opponent: epsilon-greedy
+                    if opponent_epsilon > 0.0 && rng.gen::<f32>() < opponent_epsilon {
+                        ai.play_next_move(rng, &mut game);
+                    } else {
+                        let mv = greedy_move(&game, opponent, rng);
+                        mv.play(&mut game, rng);
+                    }
+                }
+                turns += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Play K games of a candidate evaluator vs an opponent and return win rate in [0, 1].
 /// `max_turns` controls per-game turn limit.
+/// `opponent_epsilon` controls how often the opponent makes a random move (0.0 = full strength).
 fn evaluate_generic(
     candidate: &(dyn GameEvaluator + Sync),
     opponent: &(dyn GameEvaluator + Sync),
@@ -523,19 +605,16 @@ fn evaluate_generic(
     k: u32,
     seed_base: u64,
     max_turns: u32,
+    opponent_epsilon: f32,
 ) -> f32 {
-    let cand_player = Player::Evaluator(candidate);
-    let opp_player = Player::Evaluator(opponent);
-
     let mut score = 0.0f32;
     for i in 0..k {
         let mut rng = StdRng::seed_from_u64(seed_base + i as u64);
-        let result = if i % 2 == 0 {
-            play_match(gs, &cand_player, &opp_player, &mut rng, max_turns)
-        } else {
-            play_match(gs, &opp_player, &cand_player, &mut rng, max_turns)
-        };
         let cand_is_top = i % 2 == 0;
+        let result = play_match_with_epsilon(
+            gs, candidate, opponent, cand_is_top,
+            &mut rng, max_turns, opponent_epsilon,
+        );
         match result {
             GameResult::Won(Owner::TopPlayer) => {
                 if cand_is_top { score += 1.0; }
@@ -549,8 +628,34 @@ fn evaluate_generic(
     score / k as f32
 }
 
-/// Run the ES training loop with 41 combined features as input.
-fn run_combined_training(
+/// Which dense feature set to use for the dense-input training paths.
+#[derive(Clone, Copy, PartialEq)]
+enum DenseFeatureMode {
+    /// 41 cheap combined features (no guard checking)
+    Combined,
+    /// 65 features: 24 expensive guard + 41 combined (richest feature set)
+    Guard,
+}
+
+impl DenseFeatureMode {
+    fn input_size(self) -> usize {
+        match self {
+            DenseFeatureMode::Combined => NUM_COMBINED_FEATURES, // 41
+            DenseFeatureMode::Guard => NUM_GUARD_ALL_FEATURES,    // 65
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            DenseFeatureMode::Combined => "Combined41",
+            DenseFeatureMode::Guard => "Guard65",
+        }
+    }
+}
+
+/// Run the ES training loop with dense features (combined 41 or guard 65) as input.
+fn run_dense_training(
+    feature_mode: DenseFeatureMode,
     hidden_layers: &[usize],
     pop_size: usize,
     games_per_eval: u32,
@@ -563,17 +668,21 @@ fn run_combined_training(
     gs: &GameState,
     time_limit_secs: Option<u64>,
     resume_path: Option<&str>,
+    seed: u64,
+    initial_opponent_epsilon: f32,
 ) {
-    let input_size = NUM_COMBINED_FEATURES; // 41
+    let input_size = feature_mode.input_size();
     let dim = GenericMlp::param_count(input_size, hidden_layers);
 
-    println!("=== ES Training (Combined Features) ===");
+    let mode_label = feature_mode.label();
+    println!("=== ES Training ({} Features) ===", mode_label);
     let tmp_net = GenericMlp::from_flat(vec![0.0; dim], input_size, hidden_layers.to_vec());
     println!("  network: {} ({} params)", tmp_net.arch_string(), dim);
     println!("  population: {} (x2 with mirroring = {})", pop_size, pop_size * 2);
     println!("  games per perturbation: {}", games_per_eval);
     println!("  sigma: {}, lr: {}", sigma, lr);
     println!("  mode: vs heuristic");
+    println!("  opponent epsilon: {:.2}", initial_opponent_epsilon);
     println!("  iterations: {}", iterations);
     if let Some(tl) = time_limit_secs {
         println!("  time limit: {} seconds", tl);
@@ -587,7 +696,7 @@ fn run_combined_training(
 
     std::fs::create_dir_all(checkpoint_dir).expect("Failed to create checkpoint dir");
 
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = StdRng::seed_from_u64(seed);
 
     // Initialize flat weight vector
     let mut w: Vec<f32> = if let Some(path) = resume_path {
@@ -599,14 +708,28 @@ fn run_combined_training(
         GenericMlp::random(input_size, hidden_layers.to_vec(), &mut rng).weights
     };
 
+    // Adaptive opponent epsilon
+    let mut opponent_epsilon = initial_opponent_epsilon;
+
     // Evaluate initial win rate
     {
         let init_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
-        let init_eval = CombinedNetEvaluator::new(init_net);
-        let cand_player = Player::Evaluator(&init_eval);
         let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
         print!("  INIT: ");
-        run_matches(gs, &cand_player, &heur_player, eval_games, "Combined41 vs Heuristic");
+        match feature_mode {
+            DenseFeatureMode::Combined => {
+                let init_eval = CombinedNetEvaluator::new(init_net);
+                let cand_player = Player::Evaluator(&init_eval);
+                run_matches(gs, &cand_player, &heur_player, eval_games,
+                    &format!("{} vs Heuristic", mode_label));
+            }
+            DenseFeatureMode::Guard => {
+                let init_eval = GuardFeatureEvaluator::new(init_net);
+                let cand_player = Player::Evaluator(&init_eval);
+                run_matches(gs, &cand_player, &heur_player, eval_games,
+                    &format!("{} vs Heuristic", mode_label));
+            }
+        };
     }
 
     let total_start = Instant::now();
@@ -649,6 +772,7 @@ fn run_combined_training(
 
         // Evaluate all perturbations in parallel
         let sigma_snap = sigma_current; // capture for closure
+        let opp_eps_snap = opponent_epsilon; // capture for closure
         let results: Vec<(usize, f32, f32)> = (0..pop_size * 2)
             .into_par_iter()
             .map(|idx| {
@@ -666,11 +790,24 @@ fn run_combined_training(
                 };
 
                 let net = GenericMlp::from_flat(perturbed, input_size, hidden_layers.to_vec());
-                let evaluator = CombinedNetEvaluator::new(net);
 
                 let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
                 let heuristic = StaticHeuristicEvaluator::new();
-                let win_rate = evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, 200);
+                // Guard features are expensive (guard checking per eval), use 50-turn cap
+                let train_max_turns = match feature_mode {
+                    DenseFeatureMode::Guard => 50,
+                    DenseFeatureMode::Combined => 200,
+                };
+                let win_rate = match feature_mode {
+                    DenseFeatureMode::Combined => {
+                        let evaluator = CombinedNetEvaluator::new(net);
+                        evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                    }
+                    DenseFeatureMode::Guard => {
+                        let evaluator = GuardFeatureEvaluator::new(net);
+                        evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
+                    }
+                };
 
                 (pert_idx, win_rate, 0.0)
             })
@@ -704,13 +841,15 @@ fn run_combined_training(
             grad[j] *= grad_scale;
         }
 
-        // Adam update
+        // Adam update (bias correction factors hoisted out of inner loop)
         let t = (iter + 1) as f32;
+        let bc1 = 1.0 / (1.0 - adam_beta1.powf(t));
+        let bc2 = 1.0 / (1.0 - adam_beta2.powf(t));
         for j in 0..dim {
             adam_m[j] = adam_beta1 * adam_m[j] + (1.0 - adam_beta1) * grad[j];
             adam_v[j] = adam_beta2 * adam_v[j] + (1.0 - adam_beta2) * grad[j] * grad[j];
-            let m_hat = adam_m[j] / (1.0 - adam_beta1.powf(t));
-            let v_hat = adam_v[j] / (1.0 - adam_beta2.powf(t));
+            let m_hat = adam_m[j] * bc1;
+            let v_hat = adam_v[j] * bc2;
             w[j] += lr * m_hat / (v_hat.sqrt() + adam_eps);
         }
 
@@ -723,9 +862,9 @@ fn run_combined_training(
 
         let games_this_iter = pop_size as u32 * 2 * games_per_eval;
         println!(
-            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} ({} games in {:.1?})",
+            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} opp_eps={:.2} ({} games in {:.1?})",
             iter + 1, iterations,
-            avg_plus, avg_minus, max_wr, sigma_current,
+            avg_plus, avg_minus, max_wr, sigma_current, opponent_epsilon,
             games_this_iter, iter_start.elapsed()
         );
 
@@ -733,18 +872,30 @@ fn run_combined_training(
         if (iter + 1) % eval_interval == 0 || iter == iterations - 1 {
             let eval_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
 
-            let ckpt_path = format!("{}/es_combined_iter_{}.gmlp", checkpoint_dir, iter + 1);
+            let ckpt_path = format!("{}/es_{}_iter_{}.gmlp", checkpoint_dir, mode_label.to_lowercase(), iter + 1);
             eval_net.save(&ckpt_path).expect("Failed to save checkpoint");
             println!("  Saved checkpoint: {}", ckpt_path);
 
-            let eval_comb = CombinedNetEvaluator::new(eval_net);
-            let cand_player = Player::Evaluator(&eval_comb);
             let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
             print!("  EVAL: ");
-            let eval_result = run_matches(
-                gs, &cand_player, &heur_player, eval_games,
-                &format!("Combined41(ES iter={}) vs Heuristic", iter + 1),
-            );
+            let eval_result = match feature_mode {
+                DenseFeatureMode::Combined => {
+                    let eval_comb = CombinedNetEvaluator::new(eval_net);
+                    let cand_player = Player::Evaluator(&eval_comb);
+                    run_matches(
+                        gs, &cand_player, &heur_player, eval_games,
+                        &format!("{}(ES iter={}) vs Heuristic", mode_label, iter + 1),
+                    )
+                }
+                DenseFeatureMode::Guard => {
+                    let eval_guard = GuardFeatureEvaluator::new(eval_net);
+                    let cand_player = Player::Evaluator(&eval_guard);
+                    run_matches(
+                        gs, &cand_player, &heur_player, eval_games,
+                        &format!("{}(ES iter={}) vs Heuristic", mode_label, iter + 1),
+                    )
+                }
+            };
 
             // Adaptive sigma: track improvement
             let eval_wr = eval_result.player_a_wins as f32 / eval_games as f32;
@@ -759,14 +910,27 @@ fn run_combined_training(
                     println!("  Sigma adapted: {:.4} (no improvement for {} evals)", sigma_current, evals_without_improvement);
                 }
             }
+
+            // Adaptive opponent epsilon
+            let eval_wr_pct = eval_wr * 100.0;
+            let old_opp_eps = opponent_epsilon;
+            if eval_wr_pct > 60.0 {
+                opponent_epsilon = (opponent_epsilon - 0.05).max(0.0);
+            } else if eval_wr_pct < 30.0 {
+                opponent_epsilon = (opponent_epsilon + 0.05).min(0.5);
+            }
+            println!(
+                "  Opponent epsilon: {:.2} -> {:.2} (win rate was {:.1}%)",
+                old_opp_eps, opponent_epsilon, eval_wr_pct,
+            );
         }
     }
 
     // Save final weights
     let final_net = GenericMlp::from_flat(w.clone(), input_size, hidden_layers.to_vec());
-    let final_path = format!("{}/es_combined_final.gmlp", checkpoint_dir);
+    let final_path = format!("{}/es_{}_final.gmlp", checkpoint_dir, mode_label.to_lowercase());
     final_net.save(&final_path).expect("Failed to save final weights");
-    println!("\nES combined training complete: {} iters in {:.1?}", last_iter, total_start.elapsed());
+    println!("\nES {} training complete: {} iters in {:.1?}", mode_label, last_iter, total_start.elapsed());
     println!("Final weights saved to: {}", final_path);
 }
 
@@ -804,8 +968,10 @@ fn run_generic_sparse_training(
     eval_games: u32,
     checkpoint_dir: &str,
     gs: &GameState,
+    initial_opponent_epsilon: f32,
     time_limit_secs: Option<u64>,
     resume_path: Option<&str>,
+    seed: u64,
 ) {
     let dim = GenericMlp::param_count(input_size, hidden_layers);
     let mode_name = if include_combined { "Appended" } else { "NNUE" };
@@ -817,6 +983,7 @@ fn run_generic_sparse_training(
     println!("  games per perturbation: {}", games_per_eval);
     println!("  sigma: {}, lr: {}", sigma, lr);
     println!("  mode: vs heuristic");
+    println!("  opponent epsilon: {:.2}", initial_opponent_epsilon);
     println!("  iterations: {}", iterations);
     if let Some(tl) = time_limit_secs {
         println!("  time limit: {} seconds", tl);
@@ -830,7 +997,7 @@ fn run_generic_sparse_training(
 
     std::fs::create_dir_all(checkpoint_dir).expect("Failed to create checkpoint dir");
 
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = StdRng::seed_from_u64(seed);
 
     // Initialize flat weight vector
     let mut w: Vec<f32> = if let Some(path) = resume_path {
@@ -841,6 +1008,9 @@ fn run_generic_sparse_training(
     } else {
         GenericMlp::random(input_size, hidden_layers.to_vec(), &mut rng).weights
     };
+
+    // Adaptive opponent epsilon
+    let mut opponent_epsilon = initial_opponent_epsilon;
 
     // Evaluate initial win rate
     {
@@ -863,6 +1033,22 @@ fn run_generic_sparse_training(
     let total_start = Instant::now();
     let mut last_iter = 0u32;
 
+    // Adaptive sigma: increase when stuck, reset when improving
+    let sigma_base = sigma;
+    let mut sigma_current = sigma;
+    let mut best_eval_wr = 0.0f32;
+    let mut evals_without_improvement = 0u32;
+    let sigma_patience = 3u32;
+    let sigma_grow = 2.0f32;
+    let sigma_max = sigma_base * 8.0;
+
+    // Adam optimizer state
+    let mut adam_m = vec![0.0f32; dim]; // first moment
+    let mut adam_v = vec![0.0f32; dim]; // second moment
+    let adam_beta1 = 0.9f32;
+    let adam_beta2 = 0.999f32;
+    let adam_eps = 1e-8f32;
+
     for iter in 0..iterations {
         // Check time limit
         if let Some(tl) = time_limit_secs {
@@ -880,6 +1066,9 @@ fn run_generic_sparse_training(
             .collect();
         let game_seed_base: u64 = rng.gen();
 
+        // Evaluate all perturbations in parallel
+        let sigma_snap = sigma_current; // capture for closure
+        let opp_eps_snap = opponent_epsilon; // capture for closure
         let results: Vec<(usize, f32, f32)> = (0..pop_size * 2)
             .into_par_iter()
             .map(|idx| {
@@ -891,9 +1080,9 @@ fn run_generic_sparse_training(
                 let epsilon = randn_vec(dim, &mut pert_rng);
 
                 let perturbed: Vec<f32> = if is_positive {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi + sigma * ei).collect()
+                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi + sigma_snap * ei).collect()
                 } else {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma * ei).collect()
+                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma_snap * ei).collect()
                 };
 
                 let net = GenericMlp::from_flat(perturbed, input_size, hidden_layers.to_vec());
@@ -905,10 +1094,10 @@ fn run_generic_sparse_training(
                 let train_max_turns = if include_combined { 50 } else { 200 };
                 let win_rate = if include_combined {
                     let evaluator = GenericAppendedEvaluator { net };
-                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns)
+                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
                 } else {
                     let evaluator = GenericNnueEvaluator { net };
-                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns)
+                    evaluate_generic(&evaluator, &heuristic, gs, games_per_eval, game_seed, train_max_turns, opp_eps_snap)
                 };
 
                 (pert_idx, win_rate, 0.0)
@@ -925,7 +1114,8 @@ fn run_generic_sparse_training(
             }
         }
 
-        let scale = lr / (pop_size as f32 * sigma);
+        // Compute gradient
+        let grad_scale = 1.0 / (pop_size as f32 * sigma_current);
         let mut grad = vec![0.0f32; dim];
 
         for i in 0..pop_size {
@@ -937,9 +1127,20 @@ fn run_generic_sparse_training(
                 grad[j] += diff * epsilon[j];
             }
         }
-
         for j in 0..dim {
-            w[j] += scale * grad[j];
+            grad[j] *= grad_scale;
+        }
+
+        // Adam update (bias correction factors hoisted out of inner loop)
+        let t = (iter + 1) as f32;
+        let bc1 = 1.0 / (1.0 - adam_beta1.powf(t));
+        let bc2 = 1.0 / (1.0 - adam_beta2.powf(t));
+        for j in 0..dim {
+            adam_m[j] = adam_beta1 * adam_m[j] + (1.0 - adam_beta1) * grad[j];
+            adam_v[j] = adam_beta2 * adam_v[j] + (1.0 - adam_beta2) * grad[j] * grad[j];
+            let m_hat = adam_m[j] * bc1;
+            let v_hat = adam_v[j] * bc2;
+            w[j] += lr * m_hat / (v_hat.sqrt() + adam_eps);
         }
 
         let avg_plus: f32 = reward_plus.iter().sum::<f32>() / pop_size as f32;
@@ -950,9 +1151,9 @@ fn run_generic_sparse_training(
 
         let games_this_iter = pop_size as u32 * 2 * games_per_eval;
         println!(
-            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} ({} games in {:.1?})",
+            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} opp_eps={:.2} ({} games in {:.1?})",
             iter + 1, iterations,
-            avg_plus, avg_minus, max_wr, sigma,
+            avg_plus, avg_minus, max_wr, sigma_current, opponent_epsilon,
             games_this_iter, iter_start.elapsed()
         );
 
@@ -963,7 +1164,7 @@ fn run_generic_sparse_training(
             eval_net.save(&ckpt_path).expect("Failed to save checkpoint");
             println!("  Saved checkpoint: {}", ckpt_path);
 
-            if include_combined {
+            let eval_result = if include_combined {
                 let eval = GenericAppendedEvaluator { net: eval_net };
                 let cand_player = Player::Evaluator(&eval);
                 let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
@@ -971,7 +1172,7 @@ fn run_generic_sparse_training(
                 run_matches(
                     gs, &cand_player, &heur_player, eval_games,
                     &format!("{}(ES iter={}) vs Heuristic", mode_name, iter + 1),
-                );
+                )
             } else {
                 let eval = GenericNnueEvaluator { net: eval_net };
                 let cand_player = Player::Evaluator(&eval);
@@ -980,8 +1181,35 @@ fn run_generic_sparse_training(
                 run_matches(
                     gs, &cand_player, &heur_player, eval_games,
                     &format!("{}(ES iter={}) vs Heuristic", mode_name, iter + 1),
-                );
+                )
+            };
+
+            // Adaptive sigma: track improvement
+            let eval_wr = eval_result.player_a_wins as f32 / eval_games as f32;
+            if eval_wr > best_eval_wr + 0.01 {
+                best_eval_wr = eval_wr;
+                evals_without_improvement = 0;
+                sigma_current = sigma_base; // reset to base on improvement
+            } else {
+                evals_without_improvement += 1;
+                if evals_without_improvement >= sigma_patience {
+                    sigma_current = (sigma_current * sigma_grow).min(sigma_max);
+                    println!("  Sigma adapted: {:.4} (no improvement for {} evals)", sigma_current, evals_without_improvement);
+                }
             }
+
+            // Adaptive opponent epsilon
+            let eval_wr_pct = eval_wr * 100.0;
+            let old_opp_eps = opponent_epsilon;
+            if eval_wr_pct > 60.0 {
+                opponent_epsilon = (opponent_epsilon - 0.05).max(0.0);
+            } else if eval_wr_pct < 30.0 {
+                opponent_epsilon = (opponent_epsilon + 0.05).min(0.5);
+            }
+            println!(
+                "  Opponent epsilon: {:.2} -> {:.2} (win rate was {:.1}%)",
+                old_opp_eps, opponent_epsilon, eval_wr_pct,
+            );
         }
     }
 
@@ -1021,9 +1249,10 @@ fn evaluate_perturbation(
     gs: &duke_rust::game::state::GameState,
     k: u32,
     seed_base: u64,
+    opponent_epsilon: f32,
 ) -> f32 {
     let evaluator = NnueEvaluator::new(weights);
-    evaluate_generic(&evaluator, opponent, gs, k, seed_base, 200)
+    evaluate_generic(&evaluator, opponent, gs, k, seed_base, 200, opponent_epsilon)
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
@@ -1049,6 +1278,13 @@ fn main() {
     let input_features = parse_flag::<String>(&args, "--input-features")
         .unwrap_or_else(|| "nnue".to_string());
     let time_limit_secs: Option<u64> = parse_flag(&args, "--time-limit");
+    let seed: u64 = parse_flag(&args, "--seed").unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+    });
+    let opponent_epsilon: f32 = parse_flag(&args, "--opponent-epsilon").unwrap_or(0.0);
 
     // Parse --layers flag: comma-separated hidden layer sizes (e.g. "64,64,32")
     let layers_str: Option<String> = parse_flag::<String>(&args, "--layers");
@@ -1068,11 +1304,26 @@ fn main() {
     if input_features == "combined" {
         let bag = create_bag();
         let gs = create_initial_state(&bag);
-        run_combined_training(
+        run_dense_training(
+            DenseFeatureMode::Combined,
             &hidden_layers, pop_size, games_per_eval,
             sigma, lr, iterations, eval_interval, eval_games,
             &checkpoint_dir, &gs, time_limit_secs,
-            resume_path.as_deref(),
+            resume_path.as_deref(), seed, opponent_epsilon,
+        );
+        return;
+    }
+
+    // Dispatch to guard-features mode (65 inputs: 24 expensive + 41 combined)
+    if input_features == "guard" {
+        let bag = create_bag();
+        let gs = create_initial_state(&bag);
+        run_dense_training(
+            DenseFeatureMode::Guard,
+            &hidden_layers, pop_size, games_per_eval,
+            sigma, lr, iterations, eval_interval, eval_games,
+            &checkpoint_dir, &gs, time_limit_secs,
+            resume_path.as_deref(), seed, opponent_epsilon,
         );
         return;
     }
@@ -1085,7 +1336,7 @@ fn main() {
             APPENDED_INPUT_SIZE, true, &hidden_layers,
             pop_size, games_per_eval, sigma, lr, iterations,
             eval_interval, eval_games, &checkpoint_dir, &gs,
-            time_limit_secs, resume_path.as_deref(),
+            opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
         );
         return;
     }
@@ -1102,7 +1353,7 @@ fn main() {
             NUM_FEATURES, false, &hidden_layers,
             pop_size, games_per_eval, sigma, lr, iterations,
             eval_interval, eval_games, &checkpoint_dir, &gs,
-            time_limit_secs, resume_path.as_deref(),
+            opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
         );
         return;
     }
@@ -1125,6 +1376,7 @@ fn main() {
     println!("  games per perturbation: {}", games_per_eval);
     println!("  sigma: {}, lr: {}", sigma, lr);
     println!("  mode: {}", if self_play { "self-play" } else { "vs heuristic" });
+    println!("  opponent epsilon: {:.2}", opponent_epsilon);
     println!("  iterations: {}", iterations);
     if let Some(tl) = time_limit_secs {
         println!("  time limit: {} seconds", tl);
@@ -1142,7 +1394,8 @@ fn main() {
     let gs = create_initial_state(&bag);
 
     // Initialize weights
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut opponent_epsilon = opponent_epsilon; // make mutable for adaptive adjustment
 
     // In last-layer-only mode, we keep the frozen base weights separately
     // and only optimize the last layer (l3_weight + l3_bias).
@@ -1241,14 +1494,15 @@ fn main() {
 
                 // Unique game seed per perturbation
                 let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);
+                let opp_eps = opponent_epsilon;
                 let win_rate = if self_play {
                     // Self-play: perturbation plays against unperturbed base weights
                     let base_weights_copy = reconstruct_weights(&w);
                     let base_eval = NnueEvaluator::new(base_weights_copy);
-                    evaluate_perturbation(weights, &base_eval, &gs, games_per_eval, game_seed)
+                    evaluate_perturbation(weights, &base_eval, &gs, games_per_eval, game_seed, opp_eps)
                 } else {
                     let heuristic = StaticHeuristicEvaluator::new();
-                    evaluate_perturbation(weights, &heuristic, &gs, games_per_eval, game_seed)
+                    evaluate_perturbation(weights, &heuristic, &gs, games_per_eval, game_seed, opp_eps)
                 };
 
                 (pert_idx, win_rate, 0.0) // third field unused, identified by idx parity
@@ -1299,9 +1553,9 @@ fn main() {
 
         let games_this_iter = pop_size as u32 * 2 * games_per_eval;
         println!(
-            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} ({} games in {:.1?})",
+            "iter {:>4}/{}: avg_wr+={:.3} avg_wr-={:.3} max_wr={:.3} sigma={:.4} opp_eps={:.2} ({} games in {:.1?})",
             iter + 1, iterations,
-            avg_plus, avg_minus, max_wr, sigma,
+            avg_plus, avg_minus, max_wr, sigma, opponent_epsilon,
             games_this_iter, iter_start.elapsed()
         );
 
@@ -1319,9 +1573,23 @@ fn main() {
             let nnue_player = Player::Evaluator(&eval_nnue);
             let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
             print!("  EVAL: ");
-            run_matches(
+            let eval_result = run_matches(
                 &gs, &nnue_player, &heur_player, eval_games,
                 &format!("NNUE(ES iter={}) vs Heuristic", iter + 1),
+            );
+
+            // Adaptive opponent epsilon
+            let eval_wr = eval_result.player_a_wins as f32 / eval_games as f32;
+            let eval_wr_pct = eval_wr * 100.0;
+            let old_opp_eps = opponent_epsilon;
+            if eval_wr_pct > 60.0 {
+                opponent_epsilon = (opponent_epsilon - 0.05).max(0.0);
+            } else if eval_wr_pct < 30.0 {
+                opponent_epsilon = (opponent_epsilon + 0.05).min(0.5);
+            }
+            println!(
+                "  Opponent epsilon: {:.2} -> {:.2} (win rate was {:.1}%)",
+                old_opp_eps, opponent_epsilon, eval_wr_pct,
             );
         }
     }
