@@ -19,7 +19,6 @@ pub enum Player<'a> {
     Evaluator(&'a (dyn GameEvaluator + Sync)),
 }
 
-
 /// Play a single match between a top player and a bottom player.
 ///
 /// Returns the `GameResult` when the game ends or a `Tie` if `max_turns` is exceeded.

@@ -2037,8 +2037,7 @@ use crate::game_setup::play_two_player_game;
 /// and verify the game finishes (doesn't panic) and returns a valid result.
 #[test]
 fn play_two_player_game_uses_different_evaluators() {
-    use crate::game_setup::{StaticHeuristicEvaluator, GameEvaluator};
-    use rand::Rng;
+    use crate::game_setup::GameEvaluator;
 
     // A simple evaluator that always returns a fixed score
     struct ConstantEvaluator(f32);
