@@ -253,6 +253,51 @@ mod test {
 
         //TODO add box units, like Light Horse.
     );
+
+    #[test]
+    fn tile_from_type_does_not_panic_for_any_variant() {
+        use std::convert::TryFrom;
+        use strum::EnumCount;
+        for i in 0..TileType::COUNT {
+            let tt = TileType::try_from(i as u8).unwrap();
+            let tile = tile_from_type(tt);
+            assert_eq!(
+                tile.tile_type(),
+                tt,
+                "tile_from_type({:?}) returned tile with wrong type {:?}",
+                tt,
+                tile.tile_type(),
+            );
+        }
+    }
+
+    #[test]
+    fn tile_from_type_returns_correct_name_for_each_variant() {
+        let expected: Vec<(&str, TileType)> = vec![
+            ("Duke", TileType::Duke),
+            ("Footman", TileType::Footman),
+            ("Pikeman", TileType::Pikeman),
+            ("Knight", TileType::Knight),
+            ("Champion", TileType::Champion),
+            ("Dragoon", TileType::Dragoon),
+            ("Wizard", TileType::Wizard),
+            ("General", TileType::General),
+            ("Marshall", TileType::Marshall),
+            ("Assassin", TileType::Assassin),
+            ("Priest", TileType::Priest),
+            ("Bowman", TileType::Bowman),
+            ("Longbowman", TileType::Longbowman),
+        ];
+        for (name, tt) in expected {
+            let tile = tile_from_type(tt);
+            assert_eq!(
+                tile.get_name(),
+                name,
+                "tile_from_type({:?}) has wrong name",
+                tt,
+            );
+        }
+    }
 }
 
 /// Construct a Tile from its TileType.

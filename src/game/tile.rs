@@ -235,3 +235,40 @@ impl Ownership for &PlacedTile {
         self.owner == other.owner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use strum::EnumCount;
+
+    #[test]
+    fn tiletype_roundtrips_through_index_and_try_from() {
+        for i in 0..TileType::COUNT {
+            let tt = TileType::try_from(i as u8).expect(&format!("TryFrom failed for {}", i));
+            assert_eq!(tt.index(), i, "index() mismatch for variant {:?}", tt);
+        }
+    }
+
+    #[test]
+    fn tiletype_try_from_succeeds_for_all_valid_values() {
+        for i in 0u8..TileType::COUNT as u8 {
+            assert!(
+                TileType::try_from(i).is_ok(),
+                "TryFrom should succeed for value {}",
+                i,
+            );
+        }
+    }
+
+    #[test]
+    fn tiletype_try_from_fails_for_out_of_range_values() {
+        for i in TileType::COUNT as u8..=255 {
+            assert_eq!(
+                TileType::try_from(i),
+                Err(i),
+                "TryFrom should fail for value {}",
+                i,
+            );
+        }
+    }
+}

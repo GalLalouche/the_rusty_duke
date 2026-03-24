@@ -841,4 +841,49 @@ mod tests {
             dst: Coordinates { x: 1, y: 2 },
         }, &mut test_rng());
     }
+
+    #[test]
+    fn all_valid_game_moves_for_uses_specified_players_bag_not_current_players() {
+        // Regression: all_valid_game_moves_for(other_player) previously used the
+        // current player's bag instead of the specified player's bag.
+        //
+        // Setup: TopPlayer (current) has an empty bag, BottomPlayer has a non-empty bag.
+        // Calling all_valid_game_moves_for(BottomPlayer) should include placement moves
+        // because BottomPlayer's bag is non-empty.
+        let top_duke_pos = Coordinates { x: 0, y: 0 };
+        let bottom_duke_pos = Coordinates { x: 5, y: 5 };
+        let tiles = vec![
+            (top_duke_pos, PlacedTile::new(Owner::TopPlayer, units::duke())),
+            (bottom_duke_pos, PlacedTile::new(Owner::BottomPlayer, units::duke())),
+        ];
+        let top_bag = TileBag::empty();
+        let bottom_bag = TileBag::new(vec![TileRef::new(units::footman())]);
+
+        let state = GameState::from_snapshot(
+            tiles,
+            Owner::TopPlayer, // current player is TopPlayer
+            top_bag,
+            bottom_bag,
+            DiscardBag::empty(),
+            DiscardBag::empty(),
+            0,
+        );
+
+        // TopPlayer's moves should have no placement (empty bag)
+        let top_moves: Vec<PossibleMove> =
+            state.all_valid_game_moves_for(Owner::TopPlayer).collect();
+        assert!(
+            !top_moves.iter().any(|m| matches!(m, PossibleMove::PlaceNewTile(..))),
+            "TopPlayer has empty bag, should have no placement moves",
+        );
+
+        // BottomPlayer's moves should include placements (non-empty bag)
+        let bottom_moves: Vec<PossibleMove> =
+            state.all_valid_game_moves_for(Owner::BottomPlayer).collect();
+        assert!(
+            bottom_moves.iter().any(|m| matches!(m, PossibleMove::PlaceNewTile(..))),
+            "BottomPlayer has tiles in bag, should have placement moves, but got: {:?}",
+            bottom_moves,
+        );
+    }
 }

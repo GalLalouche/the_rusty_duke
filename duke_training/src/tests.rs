@@ -1110,6 +1110,93 @@ fn feature_cache_roundtrip() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn stream_feature_cache_matches_load() {
+    use crate::feature_cache::{
+        CachedGame, CachedState, FeatureCacheWriter,
+        load_feature_cache, stream_feature_cache,
+    };
+    use crate::learned_heuristic::{extract_features, NUM_FEATURES};
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    // Play 5 games to have enough data for multiple chunks
+    let mut cached_games = Vec::new();
+    for seed in 10..15u64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let (states, result) = play_random_game(&gs, &mut rng);
+        let mut cached_states = Vec::new();
+        for state in &states {
+            if state.game_result() != GameResult::Ongoing { continue; }
+            let features = extract_features(state);
+            cached_states.push(CachedState {
+                current_player: state.current_player_turn(),
+                features: features.to_vec(),
+            });
+        }
+        cached_games.push(CachedGame { result, states: cached_states });
+    }
+
+    // Write using FeatureCacheWriter (streaming writer)
+    let path = format!("D:/temp/test_stream_cache_{}.bin", std::process::id());
+    let _guard = TempFileGuard::new(&path);
+    {
+        let mut writer = FeatureCacheWriter::new(&path, NUM_FEATURES).unwrap();
+        for game in &cached_games {
+            writer.write_game(game).unwrap();
+        }
+        let count = writer.finish().unwrap();
+        assert_eq!(count, 5);
+    }
+
+    // Load all at once (tested path)
+    let (load_header, loaded_games) = load_feature_cache(&path).unwrap();
+    assert_eq!(load_header.num_features, NUM_FEATURES);
+    assert_eq!(load_header.num_games, 5);
+    assert_eq!(loaded_games.len(), 5);
+
+    // Stream with chunk_size=2 so we exercise multiple batches (5 games -> 3 chunks: 2+2+1)
+    let mut streamed_games: Vec<CachedGame> = Vec::new();
+    let stream_header = stream_feature_cache(&path, 2, |chunk, _hdr| {
+        for game in chunk {
+            // Re-collect since we only get a borrow
+            let states: Vec<CachedState> = game.states.iter().map(|s| CachedState {
+                current_player: s.current_player,
+                features: s.features.clone(),
+            }).collect();
+            streamed_games.push(CachedGame { result: game.result, states });
+        }
+    }).unwrap();
+
+    // Verify headers match
+    assert_eq!(stream_header.num_features, load_header.num_features,
+        "num_features mismatch between load and stream");
+    assert_eq!(stream_header.num_games, load_header.num_games,
+        "num_games mismatch between load and stream");
+
+    // Verify same number of games
+    assert_eq!(streamed_games.len(), loaded_games.len(),
+        "game count mismatch: loaded {} vs streamed {}", loaded_games.len(), streamed_games.len());
+
+    // Verify every game, state, and feature matches
+    for (i, (lg, sg)) in loaded_games.iter().zip(streamed_games.iter()).enumerate() {
+        assert_eq!(lg.result, sg.result, "Game {} result mismatch", i);
+        assert_eq!(lg.states.len(), sg.states.len(),
+            "Game {} state count mismatch: loaded {} vs streamed {}", i, lg.states.len(), sg.states.len());
+        for (j, (ls, ss)) in lg.states.iter().zip(sg.states.iter()).enumerate() {
+            assert_eq!(ls.current_player, ss.current_player,
+                "Game {} state {} player mismatch", i, j);
+            assert_eq!(ls.features.len(), ss.features.len(),
+                "Game {} state {} feature count mismatch", i, j);
+            for (k, (&lf, &sf)) in ls.features.iter().zip(ss.features.iter()).enumerate() {
+                assert!((lf - sf).abs() < 1e-10,
+                    "Game {} state {} feature {} mismatch: {} vs {}", i, j, k, lf, sf);
+            }
+        }
+    }
+}
+
 // ── heuristic tests ────────────────────────────────────────────────────
 
 use duke_rust::common::coordinates::Coordinates;
@@ -2082,4 +2169,292 @@ fn play_two_player_game_same_eval_matches_selfplay() {
         "Same seed should produce same game length");
     assert_eq!(result1, result2,
         "Same seed should produce same result");
+}
+
+// ── GenericMlp tests ─────────────────────────────────────────────────────
+
+use crate::generic_mlp::GenericMlp;
+
+// -- param_count correctness --
+
+#[test]
+fn generic_mlp_param_count_single_hidden() {
+    // input=4, hidden=[3], output=1
+    // 4*3+3 + 3+1 = 12+3+3+1 = 19
+    assert_eq!(GenericMlp::param_count(4, &[3]), 19);
+}
+
+#[test]
+fn generic_mlp_param_count_two_hidden() {
+    // input=4, hidden=[3,2], output=1
+    // 4*3+3 + 3*2+2 + 2+1 = 15+8+3 = 26
+    assert_eq!(GenericMlp::param_count(4, &[3, 2]), 26);
+}
+
+#[test]
+fn generic_mlp_param_count_three_hidden() {
+    // input=10, hidden=[8,4,2], output=1
+    // 10*8+8 + 8*4+4 + 4*2+2 + 2+1 = 88+36+10+3 = 137
+    assert_eq!(GenericMlp::param_count(10, &[8, 4, 2]), 137);
+}
+
+// -- forward pass f64 (1 hidden layer) --
+
+#[test]
+fn generic_mlp_forward_f64_one_hidden() {
+    // Architecture: input=2, hidden=[2], output=1
+    // Flat weights: [w00, w01, w10, w11, b0, b1, ow0, ow1, ob]
+    let weights = vec![0.5f32, -0.5, 1.0, 0.0, 0.1, -0.1, 1.0, 1.0, 0.0];
+    let mlp = GenericMlp::from_flat(weights, 2, vec![2]);
+
+    let input = [1.0f64, 2.0];
+    let result = mlp.forward_f64(&input);
+
+    // Hidden neuron 0: 0.1 + 0.5*1.0 + 1.0*2.0 = 2.6, ReLU -> 2.6
+    // Hidden neuron 1: -0.1 + (-0.5)*1.0 + 0.0*2.0 = -0.6, ReLU -> 0.0
+    // Output logit: 0.0 + 1.0*2.6 + 1.0*0.0 = 2.6
+    // sigmoid(2.6) = 1/(1+exp(-2.6))
+    let expected = 1.0f32 / (1.0 + (-2.6f32).exp());
+    assert!((result - expected).abs() < 1e-6,
+        "forward_f64 one hidden: expected {}, got {}", expected, result);
+}
+
+// -- forward pass f64 (2 hidden layers, exercises ping-pong) --
+
+#[test]
+fn generic_mlp_forward_f64_two_hidden() {
+    // Architecture: input=2, hidden=[2, 2], output=1
+    // Layer 1 weights (same as single-hidden test): [0.5, -0.5, 1.0, 0.0, 0.1, -0.1]
+    // Layer 2 weights (identity): [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    // Output: [1.0, 1.0, 0.0]
+    let weights = vec![
+        // Layer 1: 2*2 weights + 2 biases
+        0.5f32, -0.5, 1.0, 0.0, 0.1, -0.1,
+        // Layer 2: 2*2 weights + 2 biases (identity transform)
+        1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        // Output: 2 weights + 1 bias
+        1.0, 1.0, 0.0,
+    ];
+    assert_eq!(weights.len(), GenericMlp::param_count(2, &[2, 2]));
+    let mlp = GenericMlp::from_flat(weights, 2, vec![2, 2]);
+
+    let input = [1.0f64, 2.0];
+    let result = mlp.forward_f64(&input);
+
+    // Layer 1: [2.6, 0.0] (same computation as one-hidden test)
+    // Layer 2 identity: [2.6, 0.0]
+    // Output logit: 2.6
+    let expected = 1.0f32 / (1.0 + (-2.6f32).exp());
+    assert!((result - expected).abs() < 1e-6,
+        "forward_f64 two hidden: expected {}, got {}", expected, result);
+}
+
+// -- forward pass f64 (3 hidden layers, more ping-pong coverage) --
+
+#[test]
+fn generic_mlp_forward_f64_three_hidden() {
+    // Architecture: input=2, hidden=[2, 2, 1], output=1
+    // Layer 1: same as before -> [2.6, 0.0]
+    // Layer 2: identity -> [2.6, 0.0]
+    // Layer 3: 2->1, weight=[1.0, 0.0], bias=[-1.0] -> 1.0*2.6+0.0*0.0-1.0=1.6, ReLU -> 1.6
+    // Output: 1->1, weight=[0.5], bias=[0.1] -> 0.5*1.6+0.1=0.9
+    let weights = vec![
+        // Layer 1: 2*2 + 2
+        0.5f32, -0.5, 1.0, 0.0, 0.1, -0.1,
+        // Layer 2: 2*2 + 2 (identity)
+        1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        // Layer 3: 2*1 + 1
+        1.0, 0.0, -1.0,
+        // Output: 1 + 1
+        0.5, 0.1,
+    ];
+    assert_eq!(weights.len(), GenericMlp::param_count(2, &[2, 2, 1]));
+    let mlp = GenericMlp::from_flat(weights, 2, vec![2, 2, 1]);
+
+    let input = [1.0f64, 2.0];
+    let result = mlp.forward_f64(&input);
+
+    // Layer 1: [2.6, 0.0]
+    // Layer 2 identity: [2.6, 0.0]
+    // Layer 3: 1.0*2.6 + 0.0*0.0 - 1.0 = 1.6, ReLU -> 1.6
+    // Output: 0.5*1.6 + 0.1 = 0.9
+    let expected = 1.0f32 / (1.0 + (-0.9f32).exp());
+    assert!((result - expected).abs() < 1e-6,
+        "forward_f64 three hidden: expected {}, got {}", expected, result);
+}
+
+// -- forward pass f32 (1 hidden layer) --
+
+#[test]
+fn generic_mlp_forward_f32_one_hidden() {
+    let weights = vec![0.5f32, -0.5, 1.0, 0.0, 0.1, -0.1, 1.0, 1.0, 0.0];
+    let mlp = GenericMlp::from_flat(weights, 2, vec![2]);
+
+    let input = [1.0f32, 2.0];
+    let result = mlp.forward_f32(&input);
+
+    let expected = 1.0f32 / (1.0 + (-2.6f32).exp());
+    assert!((result - expected).abs() < 1e-6,
+        "forward_f32 one hidden: expected {}, got {}", expected, result);
+}
+
+// -- forward pass f32 (2 hidden layers) --
+
+#[test]
+fn generic_mlp_forward_f32_two_hidden() {
+    let weights = vec![
+        0.5f32, -0.5, 1.0, 0.0, 0.1, -0.1,
+        1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        1.0, 1.0, 0.0,
+    ];
+    let mlp = GenericMlp::from_flat(weights, 2, vec![2, 2]);
+
+    let input = [1.0f32, 2.0];
+    let result = mlp.forward_f32(&input);
+
+    let expected = 1.0f32 / (1.0 + (-2.6f32).exp());
+    assert!((result - expected).abs() < 1e-6,
+        "forward_f32 two hidden: expected {}, got {}", expected, result);
+}
+
+// -- f32 and f64 agree --
+
+#[test]
+fn generic_mlp_forward_f32_f64_agree() {
+    let weights = vec![0.5f32, -0.5, 1.0, 0.0, 0.1, -0.1, 1.0, 1.0, 0.0];
+    let mlp = GenericMlp::from_flat(weights, 2, vec![2]);
+
+    let input_f64 = [1.0f64, 2.0];
+    let input_f32 = [1.0f32, 2.0];
+    let r64 = mlp.forward_f64(&input_f64);
+    let r32 = mlp.forward_f32(&input_f32);
+
+    assert!((r64 - r32).abs() < 1e-6,
+        "f64 and f32 forward passes should agree: f64={}, f32={}", r64, r32);
+}
+
+// -- ReLU clamps negative activations --
+
+#[test]
+fn generic_mlp_relu_clamps_negatives() {
+    // All-negative hidden activations should be clamped to 0, giving sigmoid(bias) output
+    let weights = vec![
+        // Layer 1: 1*1 weight + 1 bias
+        -10.0f32, -10.0,
+        // Output: 1 weight + 1 bias
+        1.0, 0.5,
+    ];
+    let mlp = GenericMlp::from_flat(weights, 1, vec![1]);
+
+    let input = [1.0f64];
+    let result = mlp.forward_f64(&input);
+
+    // Hidden: -10.0*1.0 + (-10.0) = -20.0, ReLU -> 0.0
+    // Output: 1.0*0.0 + 0.5 = 0.5
+    let expected = 1.0f32 / (1.0 + (-0.5f32).exp());
+    assert!((result - expected).abs() < 1e-6,
+        "ReLU clamp: expected {}, got {}", expected, result);
+}
+
+// -- save / load roundtrip --
+
+#[test]
+fn generic_mlp_save_load_roundtrip() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let mlp = GenericMlp::random(10, vec![8, 4], &mut rng);
+    let path = "test_generic_mlp_roundtrip.gmlp";
+    let _guard = TempFileGuard::new(path);
+
+    mlp.save(path).expect("save failed");
+    let loaded = GenericMlp::load(path).expect("load failed");
+
+    assert_eq!(mlp.input_size, loaded.input_size);
+    assert_eq!(mlp.hidden_layers, loaded.hidden_layers);
+    assert_eq!(mlp.weights.len(), loaded.weights.len());
+    for (a, b) in mlp.weights.iter().zip(loaded.weights.iter()) {
+        assert!((a - b).abs() < 1e-9,
+            "weight mismatch: {} vs {}", a, b);
+    }
+}
+
+#[test]
+fn generic_mlp_save_load_roundtrip_three_layers() {
+    let mut rng = StdRng::seed_from_u64(99);
+    let mlp = GenericMlp::random(5, vec![4, 3, 2], &mut rng);
+    let path = "test_generic_mlp_roundtrip_3l.gmlp";
+    let _guard = TempFileGuard::new(path);
+
+    mlp.save(path).expect("save failed");
+    let loaded = GenericMlp::load(path).expect("load failed");
+
+    assert_eq!(mlp.input_size, loaded.input_size);
+    assert_eq!(mlp.hidden_layers, loaded.hidden_layers);
+    assert_eq!(mlp.weights, loaded.weights);
+}
+
+// -- load rejects corrupt files --
+
+#[test]
+fn generic_mlp_load_rejects_zero_layers() {
+    use std::io::Write;
+    let path = "test_generic_mlp_corrupt_zero_layers.gmlp";
+    let _guard = TempFileGuard::new(path);
+
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(b"GMLP").unwrap();                   // magic
+    f.write_all(&1u32.to_le_bytes()).unwrap();        // version = 1
+    f.write_all(&0u32.to_le_bytes()).unwrap();        // num_layers = 0 (invalid)
+    f.write_all(&4u32.to_le_bytes()).unwrap();        // input_size
+    drop(f);
+
+    let result = GenericMlp::load(path);
+    assert!(result.is_err(), "load should reject num_layers=0");
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("num_layers"), "error message should mention num_layers, got: {}", msg);
+}
+
+#[test]
+fn generic_mlp_load_rejects_bad_magic() {
+    use std::io::Write;
+    let path = "test_generic_mlp_bad_magic.gmlp";
+    let _guard = TempFileGuard::new(path);
+
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(b"XXXX").unwrap();
+    f.write_all(&1u32.to_le_bytes()).unwrap();
+    drop(f);
+
+    let result = GenericMlp::load(path);
+    assert!(result.is_err(), "load should reject bad magic");
+}
+
+#[test]
+fn generic_mlp_load_rejects_bad_version() {
+    use std::io::Write;
+    let path = "test_generic_mlp_bad_version.gmlp";
+    let _guard = TempFileGuard::new(path);
+
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(b"GMLP").unwrap();
+    f.write_all(&99u32.to_le_bytes()).unwrap();       // version = 99 (unsupported)
+    drop(f);
+
+    let result = GenericMlp::load(path);
+    assert!(result.is_err(), "load should reject unsupported version");
+}
+
+// -- arch_string --
+
+#[test]
+fn generic_mlp_arch_string() {
+    let mlp = GenericMlp::from_flat(vec![0.0; 26], 4, vec![3, 2]);
+    assert_eq!(mlp.arch_string(), "4->3->2->1");
+}
+
+// -- from_flat rejects wrong size --
+
+#[test]
+#[should_panic(expected = "flat weight vector size mismatch")]
+fn generic_mlp_from_flat_rejects_wrong_size() {
+    GenericMlp::from_flat(vec![0.0; 10], 4, vec![3, 2]); // expects 26
 }

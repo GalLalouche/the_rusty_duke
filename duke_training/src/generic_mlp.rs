@@ -21,6 +21,7 @@ pub const MAX_HIDDEN: usize = 1024;
 pub const NUM_GUARD_ALL_FEATURES: usize = 24 + NUM_COMBINED_FEATURES;
 
 /// Generic MLP weight container supporting arbitrary hidden layer depths.
+#[derive(Debug)]
 pub struct GenericMlp {
     pub input_size: usize,
     /// Hidden layer sizes, e.g. [64, 64, 32] for 3 hidden layers
