@@ -6,6 +6,7 @@ pub mod feature_cache;
 pub mod generic_mlp;
 pub mod learned_heuristic;
 pub mod match_runner;
+pub mod regression;
 pub mod nnue;
 pub mod serialization;
 pub mod trajectory_io;

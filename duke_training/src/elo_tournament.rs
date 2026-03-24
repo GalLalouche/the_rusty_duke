@@ -18,8 +18,9 @@ use duke_training::game_setup::{create_bag, create_initial_state, GameEvaluator}
 use duke_training::generic_mlp::load_opponent;
 use duke_training::match_runner::{run_matches, Player};
 
-/// Short display label for a player spec.
-fn short_label(spec: &str) -> String {
+/// Derive a short display label from the player spec and the description
+/// returned by `load_opponent`, avoiding redundant file loads.
+fn derive_label(spec: &str, desc: &str) -> String {
     match spec {
         "base" => "Base".to_string(),
         "random" => "Random".to_string(),
@@ -28,16 +29,10 @@ fn short_label(spec: &str) -> String {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string());
-            // For .gmlp files, try to load and get arch string
-            if path.ends_with(".gmlp") {
-                // Load to get the arch description
-                if let Ok(net) = duke_training::generic_mlp::GenericMlp::load(path) {
-                    format!("{}({})", stem, net.arch_string())
-                } else {
-                    stem
-                }
-            } else if path.ends_with(".nnue") {
-                format!("{}(nnue)", stem)
+            // desc from load_opponent is e.g. "GMLP (41->64->1)" or "NNUE (1106->256->32->1)"
+            // Extract the parenthesized arch portion if present.
+            if let Some(start) = desc.find('(') {
+                format!("{}{}", stem, &desc[start..])
             } else {
                 stem
             }
@@ -45,10 +40,10 @@ fn short_label(spec: &str) -> String {
     }
 }
 
-fn main() {
+/// Parse CLI arguments into player specs and the number of games per matchup.
+fn parse_args() -> (Vec<String>, u32) {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Parse --games flag
     let mut games_per_matchup: u32 = 1000;
     let mut player_specs: Vec<String> = Vec::new();
 
@@ -76,34 +71,37 @@ fn main() {
         std::process::exit(1);
     }
 
-    let n = player_specs.len();
+    (player_specs, games_per_matchup)
+}
 
-    // Load all players
-    let labels: Vec<String> = player_specs.iter().map(|s| short_label(s)).collect();
-    let mut evaluators: Vec<Option<Box<dyn GameEvaluator + Sync + Send>>> = Vec::with_capacity(n);
-
-    println!("=== Elo Tournament ===");
-    println!("  {} players, {} games per matchup", n, games_per_matchup);
-    println!();
-
-    for (idx, spec) in player_specs.iter().enumerate() {
+/// Load all players from their specs.
+/// Returns a list of (label, optional evaluator) pairs.
+fn load_players(
+    specs: &[String],
+) -> Vec<(String, Option<Box<dyn GameEvaluator + Sync + Send>>)> {
+    let mut players = Vec::with_capacity(specs.len());
+    for (idx, spec) in specs.iter().enumerate() {
         let (eval_box, desc) = load_opponent(spec);
-        println!("  [{}] {} -- {}", idx, labels[idx], desc);
-        evaluators.push(eval_box);
+        let label = derive_label(spec, &desc);
+        println!("  [{}] {} -- {}", idx, label, desc);
+        players.push((label, eval_box));
     }
-    println!();
+    players
+}
 
-    // Setup game state
+/// Run round-robin matches between all player pairs.
+/// Returns (wins, ties) matrices where wins[i][j] = games player i won vs j.
+fn run_round_robin(
+    players: &[(String, Option<Box<dyn GameEvaluator + Sync + Send>>)],
+    games_per_matchup: u32,
+) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
+    let n = players.len();
     let bag = create_bag();
     let gs = create_initial_state(&bag);
 
-    // Round-robin: play every pair
-    // wins[i][j] = number of games player i won against player j
-    // ties[i][j] = number of ties between player i and player j
     let mut wins = vec![vec![0u32; n]; n];
     let mut ties = vec![vec![0u32; n]; n];
 
-    let total_start = Instant::now();
     let num_matchups = n * (n - 1) / 2;
     let mut matchup_idx = 0;
 
@@ -112,15 +110,15 @@ fn main() {
             matchup_idx += 1;
             let label = format!(
                 "[{}/{}] {} vs {}",
-                matchup_idx, num_matchups, labels[a], labels[b]
+                matchup_idx, num_matchups, players[a].0, players[b].0
             );
             print!("  ");
 
-            let player_a = match &evaluators[a] {
+            let player_a = match &players[a].1 {
                 Some(eval) => Player::Evaluator(eval.as_ref()),
                 None => Player::Random,
             };
-            let player_b = match &evaluators[b] {
+            let player_b = match &players[b].1 {
                 Some(eval) => Player::Evaluator(eval.as_ref()),
                 None => Player::Random,
             };
@@ -134,16 +132,54 @@ fn main() {
         }
     }
 
-    let total_elapsed = total_start.elapsed();
-    println!();
-    println!("All matches complete in {:.1?}", total_elapsed);
-    println!();
+    (wins, ties)
+}
 
-    // ── Win-rate matrix ──────────────────────────────────────────────────
+/// Compute Elo ratings from win/loss/tie matrices using iterative updates.
+fn compute_elo(wins: &[Vec<u32>], ties: &[Vec<u32>], n: usize) -> Vec<f64> {
+    let mut elo = vec![1500.0f64; n];
+    let k = 32.0f64;
+    let passes = 10;
 
-    // Find max label width for formatting
+    for _ in 0..passes {
+        let mut delta = vec![0.0f64; n];
+        for a in 0..n {
+            for b in (a + 1)..n {
+                let total = wins[a][b] + wins[b][a] + ties[a][b];
+                if total == 0 {
+                    continue;
+                }
+                let total_f = total as f64;
+
+                let e_a = 1.0 / (1.0 + 10.0f64.powf((elo[b] - elo[a]) / 400.0));
+                let e_b = 1.0 - e_a;
+
+                let s_a = (wins[a][b] as f64 + 0.5 * (ties[a][b] as f64)) / total_f;
+                let s_b = (wins[b][a] as f64 + 0.5 * (ties[b][a] as f64)) / total_f;
+
+                delta[a] += k * (s_a - e_a);
+                delta[b] += k * (s_b - e_b);
+            }
+        }
+        for i in 0..n {
+            elo[i] += delta[i];
+        }
+    }
+
+    elo
+}
+
+/// Print the win-rate matrix, Elo rankings, and per-matchup details.
+fn print_results(
+    labels: &[String],
+    wins: &[Vec<u32>],
+    ties: &[Vec<u32>],
+    elo: &[f64],
+) {
+    let n = labels.len();
     let max_label_len = labels.iter().map(|l| l.len()).max().unwrap_or(4).max(6);
 
+    // ── Win-rate matrix ──────────────────────────────────────────────────
     println!("=== Win-Rate Matrix (row vs col) ===");
     print!("{:>width$}", "", width = max_label_len + 2);
     for j in 0..n {
@@ -170,45 +206,11 @@ fn main() {
     }
     println!();
 
-    // ── Elo computation ──────────────────────────────────────────────────
-    // Iterative Elo: start at 1500, K=32, iterate 10 passes to converge.
-
-    let mut elo = vec![1500.0f64; n];
-    let k = 32.0f64;
-    let passes = 10;
-
-    for _ in 0..passes {
-        let mut delta = vec![0.0f64; n];
-        for a in 0..n {
-            for b in (a + 1)..n {
-                let total = wins[a][b] + wins[b][a] + ties[a][b];
-                if total == 0 {
-                    continue;
-                }
-                let total_f = total as f64;
-
-                // Expected score for a against b
-                let e_a = 1.0 / (1.0 + 10.0f64.powf((elo[b] - elo[a]) / 400.0));
-                let e_b = 1.0 - e_a;
-
-                // Actual score
-                let s_a = (wins[a][b] as f64 + 0.5 * (ties[a][b] as f64)) / total_f;
-                let s_b = (wins[b][a] as f64 + 0.5 * (ties[b][a] as f64)) / total_f;
-
-                delta[a] += k * (s_a - e_a);
-                delta[b] += k * (s_b - e_b);
-            }
-        }
-        for i in 0..n {
-            elo[i] += delta[i];
-        }
-    }
-
-    // Sort by Elo descending
+    // ── Elo rankings ─────────────────────────────────────────────────────
     let mut ranked: Vec<(usize, f64)> = (0..n).map(|i| (i, elo[i])).collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    println!("=== Elo Ratings (K={}, {} passes) ===", k as u32, passes);
+    println!("=== Elo Ratings (K=32, 10 passes) ===");
     println!("{:>4}  {:>width$}  {:>6}", "Rank", "Player", "Elo", width = max_label_len);
     for (rank, &(idx, rating)) in ranked.iter().enumerate() {
         println!(
@@ -222,7 +224,6 @@ fn main() {
     println!();
 
     // ── Matchup details ──────────────────────────────────────────────────
-
     println!("=== Matchup Details ===");
     for a in 0..n {
         for b in (a + 1)..n {
@@ -240,4 +241,28 @@ fn main() {
             );
         }
     }
+}
+
+fn main() {
+    let (player_specs, games_per_matchup) = parse_args();
+    let n = player_specs.len();
+
+    println!("=== Elo Tournament ===");
+    println!("  {} players, {} games per matchup", n, games_per_matchup);
+    println!();
+
+    let players = load_players(&player_specs);
+    println!();
+
+    let total_start = Instant::now();
+    let (wins, ties) = run_round_robin(&players, games_per_matchup);
+    let total_elapsed = total_start.elapsed();
+
+    println!();
+    println!("All matches complete in {:.1?}", total_elapsed);
+    println!();
+
+    let labels: Vec<String> = players.iter().map(|(l, _)| l.clone()).collect();
+    let elo = compute_elo(&wins, &ties, n);
+    print_results(&labels, &wins, &ties, &elo);
 }

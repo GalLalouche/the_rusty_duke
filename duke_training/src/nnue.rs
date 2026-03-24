@@ -13,6 +13,7 @@ const MAX_L2: usize = 128;
 /// Raw model weights for NNUE inference.
 ///
 /// L1 weights are column-major: l1_weight[feat * l1_size + i].
+#[derive(Clone)]
 pub struct NnueWeights {
     pub l1_size: usize,
     pub l2_size: usize,

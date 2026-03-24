@@ -114,19 +114,17 @@ pub fn save_feature_cache(
     Ok(())
 }
 
-/// Load feature cache, returning header info and all games.
-pub fn load_feature_cache(path: &str) -> io::Result<(FeatureCacheHeader, Vec<CachedGame>)> {
-    let data = std::fs::read(path)?;
-    let mut cursor = &data[..];
-
+/// Parse a feature cache header from any reader.
+/// Returns (num_features, num_games).
+fn parse_header(reader: &mut impl Read) -> io::Result<FeatureCacheHeader> {
     let mut magic = [0u8; 4];
-    cursor.read_exact(&mut magic)?;
+    reader.read_exact(&mut magic)?;
     if &magic != MAGIC {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid feature cache magic"));
     }
 
     let mut buf4 = [0u8; 4];
-    cursor.read_exact(&mut buf4)?;
+    reader.read_exact(&mut buf4)?;
     let version = u32::from_le_bytes(buf4);
     if version != VERSION {
         return Err(io::Error::new(
@@ -135,41 +133,56 @@ pub fn load_feature_cache(path: &str) -> io::Result<(FeatureCacheHeader, Vec<Cac
         ));
     }
 
-    cursor.read_exact(&mut buf4)?;
+    reader.read_exact(&mut buf4)?;
     let num_features = u32::from_le_bytes(buf4) as usize;
 
-    cursor.read_exact(&mut buf4)?;
+    reader.read_exact(&mut buf4)?;
     let num_games = u32::from_le_bytes(buf4) as usize;
 
-    let header = FeatureCacheHeader { num_features, num_games };
+    Ok(FeatureCacheHeader { num_features, num_games })
+}
 
-    let mut games = Vec::with_capacity(num_games);
+/// Deserialize a single game from any reader.
+fn read_one_game(reader: &mut impl Read, num_features: usize) -> io::Result<CachedGame> {
+    let result = serialization::read_result(reader)?;
+
+    let mut buf4 = [0u8; 4];
+    reader.read_exact(&mut buf4)?;
+    let num_states = u32::from_le_bytes(buf4) as usize;
+
     let mut buf1 = [0u8; 1];
     let mut buf8 = [0u8; 8];
-
-    for _ in 0..num_games {
-        let result = serialization::read_result(&mut cursor)?;
-        cursor.read_exact(&mut buf4)?;
-        let num_states = u32::from_le_bytes(buf4) as usize;
-
-        let mut states = Vec::with_capacity(num_states);
-        for _ in 0..num_states {
-            cursor.read_exact(&mut buf1)?;
-            let current_player = match buf1[0] {
-                0 => Owner::TopPlayer,
-                1 => Owner::BottomPlayer,
-                b => return Err(io::Error::new(
-                    io::ErrorKind::InvalidData, format!("Invalid player byte: {}", b),
-                )),
-            };
-            let mut features = Vec::with_capacity(num_features);
-            for _ in 0..num_features {
-                cursor.read_exact(&mut buf8)?;
-                features.push(f64::from_le_bytes(buf8));
-            }
-            states.push(CachedState { current_player, features });
+    let mut states = Vec::with_capacity(num_states);
+    for _ in 0..num_states {
+        reader.read_exact(&mut buf1)?;
+        let current_player = match buf1[0] {
+            0 => Owner::TopPlayer,
+            1 => Owner::BottomPlayer,
+            b => return Err(io::Error::new(
+                io::ErrorKind::InvalidData, format!("Invalid player byte: {}", b),
+            )),
+        };
+        let mut features = Vec::with_capacity(num_features);
+        for _ in 0..num_features {
+            reader.read_exact(&mut buf8)?;
+            features.push(f64::from_le_bytes(buf8));
         }
-        games.push(CachedGame { result, states });
+        states.push(CachedState { current_player, features });
+    }
+
+    Ok(CachedGame { result, states })
+}
+
+/// Load feature cache, returning header info and all games.
+pub fn load_feature_cache(path: &str) -> io::Result<(FeatureCacheHeader, Vec<CachedGame>)> {
+    let data = std::fs::read(path)?;
+    let mut cursor = &data[..];
+
+    let header = parse_header(&mut cursor)?;
+
+    let mut games = Vec::with_capacity(header.num_games);
+    for _ in 0..header.num_games {
+        games.push(read_one_game(&mut cursor, header.num_features)?);
     }
 
     Ok((header, games))
@@ -187,60 +200,16 @@ pub fn stream_feature_cache(
     let f = std::fs::File::open(path)?;
     let mut r = BufReader::with_capacity(1 << 20, f); // 1MB buffer
 
-    let mut magic = [0u8; 4];
-    r.read_exact(&mut magic)?;
-    if &magic != MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid feature cache magic"));
-    }
+    let header = parse_header(&mut r)?;
 
-    let mut buf4 = [0u8; 4];
-    r.read_exact(&mut buf4)?;
-    let version = u32::from_le_bytes(buf4);
-    if version != VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Unsupported feature cache version (expected {}, got {})", VERSION, version),
-        ));
-    }
-
-    r.read_exact(&mut buf4)?;
-    let num_features = u32::from_le_bytes(buf4) as usize;
-    r.read_exact(&mut buf4)?;
-    let num_games = u32::from_le_bytes(buf4) as usize;
-
-    let header = FeatureCacheHeader { num_features, num_games };
-
-    let mut buf1 = [0u8; 1];
-    let mut buf8 = [0u8; 8];
     let mut chunk = Vec::with_capacity(chunk_size);
     let mut games_read = 0;
 
-    while games_read < num_games {
+    while games_read < header.num_games {
         chunk.clear();
-        let batch = chunk_size.min(num_games - games_read);
+        let batch = chunk_size.min(header.num_games - games_read);
         for _ in 0..batch {
-            let result = serialization::read_result(&mut r)?;
-            r.read_exact(&mut buf4)?;
-            let num_states = u32::from_le_bytes(buf4) as usize;
-
-            let mut states = Vec::with_capacity(num_states);
-            for _ in 0..num_states {
-                r.read_exact(&mut buf1)?;
-                let current_player = match buf1[0] {
-                    0 => Owner::TopPlayer,
-                    1 => Owner::BottomPlayer,
-                    b => return Err(io::Error::new(
-                        io::ErrorKind::InvalidData, format!("Invalid player byte: {}", b),
-                    )),
-                };
-                let mut features = Vec::with_capacity(num_features);
-                for _ in 0..num_features {
-                    r.read_exact(&mut buf8)?;
-                    features.push(f64::from_le_bytes(buf8));
-                }
-                states.push(CachedState { current_player, features });
-            }
-            chunk.push(CachedGame { result, states });
+            chunk.push(read_one_game(&mut r, header.num_features)?);
         }
         games_read += batch;
         process(&chunk, &header);
@@ -250,8 +219,9 @@ pub fn stream_feature_cache(
 }
 
 /// Build a RegressionAccumulator directly from cached features (no GameState needed).
-pub fn accumulate_from_cache(games: &[CachedGame], num_features: usize) -> crate::learned_heuristic::RegressionAccumulator {
-    use crate::learned_heuristic::{RegressionAccumulator, NUM_FEATURES};
+pub fn accumulate_from_cache(games: &[CachedGame], num_features: usize) -> crate::regression::RegressionAccumulator {
+    use crate::regression::RegressionAccumulator;
+    use crate::learned_heuristic::NUM_FEATURES;
 
     assert_eq!(num_features, NUM_FEATURES,
         "Feature cache has {} features but accumulator expects {}", num_features, NUM_FEATURES);

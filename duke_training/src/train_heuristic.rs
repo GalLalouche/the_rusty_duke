@@ -4,7 +4,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use duke_training::game_setup::{create_bag, create_initial_state, play_random_game};
-use duke_training::learned_heuristic::train_weights;
+use duke_training::regression::train_weights;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

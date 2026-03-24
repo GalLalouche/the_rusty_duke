@@ -286,7 +286,7 @@ impl GameBoard {
 //
     pub fn duke_coordinates(&self, o: Owner) -> Coordinates {
         self.board
-            .find(|a| a.owner == o && units::is_duke(a.tile.borrow()))
+            .find(|a| a.owner == o && a.tile.tile_type().is_duke())
             .expect(format!("Could not find the duke for {:?}", o).as_str())
     }
 

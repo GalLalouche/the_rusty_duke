@@ -85,31 +85,20 @@ impl GenericMlp {
         Self { input_size, hidden_layers, weights: flat }
     }
 
-    /// Forward pass with f64 input (for combined features): input -> H1(ReLU) -> ... -> sigmoid
-    pub fn forward_f64(&self, input: &[f64]) -> f32 {
-        assert_eq!(input.len(), self.input_size);
+    /// Shared helper: propagate through hidden layers 2..N and the output sigmoid.
+    ///
+    /// `buf_a` must already contain the ReLU-activated first hidden layer output.
+    /// `buf_b` is scratch space. Both are stack-allocated `[f32; MAX_HIDDEN]` ping-pong
+    /// buffers. `off` is the current offset into `self.weights`, pointing just past
+    /// the first hidden layer's weights+biases.
+    fn forward_inner(
+        &self,
+        buf_a: &mut [f32; MAX_HIDDEN],
+        buf_b: &mut [f32; MAX_HIDDEN],
+        mut off: usize,
+    ) -> f32 {
         let w = &self.weights;
-        let mut off = 0;
-
-        // First hidden layer: f64 input -> f32
-        let h_size = self.hidden_layers[0];
-        let hw = &w[off..off + self.input_size * h_size];
-        off += self.input_size * h_size;
-        let hb = &w[off..off + h_size];
-        off += h_size;
-
-        // Use two stack buffers and ping-pong between them (no heap allocation).
-        let mut buf_a = [0.0f32; MAX_HIDDEN];
-        let mut buf_b = [0.0f32; MAX_HIDDEN];
-        let mut use_a = true; // buf_a holds the current layer's activations
-
-        for j in 0..h_size {
-            let mut sum = hb[j];
-            for i in 0..self.input_size {
-                sum += hw[i * h_size + j] * input[i] as f32;
-            }
-            buf_a[j] = sum.max(0.0); // ReLU
-        }
+        let mut use_a = true; // buf_a holds the current activations
 
         // Subsequent hidden layers: f32 -> f32
         for layer_idx in 1..self.hidden_layers.len() {
@@ -120,7 +109,11 @@ impl GenericMlp {
             let lb = &w[off..off + cur_size];
             off += cur_size;
 
-            let (src, dst) = if use_a { (&buf_a, &mut buf_b) } else { (&buf_b, &mut buf_a) };
+            let (src, dst) = if use_a {
+                (&*buf_a as &[f32; MAX_HIDDEN], &mut *buf_b)
+            } else {
+                (&*buf_b as &[f32; MAX_HIDDEN], &mut *buf_a)
+            };
             for j in 0..cur_size {
                 let mut sum = lb[j];
                 for i in 0..prev_size {
@@ -137,7 +130,7 @@ impl GenericMlp {
         off += last_h;
         let out_b = w[off];
 
-        let prev = if use_a { &buf_a } else { &buf_b };
+        let prev = if use_a { &*buf_a } else { &*buf_b };
         let mut logit = out_b;
         for i in 0..last_h {
             logit += out_w[i] * prev[i];
@@ -146,64 +139,54 @@ impl GenericMlp {
         1.0 / (1.0 + (-logit).exp())
     }
 
+    /// Forward pass with f64 input (for combined features): input -> H1(ReLU) -> ... -> sigmoid
+    pub fn forward_f64(&self, input: &[f64]) -> f32 {
+        assert_eq!(input.len(), self.input_size);
+        let w = &self.weights;
+
+        // First hidden layer: f64 input -> f32
+        let h_size = self.hidden_layers[0];
+        let hw = &w[0..self.input_size * h_size];
+        let hb = &w[self.input_size * h_size..self.input_size * h_size + h_size];
+        let off = self.input_size * h_size + h_size;
+
+        let mut buf_a = [0.0f32; MAX_HIDDEN];
+        let mut buf_b = [0.0f32; MAX_HIDDEN];
+
+        for j in 0..h_size {
+            let mut sum = hb[j];
+            for i in 0..self.input_size {
+                sum += hw[i * h_size + j] * input[i] as f32;
+            }
+            buf_a[j] = sum.max(0.0); // ReLU
+        }
+
+        self.forward_inner(&mut buf_a, &mut buf_b, off)
+    }
+
     /// Forward pass with f32 input: input -> H1(ReLU) -> ... -> sigmoid
     pub fn forward_f32(&self, input: &[f32]) -> f32 {
         assert_eq!(input.len(), self.input_size);
         let w = &self.weights;
-        let mut off = 0;
-
-        let mut buf_a = [0.0f32; MAX_HIDDEN];
-        let mut buf_b = [0.0f32; MAX_HIDDEN];
-        let mut use_a = true;
 
         // First hidden layer
         let h_size = self.hidden_layers[0];
-        let hw = &w[off..off + self.input_size * h_size];
-        off += self.input_size * h_size;
-        let hb = &w[off..off + h_size];
-        off += h_size;
+        let hw = &w[0..self.input_size * h_size];
+        let hb = &w[self.input_size * h_size..self.input_size * h_size + h_size];
+        let off = self.input_size * h_size + h_size;
+
+        let mut buf_a = [0.0f32; MAX_HIDDEN];
+        let mut buf_b = [0.0f32; MAX_HIDDEN];
 
         for j in 0..h_size {
             let mut sum = hb[j];
             for i in 0..self.input_size {
                 sum += hw[i * h_size + j] * input[i];
             }
-            buf_a[j] = sum.max(0.0);
+            buf_a[j] = sum.max(0.0); // ReLU
         }
 
-        // Subsequent hidden layers
-        for layer_idx in 1..self.hidden_layers.len() {
-            let prev_size = self.hidden_layers[layer_idx - 1];
-            let cur_size = self.hidden_layers[layer_idx];
-            let lw = &w[off..off + prev_size * cur_size];
-            off += prev_size * cur_size;
-            let lb = &w[off..off + cur_size];
-            off += cur_size;
-
-            let (src, dst) = if use_a { (&buf_a, &mut buf_b) } else { (&buf_b, &mut buf_a) };
-            for j in 0..cur_size {
-                let mut sum = lb[j];
-                for i in 0..prev_size {
-                    sum += lw[i * cur_size + j] * src[i];
-                }
-                dst[j] = sum.max(0.0);
-            }
-            use_a = !use_a;
-        }
-
-        // Output layer
-        let last_h = *self.hidden_layers.last().unwrap();
-        let out_w = &w[off..off + last_h];
-        off += last_h;
-        let out_b = w[off];
-
-        let prev = if use_a { &buf_a } else { &buf_b };
-        let mut logit = out_b;
-        for i in 0..last_h {
-            logit += out_w[i] * prev[i];
-        }
-
-        1.0 / (1.0 + (-logit).exp())
+        self.forward_inner(&mut buf_a, &mut buf_b, off)
     }
 
     /// Forward pass optimized for sparse NNUE-style inputs (1106 or 1147 dims).
@@ -216,7 +199,7 @@ impl GenericMlp {
         // L1: sparse accumulation
         let l1_w = &w[0..self.input_size * h1];
         let l1_b = &w[self.input_size * h1..self.input_size * h1 + h1];
-        let mut off = self.input_size * h1 + h1;
+        let off = self.input_size * h1 + h1;
 
         let mut buf_a = [0.0f32; MAX_HIDDEN];
         buf_a[..h1].copy_from_slice(l1_b);
@@ -268,41 +251,8 @@ impl GenericMlp {
             buf_a[j] = buf_a[j].max(0.0);
         }
 
-        // Subsequent hidden layers (ping-pong between buf_a and buf_b)
         let mut buf_b = [0.0f32; MAX_HIDDEN];
-        let mut use_a = true;
-        for layer_idx in 1..self.hidden_layers.len() {
-            let prev_size = self.hidden_layers[layer_idx - 1];
-            let cur_size = self.hidden_layers[layer_idx];
-            let lw = &w[off..off + prev_size * cur_size];
-            off += prev_size * cur_size;
-            let lb = &w[off..off + cur_size];
-            off += cur_size;
-
-            let (src, dst) = if use_a { (&buf_a, &mut buf_b) } else { (&buf_b, &mut buf_a) };
-            for j in 0..cur_size {
-                let mut sum = lb[j];
-                for i in 0..prev_size {
-                    sum += lw[i * cur_size + j] * src[i];
-                }
-                dst[j] = sum.max(0.0);
-            }
-            use_a = !use_a;
-        }
-
-        // Output layer
-        let last_h = *self.hidden_layers.last().unwrap();
-        let out_w = &w[off..off + last_h];
-        off += last_h;
-        let out_b = w[off];
-
-        let prev = if use_a { &buf_a } else { &buf_b };
-        let mut logit = out_b;
-        for i in 0..last_h {
-            logit += out_w[i] * prev[i];
-        }
-
-        1.0 / (1.0 + (-logit).exp())
+        self.forward_inner(&mut buf_a, &mut buf_b, off)
     }
 
     /// Format the architecture as a string like "1106->64->64->32->1"

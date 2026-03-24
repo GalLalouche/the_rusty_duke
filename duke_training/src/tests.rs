@@ -7,7 +7,7 @@ use duke_rust::game::ai::player::ArtificialPlayer;
 use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
-use duke_rust::game::state::{GameResult, GameState};
+use duke_rust::game::state::{GameResult, GameSnapshot, GameState};
 use duke_rust::game::tile::Owner;
 
 use crate::encoding::{active_feature_indices, encode_state, encode_state_flat, BOARD_SIZE, NUM_PLANES};
@@ -743,10 +743,11 @@ fn parallel_games_are_deterministic() {
 
 use crate::match_runner::{play_match, run_matches, Player};
 use duke_rust::game::ai::heuristics::{HeuristicAi, Heuristics};
-use crate::game_setup::{HeuristicEvaluator, StaticHeuristicEvaluator};
+use crate::game_setup::StaticHeuristicEvaluator;
 use crate::learned_heuristic::{
-    extract_features, solve_linear_system, train_weights, LearnedHeuristicWeights, NUM_FEATURES,
+    extract_features, LearnedHeuristicWeights, NUM_FEATURES,
 };
+use crate::regression::{solve_linear_system, train_weights};
 
 #[test]
 fn play_match_terminates() {
@@ -1222,15 +1223,15 @@ fn snapshot_state(
     tiles: Vec<(Coordinates, PlacedTile)>,
     current_player: Owner,
 ) -> GameState {
-    GameState::from_snapshot(
+    GameState::from_snapshot(GameSnapshot {
         tiles,
-        current_player,
-        TileBag::new(vec![]),
-        TileBag::new(vec![]),
-        DiscardBag::empty(),
-        DiscardBag::empty(),
-        0,
-    )
+        current_turn: current_player,
+        top_bag: TileBag::new(vec![]),
+        bottom_bag: TileBag::new(vec![]),
+        top_discard: DiscardBag::empty(),
+        bottom_discard: DiscardBag::empty(),
+        idle_move_count: 0,
+    })
 }
 
 /// Helper: build a GameState with custom discard bags.
@@ -1240,15 +1241,15 @@ fn snapshot_state_with_discards(
     top_discard: DiscardBag,
     bottom_discard: DiscardBag,
 ) -> GameState {
-    GameState::from_snapshot(
+    GameState::from_snapshot(GameSnapshot {
         tiles,
-        current_player,
-        TileBag::new(vec![]),
-        TileBag::new(vec![]),
+        current_turn: current_player,
+        top_bag: TileBag::new(vec![]),
+        bottom_bag: TileBag::new(vec![]),
         top_discard,
         bottom_discard,
-        0,
-    )
+        idle_move_count: 0,
+    })
 }
 
 /// Helper: build a GameState with custom bags (for TotalMovementOptions which
@@ -1259,15 +1260,15 @@ fn snapshot_state_with_bags(
     top_bag: TileBag,
     bottom_bag: TileBag,
 ) -> GameState {
-    GameState::from_snapshot(
+    GameState::from_snapshot(GameSnapshot {
         tiles,
-        current_player,
+        current_turn: current_player,
         top_bag,
         bottom_bag,
-        DiscardBag::empty(),
-        DiscardBag::empty(),
-        0,
-    )
+        top_discard: DiscardBag::empty(),
+        bottom_discard: DiscardBag::empty(),
+        idle_move_count: 0,
+    })
 }
 
 // ── DukeMovementOptions ────────────────────────────────────────────────

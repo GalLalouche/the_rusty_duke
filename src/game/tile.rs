@@ -104,10 +104,6 @@ impl Tile {
         self.tile_type.into()
     }
 
-    pub fn name_compare(&self, other: &Tile) -> bool {
-        self.tile_type == other.tile_type
-    }
-
     pub fn new(side_a: TileSide, side_b: TileSide, tile_type: TileType) -> Tile {
         Tile {
             side_a,

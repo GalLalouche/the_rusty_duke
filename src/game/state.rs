@@ -68,6 +68,17 @@ pub enum GameResult {
     Won(Owner),
 }
 
+/// Parameter struct for [`GameState::from_snapshot`], avoiding positional-argument transposition bugs.
+pub struct GameSnapshot {
+    pub tiles: Vec<(Coordinates, PlacedTile)>,
+    pub top_bag: TileBag,
+    pub bottom_bag: TileBag,
+    pub top_discard: DiscardBag,
+    pub bottom_discard: DiscardBag,
+    pub current_turn: Owner,
+    pub idle_move_count: usize,
+}
+
 impl GameState {
     pub fn board(&self) -> &Board<PlacedTile> { self.board.get_board() }
 
@@ -101,29 +112,20 @@ impl GameState {
     }
 
     /// Reconstruct a GameState from raw snapshot data (for deserialization).
-    /// `tiles` is a list of (coordinates, placed_tile) pairs to place on the board.
-    pub fn from_snapshot(
-        tiles: Vec<(Coordinates, PlacedTile)>,
-        current_player_turn: Owner,
-        top_bag: TileBag,
-        bottom_bag: TileBag,
-        top_discard: DiscardBag,
-        bottom_discard: DiscardBag,
-        idle_moves: usize,
-    ) -> GameState {
+    pub fn from_snapshot(snap: GameSnapshot) -> GameState {
         let mut board = GameBoard::empty();
-        for (coords, placed) in tiles {
+        for (coords, placed) in snap.tiles {
             board.place(coords, placed);
         }
         GameState {
             board,
-            current_player_turn,
+            current_player_turn: snap.current_turn,
             pulled_tile: None,
-            top_player_bag: top_bag,
-            top_player_discard: top_discard,
-            bottom_player_bag: bottom_bag,
-            bottom_player_discard: bottom_discard,
-            moves_without_capture_or_placement_stack: vec![idle_moves],
+            top_player_bag: snap.top_bag,
+            top_player_discard: snap.top_discard,
+            bottom_player_bag: snap.bottom_bag,
+            bottom_player_discard: snap.bottom_discard,
+            moves_without_capture_or_placement_stack: vec![snap.idle_move_count],
         }
     }
     pub fn new(
@@ -859,15 +861,15 @@ mod tests {
         let top_bag = TileBag::empty();
         let bottom_bag = TileBag::new(vec![TileRef::new(units::footman())]);
 
-        let state = GameState::from_snapshot(
+        let state = GameState::from_snapshot(GameSnapshot {
             tiles,
-            Owner::TopPlayer, // current player is TopPlayer
+            current_turn: Owner::TopPlayer,
             top_bag,
             bottom_bag,
-            DiscardBag::empty(),
-            DiscardBag::empty(),
-            0,
-        );
+            top_discard: DiscardBag::empty(),
+            bottom_discard: DiscardBag::empty(),
+            idle_move_count: 0,
+        });
 
         // TopPlayer's moves should have no placement (empty bag)
         let top_moves: Vec<PossibleMove> =

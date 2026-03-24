@@ -2,10 +2,6 @@ use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalO
 use crate::game::tile::{Owner, PlacedTile, Tile, TileType};
 use crate::game::tile_side::{TileAction, TileSide};
 
-pub fn is_duke(t: &Tile) -> bool {
-    t.tile_type().is_duke()
-}
-
 pub fn duke() -> Tile {
     Tile::new(
         TileSide::new(vec![

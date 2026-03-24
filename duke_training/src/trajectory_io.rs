@@ -21,9 +21,10 @@ use std::sync::Arc;
 
 use duke_rust::common::coordinates::Coordinates;
 use duke_rust::game::bag::{DiscardBag, TileBag};
-use duke_rust::game::state::{GameResult, GameState};
+use duke_rust::game::state::{GameResult, GameSnapshot, GameState};
 use duke_rust::game::tile::{CurrentSide, Owner, PlacedTile, TileType};
 use duke_rust::game::units::tile_from_type;
+use strum::EnumCount;
 
 use crate::serialization;
 
@@ -115,7 +116,7 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
     let num_games = u32::from_le_bytes(buf4) as usize;
 
     // Pre-build one Arc<Tile> per TileType to avoid millions of redundant constructions
-    let tile_cache: Vec<Arc<duke_rust::game::tile::Tile>> = (0..13)
+    let tile_cache: Vec<Arc<duke_rust::game::tile::Tile>> = (0..TileType::COUNT as u8)
         .map(|i| Arc::new(tile_from_type(tile_type_from_u8(i).unwrap())))
         .collect();
 
@@ -230,9 +231,15 @@ fn read_game_state(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::T
     let top_discard = DiscardBag::from_tiles(read_tile_ref_list(r, tile_cache)?);
     let bottom_discard = DiscardBag::from_tiles(read_tile_ref_list(r, tile_cache)?);
 
-    Ok(GameState::from_snapshot(
-        tiles, current_player, top_bag, bottom_bag, top_discard, bottom_discard, idle_moves,
-    ))
+    Ok(GameState::from_snapshot(GameSnapshot {
+        tiles,
+        current_turn: current_player,
+        top_bag,
+        bottom_bag,
+        top_discard,
+        bottom_discard,
+        idle_move_count: idle_moves,
+    }))
 }
 
 fn read_tile_ref_list(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::Tile>]) -> io::Result<Vec<Arc<duke_rust::game::tile::Tile>>> {
