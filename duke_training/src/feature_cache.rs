@@ -59,6 +59,9 @@ impl FeatureCacheWriter {
         serialization::write_result(&mut self.writer, &game.result)?;
         self.writer.write_all(&(game.states.len() as u32).to_le_bytes())?;
         for state in &game.states {
+            assert_eq!(state.features.len(), self.num_features,
+                "feature vector length mismatch: expected {}, got {}",
+                self.num_features, state.features.len());
             let player_byte: u8 = match state.current_player {
                 Owner::TopPlayer => 0,
                 Owner::BottomPlayer => 1,
@@ -170,6 +173,80 @@ pub fn load_feature_cache(path: &str) -> io::Result<(FeatureCacheHeader, Vec<Cac
     }
 
     Ok((header, games))
+}
+
+/// Stream a feature cache file in chunks, calling `process` for each chunk of games.
+/// Never loads more than `chunk_size` games into memory at once.
+pub fn stream_feature_cache(
+    path: &str,
+    chunk_size: usize,
+    mut process: impl FnMut(&[CachedGame], &FeatureCacheHeader),
+) -> io::Result<FeatureCacheHeader> {
+    use std::io::BufReader;
+
+    let f = std::fs::File::open(path)?;
+    let mut r = BufReader::with_capacity(1 << 20, f); // 1MB buffer
+
+    let mut magic = [0u8; 4];
+    r.read_exact(&mut magic)?;
+    if &magic != MAGIC {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid feature cache magic"));
+    }
+
+    let mut buf4 = [0u8; 4];
+    r.read_exact(&mut buf4)?;
+    let version = u32::from_le_bytes(buf4);
+    if version != VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Unsupported feature cache version (expected {}, got {})", VERSION, version),
+        ));
+    }
+
+    r.read_exact(&mut buf4)?;
+    let num_features = u32::from_le_bytes(buf4) as usize;
+    r.read_exact(&mut buf4)?;
+    let num_games = u32::from_le_bytes(buf4) as usize;
+
+    let header = FeatureCacheHeader { num_features, num_games };
+
+    let mut buf1 = [0u8; 1];
+    let mut buf8 = [0u8; 8];
+    let mut chunk = Vec::with_capacity(chunk_size);
+    let mut games_read = 0;
+
+    while games_read < num_games {
+        chunk.clear();
+        let batch = chunk_size.min(num_games - games_read);
+        for _ in 0..batch {
+            let result = serialization::read_result(&mut r)?;
+            r.read_exact(&mut buf4)?;
+            let num_states = u32::from_le_bytes(buf4) as usize;
+
+            let mut states = Vec::with_capacity(num_states);
+            for _ in 0..num_states {
+                r.read_exact(&mut buf1)?;
+                let current_player = match buf1[0] {
+                    0 => Owner::TopPlayer,
+                    1 => Owner::BottomPlayer,
+                    b => return Err(io::Error::new(
+                        io::ErrorKind::InvalidData, format!("Invalid player byte: {}", b),
+                    )),
+                };
+                let mut features = Vec::with_capacity(num_features);
+                for _ in 0..num_features {
+                    r.read_exact(&mut buf8)?;
+                    features.push(f64::from_le_bytes(buf8));
+                }
+                states.push(CachedState { current_player, features });
+            }
+            chunk.push(CachedGame { result, states });
+        }
+        games_read += batch;
+        process(&chunk, &header);
+    }
+
+    Ok(header)
 }
 
 /// Build a RegressionAccumulator directly from cached features (no GameState needed).

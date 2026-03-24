@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use duke_training::feature_cache::load_feature_cache;
+use duke_training::feature_cache::stream_feature_cache;
 use duke_training::game_setup::{create_bag, create_initial_state, StaticHeuristicEvaluator};
 use duke_training::learned_heuristic::{CombinedWeights, NUM_COMBINED_FEATURES};
 use duke_training::match_runner::{run_matches, Player};
@@ -24,42 +24,47 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(2000);
 
-    let t = Instant::now();
-    let (header, games) = load_feature_cache(features_path).expect("Failed to load feature cache");
-    let total_samples: usize = games.iter().map(|g| g.states.len()).sum();
-    println!("Loaded {} games ({} samples, {} features) in {:.1?}",
-        header.num_games, total_samples, header.num_features, t.elapsed());
-    assert_eq!(header.num_features, K, "Expected {} features, got {}", K, header.num_features);
-
-    // Build normal equations (X'X and X'y)
+    // Stream the feature file in chunks, accumulating X'X and X'y incrementally
     let t = Instant::now();
     let mut xtx = [[0.0f64; K]; K];
     let mut xty = [0.0f64; K];
     let mut n: u64 = 0;
+    let mut games_processed: usize = 0;
 
-    for game in &games {
-        for state in &game.states {
-            let target = match game.result {
-                GameResult::Won(winner) => {
-                    if winner == state.current_player { 1.0 } else { -1.0 }
+    let header = stream_feature_cache(features_path, 1000, |chunk, hdr| {
+        assert_eq!(hdr.num_features, K, "Expected {} features, got {}", K, hdr.num_features);
+        for game in chunk {
+            for state in &game.states {
+                let target = match game.result {
+                    GameResult::Won(winner) => {
+                        if winner == state.current_player { 1.0 } else { -1.0 }
+                    }
+                    GameResult::Tie => 0.0,
+                    GameResult::Ongoing => continue,
+                };
+                let x = &state.features;
+                for i in 0..K {
+                    xty[i] += x[i] * target;
+                    for j in i..K {
+                        xtx[i][j] += x[i] * x[j];
+                    }
                 }
-                GameResult::Tie | GameResult::Ongoing => 0.0,
-            };
-            let x = &state.features;
-            for i in 0..K {
-                xty[i] += x[i] * target;
-                for j in i..K {
-                    xtx[i][j] += x[i] * x[j];
-                }
+                n += 1;
             }
-            n += 1;
         }
-    }
+        games_processed += chunk.len();
+        if games_processed % 10000 == 0 {
+            eprint!("\r  {}/{} games ({} samples, {:.1?})", games_processed, hdr.num_games, n, t.elapsed());
+        }
+    }).expect("Failed to stream feature cache");
+
     // Mirror upper triangle
     for i in 0..K {
         for j in 0..i { xtx[i][j] = xtx[j][i]; }
     }
-    println!("Accumulated {} samples in {:.1?}\n", n, t.elapsed());
+    eprintln!();
+    println!("Streamed {} games ({} samples, {} features) in {:.1?}\n",
+        header.num_games, n, header.num_features, t.elapsed());
 
     let bag = create_bag();
     let gs = create_initial_state(&bag);

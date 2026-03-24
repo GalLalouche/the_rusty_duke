@@ -41,3 +41,7 @@ path = "src/rl_train.rs"
 [[bin]]
 name = "es_train"
 path = "src/es_train.rs"
+
+[[bin]]
+name = "elo_tournament"
+path = "src/elo_tournament.rs"
