@@ -8,7 +8,7 @@
 
 ## Infrastructure
 - [ ] Live dashboard (replace plain text live_status.txt with something richer)
-- [ ] Proper storage of models (organized model registry instead of scattered D:/temp checkpoints)
+- [x] Proper storage of models (organized model registry instead of scattered D:/temp checkpoints)
 
 ## Performance
 - [ ] Profile training iteration to find actual bottleneck (instead of guessing)

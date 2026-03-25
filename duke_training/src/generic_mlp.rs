@@ -411,6 +411,79 @@ impl GameEvaluator for GenericAppendedEvaluator {
     }
 }
 
+// ── LoadedModel ──────────────────────────────────────────────────────────
+
+use crate::model_registry::ModelRegistry;
+
+/// A loaded model ready for evaluation. Can represent a DB-registered model,
+/// a file-based model, or a built-in player (base/random).
+pub struct LoadedModel {
+    /// DB model ID, None if not in registry.
+    pub id: Option<i64>,
+    /// Short display label (e.g. "Base", "Random", "es_final (1106->64->64->32->1)").
+    pub label: String,
+    /// None = Random player (no evaluator needed).
+    pub evaluator: Option<Box<dyn GameEvaluator + Sync + Send>>,
+}
+
+impl LoadedModel {
+    /// Load from a spec string: "base", "random", or a file path (.gmlp/.nnue).
+    pub fn from_spec(spec: &str) -> Self {
+        let (eval, desc) = load_opponent(spec);
+        let label = if spec == "base" || spec == "random" {
+            spec.to_string()
+        } else {
+            // Use filename stem + arch from description
+            let stem = std::path::Path::new(spec)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| spec.to_string());
+            // Extract parenthesized part from desc if present
+            if let Some(start) = desc.find('(') {
+                format!("{} {}", stem, &desc[start..])
+            } else {
+                stem
+            }
+        };
+        LoadedModel { id: None, label, evaluator: eval }
+    }
+
+    /// Load from a database model ID. Opens the registry, looks up the model,
+    /// loads the file, and populates the struct.
+    pub fn from_db_id(registry: &ModelRegistry, model_id: i64) -> Result<Self, String> {
+        let record = registry
+            .get_model(model_id)
+            .map_err(|e| format!("DB error looking up model #{}: {}", model_id, e))?
+            .ok_or_else(|| format!("Model #{} not found in registry", model_id))?;
+
+        let (eval, _desc) = load_opponent(&record.file_path);
+        let label = if let Some(ref desc) = record.description {
+            desc.clone()
+        } else {
+            format!("{} ({})",
+                std::path::Path::new(&record.file_path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| record.file_path.clone()),
+                record.architecture)
+        };
+
+        Ok(LoadedModel {
+            id: Some(model_id),
+            label,
+            evaluator: eval,
+        })
+    }
+
+    /// Convert to a Player reference for match_runner.
+    pub fn as_player(&self) -> crate::match_runner::Player<'_> {
+        match &self.evaluator {
+            Some(eval) => crate::match_runner::Player::Evaluator(eval.as_ref()),
+            None => crate::match_runner::Player::Random,
+        }
+    }
+}
+
 /// Load an opponent evaluator from a file path or keyword.
 ///
 /// Returns `None` for the "random" keyword (caller should use `Player::Random`),

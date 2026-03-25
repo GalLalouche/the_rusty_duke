@@ -1,45 +1,24 @@
 //! Elo tournament: round-robin play between multiple players with Elo rating computation.
 //!
-//! Usage: elo_tournament [--games N] <player1> <player2> [player3 ...]
+//! Usage: elo_tournament [--games N] [--db <path>] <player1> <player2> [player3 ...]
 //!
 //! Player specs:
 //!   - "base"    -> StaticHeuristicEvaluator
 //!   - "random"  -> Random move selection
+//!   - "#42"     -> Load model ID 42 from the registry DB (requires --db)
 //!   - path.gmlp -> GenericMlp model (dispatched by input_size)
 //!   - path.nnue -> NNUE model
 //!
 //! Flags:
 //!   --games N   Number of games per matchup (default 1000)
+//!   --db <path> Path to model registry SQLite DB (enables #ID syntax and benchmark recording)
 
-use std::path::Path;
 use std::time::Instant;
 
-use duke_training::game_setup::{create_bag, create_initial_state, GameEvaluator};
-use duke_training::generic_mlp::load_opponent;
-use duke_training::match_runner::{run_matches, Player};
+use duke_training::game_setup::{create_bag, create_initial_state};
+use duke_training::generic_mlp::LoadedModel;
+use duke_training::match_runner::run_matches;
 use duke_training::model_registry::{BenchmarkRecord, ModelRegistry};
-
-/// Derive a short display label from the player spec and the description
-/// returned by `load_opponent`, avoiding redundant file loads.
-fn derive_label(spec: &str, desc: &str) -> String {
-    match spec {
-        "base" => "Base".to_string(),
-        "random" => "Random".to_string(),
-        path => {
-            let stem = Path::new(path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.to_string());
-            // desc from load_opponent is e.g. "GMLP (41->64->1)" or "NNUE (1106->256->32->1)"
-            // Extract the parenthesized arch portion if present.
-            if let Some(start) = desc.find('(') {
-                format!("{}{}", stem, &desc[start..])
-            } else {
-                stem
-            }
-        }
-    }
-}
 
 /// Parse CLI arguments into player specs, the number of games per matchup, and optional DB path.
 fn parse_args() -> (Vec<String>, u32, Option<String>) {
@@ -76,7 +55,7 @@ fn parse_args() -> (Vec<String>, u32, Option<String>) {
 
     if player_specs.len() < 2 {
         eprintln!("Usage: elo_tournament [--games N] [--db <path>] <player1> <player2> [player3 ...]");
-        eprintln!("  Player specs: base, random, or a path to .gmlp / .nnue file");
+        eprintln!("  Player specs: base, random, #<model_id>, or a path to .gmlp / .nnue file");
         std::process::exit(1);
     }
 
@@ -84,16 +63,31 @@ fn parse_args() -> (Vec<String>, u32, Option<String>) {
 }
 
 /// Load all players from their specs.
-/// Returns a list of (label, optional evaluator) pairs.
-fn load_players(
-    specs: &[String],
-) -> Vec<(String, Option<Box<dyn GameEvaluator + Sync + Send>>)> {
+/// Specs starting with '#' are treated as DB model IDs (requires registry).
+/// Returns a list of LoadedModel.
+fn load_players(specs: &[String], registry: Option<&ModelRegistry>) -> Vec<LoadedModel> {
     let mut players = Vec::with_capacity(specs.len());
     for (idx, spec) in specs.iter().enumerate() {
-        let (eval_box, desc) = load_opponent(spec);
-        let label = derive_label(spec, &desc);
-        println!("  [{}] {} -- {}", idx, label, desc);
-        players.push((label, eval_box));
+        let model = if spec.starts_with('#') {
+            // DB model ID syntax: #42
+            let id_str = &spec[1..];
+            let model_id: i64 = id_str.parse().unwrap_or_else(|_| {
+                eprintln!("Error: invalid model ID '{}' (expected #<number>)", spec);
+                std::process::exit(1);
+            });
+            let reg = registry.unwrap_or_else(|| {
+                eprintln!("Error: --db is required to use model ID syntax ({})", spec);
+                std::process::exit(1);
+            });
+            LoadedModel::from_db_id(reg, model_id).unwrap_or_else(|e| {
+                eprintln!("Error loading model {}: {}", spec, e);
+                std::process::exit(1);
+            })
+        } else {
+            LoadedModel::from_spec(spec)
+        };
+        println!("  [{}] {}", idx, model.label);
+        players.push(model);
     }
     players
 }
@@ -101,7 +95,7 @@ fn load_players(
 /// Run round-robin matches between all player pairs.
 /// Returns (wins, ties) matrices where wins[i][j] = games player i won vs j.
 fn run_round_robin(
-    players: &[(String, Option<Box<dyn GameEvaluator + Sync + Send>>)],
+    players: &[LoadedModel],
     games_per_matchup: u32,
 ) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
     let n = players.len();
@@ -119,18 +113,12 @@ fn run_round_robin(
             matchup_idx += 1;
             let label = format!(
                 "[{}/{}] {} vs {}",
-                matchup_idx, num_matchups, players[a].0, players[b].0
+                matchup_idx, num_matchups, players[a].label, players[b].label
             );
             print!("  ");
 
-            let player_a = match &players[a].1 {
-                Some(eval) => Player::Evaluator(eval.as_ref()),
-                None => Player::Random,
-            };
-            let player_b = match &players[b].1 {
-                Some(eval) => Player::Evaluator(eval.as_ref()),
-                None => Player::Random,
-            };
+            let player_a = players[a].as_player();
+            let player_b = players[b].as_player();
 
             let result = run_matches(&gs, &player_a, &player_b, games_per_matchup, &label);
 
@@ -263,7 +251,12 @@ fn main() {
     }
     println!();
 
-    let players = load_players(&player_specs);
+    // Open registry if --db was provided (needed for #ID syntax and benchmark recording)
+    let registry = db_path.as_ref().map(|db| {
+        ModelRegistry::open(db).expect("Failed to open model registry DB")
+    });
+
+    let players = load_players(&player_specs, registry.as_ref());
     println!();
 
     let total_start = Instant::now();
@@ -274,39 +267,41 @@ fn main() {
     println!("All matches complete in {:.1?}", total_elapsed);
     println!();
 
-    let labels: Vec<String> = players.iter().map(|(l, _)| l.clone()).collect();
+    let labels: Vec<String> = players.iter().map(|m| m.label.clone()).collect();
     let elo = compute_elo(&wins, &ties, n);
     print_results(&labels, &wins, &ties, &elo);
 
     // ── Record benchmarks in registry if --db was provided ───────────────
-    if let Some(ref db) = db_path {
+    if let Some(ref registry) = registry {
         println!();
-        println!("Recording benchmarks in registry: {}", db);
+        println!("Recording benchmarks in registry: {}", db_path.as_ref().unwrap());
 
-        let registry = ModelRegistry::open(db).expect("Failed to open model registry DB");
-
-        // For each player that is a file (not "base" or "random"), look up by path
-        let mut model_ids: Vec<Option<i64>> = Vec::with_capacity(n);
-        for spec in &player_specs {
+        // For players loaded via #ID, we already have model.id.
+        // For file-based players, look up by path in the registry.
+        let model_ids: Vec<Option<i64>> = players.iter().enumerate().map(|(idx, model)| {
+            if model.id.is_some() {
+                return model.id;
+            }
+            let spec = &player_specs[idx];
             if spec == "base" || spec == "random" {
-                model_ids.push(None);
-            } else {
-                match registry.find_by_path(spec) {
-                    Ok(Some(record)) => {
-                        println!("  Found model ID {} for {}", record.id, spec);
-                        model_ids.push(Some(record.id));
-                    }
-                    Ok(None) => {
-                        println!("  Model not registered: {} (skipping)", spec);
-                        model_ids.push(None);
-                    }
-                    Err(e) => {
-                        eprintln!("  Error looking up {}: {}", spec, e);
-                        model_ids.push(None);
-                    }
+                return None;
+            }
+            // Try to find by file path
+            match registry.find_by_path(spec) {
+                Ok(Some(record)) => {
+                    println!("  Found model ID {} for {}", record.id, spec);
+                    Some(record.id)
+                }
+                Ok(None) => {
+                    println!("  Model not registered: {} (skipping)", spec);
+                    None
+                }
+                Err(e) => {
+                    eprintln!("  Error looking up {}: {}", spec, e);
+                    None
                 }
             }
-        }
+        }).collect();
 
         // Record pairwise benchmark results for each registered model
         for a in 0..n {
@@ -327,7 +322,7 @@ fn main() {
 
                 let bench = BenchmarkRecord {
                     id: None,
-                    opponent: player_specs[b].clone(),
+                    opponent: labels[b].clone(),
                     opponent_model_id: model_ids[b],
                     num_games: total_games,
                     wins: wins[a][b],

@@ -120,7 +120,7 @@ const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES; // 11
 
 use duke_training::generic_mlp::{
     GenericMlp, CombinedNetEvaluator, GuardFeatureEvaluator,
-    GenericNnueEvaluator, GenericAppendedEvaluator, load_opponent,
+    GenericNnueEvaluator, GenericAppendedEvaluator, LoadedModel,
     NUM_GUARD_ALL_FEATURES,
 };
 use duke_training::model_registry::{ModelRegistry, TrainingInfo, BenchmarkRecord};
@@ -772,14 +772,13 @@ fn main() {
     let opponent_spec = parse_flag::<String>(&args, "--opponent")
         .unwrap_or_else(|| "base".to_string());
 
-    let (opponent_box, opponent_desc) = load_opponent(&opponent_spec);
-    let training_opponent: TrainingOpponent = if opponent_box.is_none() {
-        TrainingOpponent::Random
-    } else {
-        TrainingOpponent::Eval(opponent_box.as_ref().unwrap().as_ref())
+    let opponent_model = LoadedModel::from_spec(&opponent_spec);
+    let training_opponent: TrainingOpponent = match &opponent_model.evaluator {
+        Some(eval) => TrainingOpponent::Eval(eval.as_ref()),
+        None => TrainingOpponent::Random,
     };
 
-    println!("Training opponent: {}", opponent_desc);
+    println!("Training opponent: {}", opponent_model.label);
 
     // Parse --layers flag: comma-separated hidden layer sizes (e.g. "64,64,32")
     let layers_str: Option<String> = parse_flag::<String>(&args, "--layers");

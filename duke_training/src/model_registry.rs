@@ -275,6 +275,21 @@ impl ModelRegistry {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Find a model by its primary key ID.
+    pub fn get_model(&self, id: i64) -> Result<Option<ModelRecord>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT id, file_path, file_format, architecture, input_size,
+                    param_count, description, created_at,
+                    training_iterations, training_sigma, training_lr,
+                    training_opponent, parent_model_id
+                 FROM models WHERE id = ?1",
+                params![id],
+                |row| row_to_model_record(row),
+            )
+            .optional()
+    }
+
     /// Find a model by its file path.
     pub fn find_by_path(&self, path: &str) -> Result<Option<ModelRecord>, rusqlite::Error> {
         self.conn
