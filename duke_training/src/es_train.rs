@@ -14,6 +14,8 @@
 //!                 [--pop 50] [--games 10] [--sigma 0.01] [--lr 0.01]
 //!                 [--iterations 200] [--eval-interval 20] [--eval-games 500]
 //!                 [--checkpoint-dir <dir>] [--time-limit 3600]
+//!                 [--opponent <spec>]  — training opponent (model ID, file, "base", "random")
+//!                 [--benchmark <spec>] — eval benchmark opponent (same specs; default "base")
 //!                 [--append-combined]  — use 1147-input network (1106 NNUE + 41 combined)
 //!                 [--input-features combined]  — use 41 combined features only
 //!                 [--input-features guard]  — use 65 features (24 expensive + 41 combined)
@@ -248,6 +250,10 @@ struct EsConfig<'a> {
     training_opponent: &'a TrainingOpponent<'a>,
     /// Max turns per game during training perturbation evaluation.
     train_max_turns: u32,
+    /// The opponent used for periodic evaluation/benchmark (INIT + EVAL lines).
+    benchmark_opponent: &'a TrainingOpponent<'a>,
+    /// Human-readable label for the benchmark opponent (e.g. "Base", "random", model path).
+    benchmark_label: &'a str,
 }
 
 /// Result of an ES training run, for post-training registration.
@@ -298,14 +304,17 @@ fn run_es_training_loop(
     // Adaptive opponent epsilon
     let mut opponent_epsilon = config.initial_opponent_epsilon;
 
-    // Evaluate initial win rate
+    // Evaluate initial win rate against benchmark opponent
     {
         let init_eval = make_evaluator(&w);
         let cand_player = Player::Evaluator(&*init_eval);
-        let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
+        let bench_player = match config.benchmark_opponent {
+            TrainingOpponent::Random => Player::Random,
+            TrainingOpponent::Eval(e) => Player::Evaluator(*e),
+        };
         print!("  INIT: ");
-        run_matches(config.gs, &cand_player, &heur_player, config.eval_games,
-            &format!("{} vs Heuristic", mode_label));
+        run_matches(config.gs, &cand_player, &bench_player, config.eval_games,
+            &format!("{} vs {}", mode_label, config.benchmark_label));
     }
 
     let total_start = Instant::now();
@@ -457,31 +466,21 @@ fn run_es_training_loop(
             println!("  Saved checkpoint: {}", ckpt_path);
 
             let eval_evaluator = make_evaluator(&w);
-            let heur_player = Player::Evaluator(&StaticHeuristicEvaluator::new());
+            let bench_player = match config.benchmark_opponent {
+                TrainingOpponent::Random => Player::Random,
+                TrainingOpponent::Eval(e) => Player::Evaluator(*e),
+            };
             let cand_player = Player::Evaluator(&*eval_evaluator);
             print!("  EVAL: ");
             let eval_result = run_matches(
-                config.gs, &cand_player, &heur_player, config.eval_games,
-                &format!("{}(ES iter={}) vs Heuristic", mode_label, iter + 1),
+                config.gs, &cand_player, &bench_player, config.eval_games,
+                &format!("{}(ES iter={}) vs {}", mode_label, iter + 1, config.benchmark_label),
             );
 
             // Track for TrainingResult
             last_eval_wins = eval_result.player_a_wins;
             last_eval_losses = eval_result.player_b_wins;
             last_eval_ties = eval_result.ties;
-
-            // Also benchmark vs training opponent
-            {
-                let eval_evaluator2 = make_evaluator(&w);
-                let opp_player = match config.training_opponent {
-                    TrainingOpponent::Random => Player::Random,
-                    TrainingOpponent::Eval(e) => Player::Evaluator(*e),
-                };
-                print!("  VS_OPP: ");
-                let cand_player2 = Player::Evaluator(&*eval_evaluator2);
-                run_matches(config.gs, &cand_player2, &opp_player, config.eval_games,
-                    &format!("{}(ES iter={}) vs TrainOpp", mode_label, iter + 1));
-            }
 
             // Adaptive sigma: track improvement
             let eval_wr = (eval_result.player_a_wins as f32 + 0.5 * eval_result.ties as f32) / config.eval_games as f32;
@@ -549,6 +548,8 @@ fn run_dense_training(
     seed: u64,
     initial_opponent_epsilon: f32,
     training_opponent: &TrainingOpponent,
+    benchmark_opponent: &TrainingOpponent,
+    benchmark_label: &str,
 ) -> TrainingResult {
     let input_size = feature_mode.input_size();
     let hidden_layers_owned = hidden_layers.to_vec();
@@ -605,6 +606,8 @@ fn run_dense_training(
         initial_opponent_epsilon,
         training_opponent,
         train_max_turns,
+        benchmark_opponent,
+        benchmark_label,
     };
 
     run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, mode_label, &arch_desc)
@@ -631,6 +634,8 @@ fn run_generic_sparse_training(
     resume_path: Option<&str>,
     seed: u64,
     training_opponent: &TrainingOpponent,
+    benchmark_opponent: &TrainingOpponent,
+    benchmark_label: &str,
 ) -> TrainingResult {
     let hidden_layers_owned = hidden_layers.to_vec();
     let mode_name = if include_combined { "Appended" } else { "NNUE" };
@@ -685,6 +690,8 @@ fn run_generic_sparse_training(
         initial_opponent_epsilon,
         training_opponent,
         train_max_turns,
+        benchmark_opponent,
+        benchmark_label,
     };
 
     run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, mode_name, &arch_desc)
@@ -780,6 +787,19 @@ fn main() {
 
     println!("Training opponent: {}", opponent_model.label);
 
+    // Parse --benchmark flag: model to benchmark against at each eval interval
+    let benchmark_spec = parse_flag::<String>(&args, "--benchmark")
+        .unwrap_or_else(|| "base".to_string());
+
+    let benchmark_model = LoadedModel::from_spec(&benchmark_spec);
+    let benchmark_opponent: TrainingOpponent = match &benchmark_model.evaluator {
+        Some(eval) => TrainingOpponent::Eval(eval.as_ref()),
+        None => TrainingOpponent::Random,
+    };
+    let benchmark_label = &benchmark_model.label;
+
+    println!("Benchmark opponent: {}", benchmark_label);
+
     // Parse --layers flag: comma-separated hidden layer sizes (e.g. "64,64,32")
     let layers_str: Option<String> = parse_flag::<String>(&args, "--layers");
     let hidden_layers: Vec<usize> = if let Some(ref s) = layers_str {
@@ -807,7 +827,7 @@ fn main() {
             sigma, lr, iterations, eval_interval, eval_games,
             &checkpoint_dir, &gs, time_limit_secs,
             resume_path.as_deref(), seed, opponent_epsilon,
-            &training_opponent,
+            &training_opponent, &benchmark_opponent, benchmark_label,
         )
     }
     // Dispatch to guard-features mode (65 inputs: 24 expensive + 41 combined)
@@ -820,7 +840,7 @@ fn main() {
             sigma, lr, iterations, eval_interval, eval_games,
             &checkpoint_dir, &gs, time_limit_secs,
             resume_path.as_deref(), seed, opponent_epsilon,
-            &training_opponent,
+            &training_opponent, &benchmark_opponent, benchmark_label,
         )
     }
     // Dispatch to appended-input mode if requested (uses GenericMlp with 1147 inputs)
@@ -832,7 +852,7 @@ fn main() {
             pop_size, games_per_eval, sigma, lr, iterations,
             eval_interval, eval_games, &checkpoint_dir, &gs,
             opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
-            &training_opponent,
+            &training_opponent, &benchmark_opponent, benchmark_label,
         )
     }
     // Standard NNUE path (1106 sparse features) — generic (arbitrary depth)
@@ -844,7 +864,7 @@ fn main() {
             pop_size, games_per_eval, sigma, lr, iterations,
             eval_interval, eval_games, &checkpoint_dir, &gs,
             opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
-            &training_opponent,
+            &training_opponent, &benchmark_opponent, benchmark_label,
         )
     } else {
         // Legacy 2-hidden-layer NNUE path (kept for backward compatibility with .nnue files)
@@ -970,6 +990,8 @@ fn main() {
             initial_opponent_epsilon: opponent_epsilon,
             training_opponent: &effective_opponent,
             train_max_turns: 200,
+            benchmark_opponent: &benchmark_opponent,
+            benchmark_label,
         };
 
         run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, "NNUE-Legacy", &arch_desc)
@@ -1016,8 +1038,8 @@ fn main() {
         if training_result.eval_games > 0 {
             let bench = BenchmarkRecord {
                 id: None,
-                opponent: "base".to_string(),
-                opponent_model_id: None,
+                opponent: benchmark_spec.clone(),
+                opponent_model_id: benchmark_model.id,
                 num_games: training_result.eval_games,
                 wins: training_result.eval_wins,
                 losses: training_result.eval_losses,
@@ -1030,7 +1052,7 @@ fn main() {
                 .expect("Failed to record benchmark");
             let wr = (training_result.eval_wins as f64 + 0.5 * training_result.eval_ties as f64)
                 / training_result.eval_games as f64;
-            println!("  Recorded benchmark ID {} (vs base: {:.1}% win rate)", bench_id, wr * 100.0);
+            println!("  Recorded benchmark ID {} (vs {}: {:.1}% win rate)", bench_id, benchmark_spec, wr * 100.0);
         }
     }
 }
