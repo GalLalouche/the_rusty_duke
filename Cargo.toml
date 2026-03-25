@@ -25,4 +25,4 @@ tui = { version = "*", default-features = false, features = ['crossterm'] }
 
 
 [profile.release]
-debug = true
+debug = false
