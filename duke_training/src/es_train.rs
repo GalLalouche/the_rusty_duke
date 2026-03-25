@@ -19,8 +19,9 @@
 //!                 [--append-combined]  — use 1147-input network (1106 NNUE + 41 combined)
 //!                 [--input-features combined]  — use 41 combined features only
 //!                 [--input-features guard]  — use 65 features (24 expensive + 41 combined)
+//!                 [--profile]              — print per-phase timing breakdown every 50 iters
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rand::rngs::{SmallRng, StdRng};
 use rand::{Rng, SeedableRng};
@@ -231,6 +232,52 @@ impl DenseFeatureMode {
     }
 }
 
+// ── Profiling ────────────────────────────────────────────────────────────
+
+/// Accumulated timing statistics for ES training phases.
+struct ProfileStats {
+    seed_gen: Duration,
+    game_play: Duration,
+    grad_accum: Duration,
+    adam_update: Duration,
+    eval: Duration,
+    iterations: u32,
+}
+
+impl ProfileStats {
+    fn new() -> Self {
+        Self {
+            seed_gen: Duration::ZERO,
+            game_play: Duration::ZERO,
+            grad_accum: Duration::ZERO,
+            adam_update: Duration::ZERO,
+            eval: Duration::ZERO,
+            iterations: 0,
+        }
+    }
+
+    fn total_measured(&self) -> Duration {
+        self.seed_gen + self.game_play + self.grad_accum + self.adam_update + self.eval
+    }
+
+    fn print_summary(&self, label: &str) {
+        let total = self.total_measured();
+        let total_s = total.as_secs_f64();
+        if total_s < 1e-9 { return; }
+        let pct = |d: Duration| d.as_secs_f64() / total_s * 100.0;
+        println!(
+            "PROFILE ({}): games={:.1}s({:.1}%) grad={:.1}s({:.1}%) adam={:.1}s({:.1}%) seeds={:.1}s({:.1}%) eval={:.1}s({:.1}%) | total={:.1}s",
+            label,
+            self.game_play.as_secs_f64(), pct(self.game_play),
+            self.grad_accum.as_secs_f64(), pct(self.grad_accum),
+            self.adam_update.as_secs_f64(), pct(self.adam_update),
+            self.seed_gen.as_secs_f64(), pct(self.seed_gen),
+            self.eval.as_secs_f64(), pct(self.eval),
+            total_s,
+        );
+    }
+}
+
 // ── Shared ES training loop ──────────────────────────────────────────────
 
 /// Configuration for the ES training loop.
@@ -254,6 +301,8 @@ struct EsConfig<'a> {
     benchmark_opponent: &'a TrainingOpponent<'a>,
     /// Human-readable label for the benchmark opponent (e.g. "Base", "random", model path).
     benchmark_label: &'a str,
+    /// When true, print per-phase timing breakdown every 50 iterations and at end.
+    profile: bool,
 }
 
 /// Result of an ES training run, for post-training registration.
@@ -349,6 +398,10 @@ fn run_es_training_loop(
     // Pre-allocate gradient vector; zeroed each iteration to avoid per-iter allocation
     let mut grad = vec![0.0f32; dim];
 
+    // Profiling accumulators (only used when config.profile is true)
+    let mut profile = ProfileStats::new();
+    let do_profile = config.profile;
+
     for iter in 0..config.iterations {
         // Check time limit
         if let Some(tl) = config.time_limit_secs {
@@ -361,12 +414,20 @@ fn run_es_training_loop(
         last_iter = iter + 1;
         let iter_start = Instant::now();
 
+        // ── Phase 1: Seed generation ──
+        let t_phase = if do_profile { Some(Instant::now()) } else { None };
+
         // Generate perturbation seeds
         let perturbation_seeds: Vec<u64> = (0..pop_size)
             .map(|_| rng.gen::<u64>())
             .collect();
 
         let game_seed_base: u64 = rng.gen();
+
+        if let Some(t) = t_phase { profile.seed_gen += t.elapsed(); }
+
+        // ── Phase 2: Game playing ──
+        let t_phase = if do_profile { Some(Instant::now()) } else { None };
 
         // Evaluate all perturbations in parallel
         let sigma_snap = sigma_current;
@@ -415,6 +476,11 @@ fn run_es_training_loop(
             }
         }
 
+        if let Some(t) = t_phase { profile.game_play += t.elapsed(); }
+
+        // ── Phase 3: Gradient accumulation ──
+        let t_phase = if do_profile { Some(Instant::now()) } else { None };
+
         // Compute gradient
         let grad_scale = 1.0 / (pop_size as f32 * sigma_current);
         grad.iter_mut().for_each(|g| *g = 0.0);
@@ -432,6 +498,11 @@ fn run_es_training_loop(
             grad[j] *= grad_scale;
         }
 
+        if let Some(t) = t_phase { profile.grad_accum += t.elapsed(); }
+
+        // ── Phase 4: Adam update ──
+        let t_phase = if do_profile { Some(Instant::now()) } else { None };
+
         // Adam update (bias correction factors hoisted out of inner loop)
         let t = (iter + 1) as f32;
         let bc1 = 1.0 / (1.0 - adam_beta1.powf(t));
@@ -443,6 +514,8 @@ fn run_es_training_loop(
             let v_hat = adam_v[j] * bc2;
             w[j] += lr * m_hat / (v_hat.sqrt() + adam_eps);
         }
+
+        if let Some(t) = t_phase { profile.adam_update += t.elapsed(); }
 
         // Stats
         let avg_plus: f32 = reward_plus.iter().sum::<f32>() / pop_size as f32;
@@ -461,6 +534,8 @@ fn run_es_training_loop(
 
         // Periodic evaluation + checkpoint
         if (iter + 1) % config.eval_interval == 0 || iter == config.iterations - 1 {
+            let t_eval = if do_profile { Some(Instant::now()) } else { None };
+
             let ckpt_path = format!("{}/es_{}_iter_{}", config.checkpoint_dir, mode_label.to_lowercase(), iter + 1);
             save_checkpoint(&w, &ckpt_path);
             println!("  Saved checkpoint: {}", ckpt_path);
@@ -476,6 +551,8 @@ fn run_es_training_loop(
                 config.gs, &cand_player, &bench_player, config.eval_games,
                 &format!("{}(ES iter={}) vs {}", mode_label, iter + 1, config.benchmark_label),
             );
+
+            if let Some(t) = t_eval { profile.eval += t.elapsed(); }
 
             // Track for TrainingResult
             last_eval_wins = eval_result.player_a_wins;
@@ -511,6 +588,14 @@ fn run_es_training_loop(
                 );
             }
         }
+
+        // Periodic profile summary
+        if do_profile {
+            profile.iterations = iter + 1;
+            if (iter + 1) % 50 == 0 {
+                profile.print_summary(&format!("iter {}", iter + 1));
+            }
+        }
     }
 
     // Save final weights
@@ -518,6 +603,10 @@ fn run_es_training_loop(
     save_checkpoint(&w, &final_path);
     println!("\nES {} training complete: {} iters in {:.1?}", mode_label, last_iter, total_start.elapsed());
     println!("Final weights saved to: {}", final_path);
+
+    if do_profile {
+        profile.print_summary(&format!("FINAL after {} iters", profile.iterations));
+    }
 
     TrainingResult {
         final_checkpoint_path: final_path,
@@ -550,6 +639,7 @@ fn run_dense_training(
     training_opponent: &TrainingOpponent,
     benchmark_opponent: &TrainingOpponent,
     benchmark_label: &str,
+    profile: bool,
 ) -> TrainingResult {
     let input_size = feature_mode.input_size();
     let hidden_layers_owned = hidden_layers.to_vec();
@@ -608,6 +698,7 @@ fn run_dense_training(
         train_max_turns,
         benchmark_opponent,
         benchmark_label,
+        profile,
     };
 
     run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, mode_label, &arch_desc)
@@ -636,6 +727,7 @@ fn run_generic_sparse_training(
     training_opponent: &TrainingOpponent,
     benchmark_opponent: &TrainingOpponent,
     benchmark_label: &str,
+    profile: bool,
 ) -> TrainingResult {
     let hidden_layers_owned = hidden_layers.to_vec();
     let mode_name = if include_combined { "Appended" } else { "NNUE" };
@@ -692,6 +784,7 @@ fn run_generic_sparse_training(
         train_max_turns,
         benchmark_opponent,
         benchmark_label,
+        profile,
     };
 
     run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, mode_name, &arch_desc)
@@ -762,6 +855,7 @@ fn main() {
     let self_play = args.iter().any(|a| a == "--self-play");
     let last_layer_only = args.iter().any(|a| a == "--last-layer-only");
     let append_combined = args.iter().any(|a| a == "--append-combined");
+    let profile = args.iter().any(|a| a == "--profile");
     let input_features = parse_flag::<String>(&args, "--input-features")
         .unwrap_or_else(|| "nnue".to_string());
     let time_limit_secs: Option<u64> = parse_flag(&args, "--time-limit");
@@ -828,6 +922,7 @@ fn main() {
             &checkpoint_dir, &gs, time_limit_secs,
             resume_path.as_deref(), seed, opponent_epsilon,
             &training_opponent, &benchmark_opponent, benchmark_label,
+            profile,
         )
     }
     // Dispatch to guard-features mode (65 inputs: 24 expensive + 41 combined)
@@ -841,6 +936,7 @@ fn main() {
             &checkpoint_dir, &gs, time_limit_secs,
             resume_path.as_deref(), seed, opponent_epsilon,
             &training_opponent, &benchmark_opponent, benchmark_label,
+            profile,
         )
     }
     // Dispatch to appended-input mode if requested (uses GenericMlp with 1147 inputs)
@@ -853,6 +949,7 @@ fn main() {
             eval_interval, eval_games, &checkpoint_dir, &gs,
             opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
             &training_opponent, &benchmark_opponent, benchmark_label,
+            profile,
         )
     }
     // Standard NNUE path (1106 sparse features) — generic (arbitrary depth)
@@ -865,6 +962,7 @@ fn main() {
             eval_interval, eval_games, &checkpoint_dir, &gs,
             opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
             &training_opponent, &benchmark_opponent, benchmark_label,
+            profile,
         )
     } else {
         // Legacy 2-hidden-layer NNUE path (kept for backward compatibility with .nnue files)
@@ -992,6 +1090,7 @@ fn main() {
             train_max_turns: 200,
             benchmark_opponent: &benchmark_opponent,
             benchmark_label,
+            profile,
         };
 
         run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, "NNUE-Legacy", &arch_desc)
