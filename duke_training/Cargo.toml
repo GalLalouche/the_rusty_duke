@@ -50,3 +50,7 @@ path = "src/elo_tournament.rs"
 [[bin]]
 name = "model_registry"
 path = "src/model_registry_cli.rs"
+
+[[bin]]
+name = "profile_games"
+path = "src/profile_games.rs"
