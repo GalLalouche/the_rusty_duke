@@ -11,7 +11,7 @@
 - [x] Proper storage of models (organized model registry instead of scattered D:/temp checkpoints)
 
 ## Performance
-- [ ] Profile training iteration to find actual bottleneck (instead of guessing)
+- [x] Profile training iteration to find actual bottleneck (96% game playing, 84-90% evaluation within that)
 - [ ] NNUE incremental accumulator (update L1 activations on make/unmake instead of full recompute)
 - [ ] Const-generic specialization for common NNUE layer sizes (enables LLVM to emit AVX2)
 - [ ] Explore single-allocation contiguous weight buffer for NnueWeights (currently 6 separate Vecs)
