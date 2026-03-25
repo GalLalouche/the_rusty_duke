@@ -1,17 +1,14 @@
 //! Elo tournament: round-robin play between multiple players with Elo rating computation.
 //!
-//! Usage: elo_tournament [--games N] [--db <path>] <player1> <player2> [player3 ...]
-//!
-//! Player specs:
-//!   - "base"    -> StaticHeuristicEvaluator
-//!   - "random"  -> Random move selection
-//!   - "#42"     -> Load model ID 42 from the registry DB (requires --db)
-//!   - path.gmlp -> GenericMlp model (dispatched by input_size)
-//!   - path.nnue -> NNUE model
+//! Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>]
 //!
 //! Flags:
-//!   --games N   Number of games per matchup (default 1000)
-//!   --db <path> Path to model registry SQLite DB (enables #ID syntax and benchmark recording)
+//!   --models <list>  Comma-separated player list (REQUIRED). Each entry is either:
+//!                       - a number (DB model ID)
+//!                       - "base"   (built-in heuristic evaluator)
+//!                       - "random" (random move selection)
+//!   --games N        Number of games per matchup (default 1000)
+//!   --db <path>      Path to model registry SQLite DB (default D:/temp/duke_models.db)
 
 use std::time::Instant;
 
@@ -20,17 +17,37 @@ use duke_training::generic_mlp::LoadedModel;
 use duke_training::match_runner::run_matches;
 use duke_training::model_registry::{BenchmarkRecord, ModelRegistry};
 
-/// Parse CLI arguments into player specs, the number of games per matchup, and optional DB path.
-fn parse_args() -> (Vec<String>, u32, Option<String>) {
+const DEFAULT_DB_PATH: &str = "D:/temp/duke_models.db";
+
+fn print_usage_and_exit() -> ! {
+    eprintln!("Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>]");
+    eprintln!();
+    eprintln!("Flags:");
+    eprintln!("  --models <list>  Comma-separated player list (required)");
+    eprintln!("                   Each entry: a number (DB model ID), \"base\", or \"random\"");
+    eprintln!("  --games N        Number of games per matchup (default 1000)");
+    eprintln!("  --db <path>      Path to model registry SQLite DB (default {})", DEFAULT_DB_PATH);
+    std::process::exit(1);
+}
+
+/// Parse CLI arguments into the models list, number of games per matchup, and DB path.
+fn parse_args() -> (Vec<String>, u32, String) {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut games_per_matchup: u32 = 1000;
-    let mut player_specs: Vec<String> = Vec::new();
+    let mut models_raw: Option<String> = None;
     let mut db_path: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--games" {
+        if args[i] == "--models" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --models requires a value");
+                std::process::exit(1);
+            }
+            models_raw = Some(args[i].clone());
+        } else if args[i] == "--games" {
             i += 1;
             if i >= args.len() {
                 eprintln!("Error: --games requires a value");
@@ -48,43 +65,55 @@ fn parse_args() -> (Vec<String>, u32, Option<String>) {
             eprintln!("Unknown flag: {}", args[i]);
             std::process::exit(1);
         } else {
-            player_specs.push(args[i].clone());
+            eprintln!("Unexpected positional argument: {}", args[i]);
+            print_usage_and_exit();
         }
         i += 1;
     }
 
-    if player_specs.len() < 2 {
-        eprintln!("Usage: elo_tournament [--games N] [--db <path>] <player1> <player2> [player3 ...]");
-        eprintln!("  Player specs: base, random, #<model_id>, or a path to .gmlp / .nnue file");
-        std::process::exit(1);
+    let models_str = match models_raw {
+        Some(s) => s,
+        None => {
+            eprintln!("Error: --models is required");
+            print_usage_and_exit();
+        }
+    };
+
+    let models: Vec<String> = models_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if models.len() < 2 {
+        eprintln!("Error: --models must specify at least 2 players");
+        print_usage_and_exit();
     }
 
-    (player_specs, games_per_matchup, db_path)
+    let db_path = db_path.unwrap_or_else(|| DEFAULT_DB_PATH.to_string());
+
+    (models, games_per_matchup, db_path)
 }
 
-/// Load all players from their specs.
-/// Specs starting with '#' are treated as DB model IDs (requires registry).
-/// Returns a list of LoadedModel.
-fn load_players(specs: &[String], registry: Option<&ModelRegistry>) -> Vec<LoadedModel> {
-    let mut players = Vec::with_capacity(specs.len());
-    for (idx, spec) in specs.iter().enumerate() {
-        let model = if spec.starts_with('#') {
-            // DB model ID syntax: #42
-            let id_str = &spec[1..];
-            let model_id: i64 = id_str.parse().unwrap_or_else(|_| {
-                eprintln!("Error: invalid model ID '{}' (expected #<number>)", spec);
-                std::process::exit(1);
-            });
-            let reg = registry.unwrap_or_else(|| {
-                eprintln!("Error: --db is required to use model ID syntax ({})", spec);
-                std::process::exit(1);
-            });
-            LoadedModel::from_db_id(reg, model_id).unwrap_or_else(|e| {
-                eprintln!("Error loading model {}: {}", spec, e);
+/// Load all players from the models list.
+/// Numeric entries are loaded as DB model IDs from the registry.
+/// "base" and "random" are loaded via `LoadedModel::from_spec`.
+fn load_players(models: &[String], registry: &ModelRegistry) -> Vec<LoadedModel> {
+    let mut players = Vec::with_capacity(models.len());
+    for (idx, entry) in models.iter().enumerate() {
+        let model = if entry == "base" || entry == "random" {
+            LoadedModel::from_spec(entry)
+        } else if let Ok(model_id) = entry.parse::<i64>() {
+            LoadedModel::from_db_id(registry, model_id).unwrap_or_else(|e| {
+                eprintln!("Error loading model ID {}: {}", model_id, e);
                 std::process::exit(1);
             })
         } else {
-            LoadedModel::from_spec(spec)
+            eprintln!(
+                "Error: unrecognized model entry '{}'. Expected a number (DB model ID), \"base\", or \"random\".",
+                entry
+            );
+            std::process::exit(1);
         };
         println!("  [{}] {}", idx, model.label);
         players.push(model);
@@ -241,22 +270,19 @@ fn print_results(
 }
 
 fn main() {
-    let (player_specs, games_per_matchup, db_path) = parse_args();
-    let n = player_specs.len();
+    let (models, games_per_matchup, db_path) = parse_args();
+    let n = models.len();
 
     println!("=== Elo Tournament ===");
     println!("  {} players, {} games per matchup", n, games_per_matchup);
-    if let Some(ref db) = db_path {
-        println!("  registry DB: {}", db);
-    }
+    println!("  registry DB: {}", db_path);
     println!();
 
-    // Open registry if --db was provided (needed for #ID syntax and benchmark recording)
-    let registry = db_path.as_ref().map(|db| {
-        ModelRegistry::open(db).expect("Failed to open model registry DB")
-    });
+    // Always open the registry (we have a default DB path)
+    let registry =
+        ModelRegistry::open(&db_path).expect("Failed to open model registry DB");
 
-    let players = load_players(&player_specs, registry.as_ref());
+    let players = load_players(&models, &registry);
     println!();
 
     let total_start = Instant::now();
@@ -271,39 +297,15 @@ fn main() {
     let elo = compute_elo(&wins, &ties, n);
     print_results(&labels, &wins, &ties, &elo);
 
-    // ── Record benchmarks in registry if --db was provided ───────────────
-    if let Some(ref registry) = registry {
+    // ── Record benchmarks in registry ──────────────────────────────────
+    // Model IDs come directly from LoadedModel.id (set for DB-loaded models, None for base/random)
+    let model_ids: Vec<Option<i64>> = players.iter().map(|m| m.id).collect();
+    let has_any_db_model = model_ids.iter().any(|id| id.is_some());
+
+    if has_any_db_model {
         println!();
-        println!("Recording benchmarks in registry: {}", db_path.as_ref().unwrap());
+        println!("Recording benchmarks in registry: {}", db_path);
 
-        // For players loaded via #ID, we already have model.id.
-        // For file-based players, look up by path in the registry.
-        let model_ids: Vec<Option<i64>> = players.iter().enumerate().map(|(idx, model)| {
-            if model.id.is_some() {
-                return model.id;
-            }
-            let spec = &player_specs[idx];
-            if spec == "base" || spec == "random" {
-                return None;
-            }
-            // Try to find by file path
-            match registry.find_by_path(spec) {
-                Ok(Some(record)) => {
-                    println!("  Found model ID {} for {}", record.id, spec);
-                    Some(record.id)
-                }
-                Ok(None) => {
-                    println!("  Model not registered: {} (skipping)", spec);
-                    None
-                }
-                Err(e) => {
-                    eprintln!("  Error looking up {}: {}", spec, e);
-                    None
-                }
-            }
-        }).collect();
-
-        // Record pairwise benchmark results for each registered model
         for a in 0..n {
             if model_ids[a].is_none() {
                 continue;
@@ -343,7 +345,10 @@ fn main() {
                         );
                     }
                     Err(e) => {
-                        eprintln!("  Error recording benchmark for {} vs {}: {}", labels[a], labels[b], e);
+                        eprintln!(
+                            "  Error recording benchmark for {} vs {}: {}",
+                            labels[a], labels[b], e
+                        );
                     }
                 }
             }
