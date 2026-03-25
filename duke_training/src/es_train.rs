@@ -464,7 +464,7 @@ fn run_es_training_loop(
             }
 
             // Adaptive sigma: track improvement
-            let eval_wr = eval_result.player_a_wins as f32 / config.eval_games as f32;
+            let eval_wr = (eval_result.player_a_wins as f32 + 0.5 * eval_result.ties as f32) / config.eval_games as f32;
             if eval_wr > best_eval_wr + 0.01 {
                 best_eval_wr = eval_wr;
                 evals_without_improvement = 0;
@@ -898,6 +898,7 @@ fn main() {
         Box::new(NnueEvaluator::new(weights))
     };
 
+    let base_weights_for_selfplay = base_weights.clone();
     let base_weights_clone2 = base_weights;
     let save_checkpoint = move |w: &[f32], path: &str| {
         let weights = if last_layer_only {
@@ -912,7 +913,11 @@ fn main() {
     // For self-play, create a training opponent from the initial weights
     let self_play_eval: Option<NnueEvaluator> = if self_play {
         let init_w = if last_layer_only {
-            unflatten_last_layer(&init_weights, &unflatten_weights(&init_weights, l1_size, l2_size))
+            // init_weights is truncated to last-layer only; need the full base weights
+            let full_base = base_weights_for_selfplay.as_ref().expect(
+                "BUG: --self-play with --last-layer-only requires --base-weights"
+            );
+            unflatten_last_layer(&init_weights, full_base)
         } else {
             unflatten_weights(&init_weights, l1_size, l2_size)
         };

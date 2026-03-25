@@ -197,6 +197,8 @@ pub fn stream_feature_cache(
 ) -> io::Result<FeatureCacheHeader> {
     use std::io::BufReader;
 
+    assert!(chunk_size > 0, "chunk_size must be > 0");
+
     let f = std::fs::File::open(path)?;
     let mut r = BufReader::with_capacity(1 << 20, f); // 1MB buffer
 
