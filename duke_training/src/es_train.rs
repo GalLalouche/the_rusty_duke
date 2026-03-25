@@ -20,7 +20,7 @@
 
 use std::time::Instant;
 
-use rand::rngs::StdRng;
+use rand::rngs::{SmallRng, StdRng};
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
@@ -322,6 +322,9 @@ fn run_es_training_loop(
     let lr = config.lr;
     let train_max_turns = config.train_max_turns;
 
+    // Pre-allocate gradient vector; zeroed each iteration to avoid per-iter allocation
+    let mut grad = vec![0.0f32; dim];
+
     for iter in 0..config.iterations {
         // Check time limit
         if let Some(tl) = config.time_limit_secs {
@@ -351,7 +354,7 @@ fn run_es_training_loop(
                 let is_positive = idx % 2 == 0;
                 let pert_seed = perturbation_seeds[pert_idx];
 
-                let mut pert_rng = StdRng::seed_from_u64(pert_seed);
+                let mut pert_rng = SmallRng::seed_from_u64(pert_seed);
                 let epsilon = randn_vec(dim, &mut pert_rng);
 
                 let perturbed: Vec<f32> = if is_positive {
@@ -390,12 +393,12 @@ fn run_es_training_loop(
 
         // Compute gradient
         let grad_scale = 1.0 / (pop_size as f32 * sigma_current);
-        let mut grad = vec![0.0f32; dim];
+        grad.iter_mut().for_each(|g| *g = 0.0);
 
         for i in 0..pop_size {
             let diff = reward_plus[i] - reward_minus[i];
             if diff.abs() < 1e-12 { continue; }
-            let mut pert_rng = StdRng::seed_from_u64(perturbation_seeds[i]);
+            let mut pert_rng = SmallRng::seed_from_u64(perturbation_seeds[i]);
             let epsilon = randn_vec(dim, &mut pert_rng);
             for j in 0..dim {
                 grad[j] += diff * epsilon[j];
@@ -680,7 +683,7 @@ fn random_weights(l1_size: usize, l2_size: usize, rng: &mut StdRng) -> NnueWeigh
 // ── Gaussian noise generation ────────────────────────────────────────────
 
 /// Generate a vector of standard-normal samples using Box-Muller transform.
-fn randn_vec(n: usize, rng: &mut StdRng) -> Vec<f32> {
+fn randn_vec(n: usize, rng: &mut impl Rng) -> Vec<f32> {
     let mut out = Vec::with_capacity(n);
     while out.len() < n {
         let u1: f64 = rng.gen::<f64>().max(1e-30);

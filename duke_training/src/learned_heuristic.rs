@@ -234,10 +234,13 @@ pub fn duke_mobility_no_guard(gs: &GameState) -> [f64; 2] {
 pub const NUM_COMBINED_FEATURES: usize = 41;
 
 /// Extract the combined feature set: all new features, per-player, no guard checking.
+///
+/// Uses `board_control_features_with_duke_mob` to compute board-control and
+/// duke-mobility in a single move-generation pass per player, avoiding the
+/// redundant second pass that `duke_mobility_no_guard` would perform.
 pub fn extract_combined_features(gs: &GameState) -> [f64; NUM_COMBINED_FEATURES] {
     let manhattan = manhattan_distance_features(gs);
-    let control = board_control_features(gs);
-    let duke_mob = duke_mobility_no_guard(gs);
+    let (control, duke_mob) = board_control_features_with_duke_mob(gs);
     let discards = discard_vector(gs);
 
     let mut f = [0.0f64; NUM_COMBINED_FEATURES];
@@ -333,8 +336,12 @@ pub fn extract_cheap_features(gs: &GameState) -> [f64; NUM_CHEAP_FEATURES] {
     ]
 }
 
-/// Compute approx move counts and board control features in one pass.
-/// Returns 9 values:
+/// Board control features plus duke mobility, computed in a single pass over
+/// each player's moves.
+///
+/// Returns `(control, duke_mob)` where:
+///
+/// `control` — 9 values:
 ///   [0] my_approx_moves
 ///   [1] opp_approx_moves
 ///   [2] my_reachable_squares
@@ -345,12 +352,19 @@ pub fn extract_cheap_features(gs: &GameState) -> [f64; NUM_CHEAP_FEATURES] {
 ///   [7] opp_defended  — how many of opponent's tiles sit on squares opponent can reach
 ///   [8] opp_threatened — how many of my tiles sit on squares opponent can reach
 ///
+/// `duke_mob` — 2 values:
+///   [0] my_duke_mobility   (move count for owner's duke, ignoring guard)
+///   [1] opp_duke_mobility  (move count for opponent's duke, ignoring guard)
+///
 /// Moves are computed while ignoring the guard constraint (the expensive part),
 /// making this a cheap approximation. Only tile-move destinations (not placements)
 /// contribute to the reachable-squares arrays.
-pub fn board_control_features(gs: &GameState) -> [f64; 9] {
+pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 2]) {
     let owner = gs.current_player_turn();
     let opp = owner.next_player();
+
+    let my_duke_coord = gs.duke_coordinate(owner);
+    let opp_duke_coord = gs.duke_coordinate(opp);
 
     let mut my_reach = [false; 36];
     let mut opp_reach = [false; 36];
@@ -358,18 +372,26 @@ pub fn board_control_features(gs: &GameState) -> [f64; 9] {
     // Only count tile-movement moves (not placements) so that approx_moves
     // is consistent with reachable_squares — both measure on-board tile actions.
     let mut my_approx_moves = 0u32;
+    let mut my_duke_moves = 0u32;
     for pm in gs.all_valid_game_moves_for_ignoring_guard(owner) {
-        if let PossibleMove::ApplyNonCommandTileAction { dst, .. } = &pm {
+        if let PossibleMove::ApplyNonCommandTileAction { src, dst, .. } = &pm {
             my_approx_moves += 1;
+            if *src == my_duke_coord {
+                my_duke_moves += 1;
+            }
             let idx = dst.y as usize * 6 + dst.x as usize;
             my_reach[idx] = true;
         }
     }
 
     let mut opp_approx_moves = 0u32;
+    let mut opp_duke_moves = 0u32;
     for pm in gs.all_valid_game_moves_for_ignoring_guard(opp) {
-        if let PossibleMove::ApplyNonCommandTileAction { dst, .. } = &pm {
+        if let PossibleMove::ApplyNonCommandTileAction { src, dst, .. } = &pm {
             opp_approx_moves += 1;
+            if *src == opp_duke_coord {
+                opp_duke_moves += 1;
+            }
             let idx = dst.y as usize * 6 + dst.x as usize;
             opp_reach[idx] = true;
         }
@@ -415,17 +437,30 @@ pub fn board_control_features(gs: &GameState) -> [f64; 9] {
         }
     }
 
-    [
-        my_approx_moves as f64,
-        opp_approx_moves as f64,
-        my_reachable as f64,
-        opp_reachable as f64,
-        contested as f64,
-        my_defended as f64,
-        my_threatened as f64,
-        opp_defended as f64,
-        opp_threatened as f64,
-    ]
+    (
+        [
+            my_approx_moves as f64,
+            opp_approx_moves as f64,
+            my_reachable as f64,
+            opp_reachable as f64,
+            contested as f64,
+            my_defended as f64,
+            my_threatened as f64,
+            opp_defended as f64,
+            opp_threatened as f64,
+        ],
+        [
+            my_duke_moves as f64,
+            opp_duke_moves as f64,
+        ],
+    )
+}
+
+/// Convenience wrapper that returns only the 9 board-control features
+/// (discarding duke mobility). Use `board_control_features_with_duke_mob`
+/// when you also need duke mobility to avoid a redundant move generation pass.
+pub fn board_control_features(gs: &GameState) -> [f64; 9] {
+    board_control_features_with_duke_mob(gs).0
 }
 
 impl LearnedHeuristicWeights {

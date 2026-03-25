@@ -114,12 +114,17 @@ impl GenericMlp {
             } else {
                 (&*buf_b as &[f32; MAX_HIDDEN], &mut *buf_a)
             };
-            for j in 0..cur_size {
-                let mut sum = lb[j];
-                for i in 0..prev_size {
-                    sum += lw[i * cur_size + j] * src[i];
+            // Initialize with bias, then scatter-accumulate (contiguous weight access)
+            dst[..cur_size].copy_from_slice(lb);
+            for i in 0..prev_size {
+                let w_row = &lw[i * cur_size..(i + 1) * cur_size];
+                let s = src[i];
+                for j in 0..cur_size {
+                    dst[j] += w_row[j] * s;
                 }
-                dst[j] = sum.max(0.0); // ReLU
+            }
+            for j in 0..cur_size {
+                dst[j] = dst[j].max(0.0); // ReLU
             }
             use_a = !use_a;
         }
@@ -153,12 +158,17 @@ impl GenericMlp {
         let mut buf_a = [0.0f32; MAX_HIDDEN];
         let mut buf_b = [0.0f32; MAX_HIDDEN];
 
-        for j in 0..h_size {
-            let mut sum = hb[j];
-            for i in 0..self.input_size {
-                sum += hw[i * h_size + j] * input[i] as f32;
+        // Initialize with bias, then scatter-accumulate (contiguous weight access)
+        buf_a[..h_size].copy_from_slice(hb);
+        for i in 0..self.input_size {
+            let w_row = &hw[i * h_size..(i + 1) * h_size];
+            let inp = input[i] as f32;
+            for j in 0..h_size {
+                buf_a[j] += w_row[j] * inp;
             }
-            buf_a[j] = sum.max(0.0); // ReLU
+        }
+        for j in 0..h_size {
+            buf_a[j] = buf_a[j].max(0.0); // ReLU
         }
 
         self.forward_inner(&mut buf_a, &mut buf_b, off)
@@ -178,12 +188,17 @@ impl GenericMlp {
         let mut buf_a = [0.0f32; MAX_HIDDEN];
         let mut buf_b = [0.0f32; MAX_HIDDEN];
 
-        for j in 0..h_size {
-            let mut sum = hb[j];
-            for i in 0..self.input_size {
-                sum += hw[i * h_size + j] * input[i];
+        // Initialize with bias, then scatter-accumulate (contiguous weight access)
+        buf_a[..h_size].copy_from_slice(hb);
+        for i in 0..self.input_size {
+            let w_row = &hw[i * h_size..(i + 1) * h_size];
+            let inp = input[i];
+            for j in 0..h_size {
+                buf_a[j] += w_row[j] * inp;
             }
-            buf_a[j] = sum.max(0.0); // ReLU
+        }
+        for j in 0..h_size {
+            buf_a[j] = buf_a[j].max(0.0); // ReLU
         }
 
         self.forward_inner(&mut buf_a, &mut buf_b, off)
