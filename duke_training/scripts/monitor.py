@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Monitor running ES experiments and write a live summary to D:/temp/live_status.txt
+"""Monitor running ES experiments and append live stats to D:/temp/live_status.txt
 
 Auto-discovers ES Training logs in D:/temp/ by scanning .log files for
 'ES Training' in the first 5 lines.
+
+Only shows RUNNING experiments. Each cycle appends a compact timestamp block
+with the latest stats. Truncates the file when it exceeds 10000 lines.
 """
 
 import os
@@ -13,6 +16,8 @@ from datetime import datetime
 LOG_DIR = "D:/temp"
 OUTPUT = "D:/temp/live_status.txt"
 REFRESH_SECONDS = 30
+MAX_LINES = 10000
+KEEP_LINES = 5000
 
 
 def discover_logs(directory):
@@ -148,108 +153,66 @@ def parse_log(logpath):
     return result
 
 
-def format_output(logs_data):
-    """Format all parsed data into the output string."""
+def truncate_if_needed(filepath):
+    """If the file exceeds MAX_LINES, truncate to the last KEEP_LINES lines."""
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            all_lines = f.readlines()
+    except (OSError, FileNotFoundError):
+        return
+
+    if len(all_lines) > MAX_LINES:
+        keep = all_lines[-KEEP_LINES:]
+        with open(filepath, "w") as f:
+            f.write("--- (truncated) ---\n")
+            f.writelines(keep)
+
+
+def format_compact(logs_data):
+    """Format a compact append block for running experiments only."""
+    # Filter to running only
+    running = [(name, logpath, data) for name, logpath, data in logs_data
+               if data["status"] == "running"]
+
+    if not running:
+        return None
+
     lines = []
-    lines.append(f"=== Live Status \u2014 {datetime.now().strftime('%H:%M:%S')} ===")
-    lines.append("")
+    lines.append(f"--- {datetime.now().strftime('%H:%M:%S')} ---")
 
-    # Summary table header
-    lines.append(
-        f"{'Experiment':<40} {'Status':<10} {'Iter':>6} {'Sigma':>7} {'OppEps':>7} "
-        f"{'TrainWR':>8} {'BestBase':>9} {'LastBase':>9}"
-    )
-    lines.append("-" * 100)
-
-    for name, logpath, data in logs_data:
-        status = data["status"]
+    for name, logpath, data in running:
+        # Build the summary line
         iter_str = ""
         sigma_str = ""
         opp_eps_str = ""
         train_wr_str = ""
-        best_base_str = ""
-        last_base_str = ""
+        bench_str = ""
 
         if data["iter_current"] is not None:
-            iter_str = str(data["iter_current"])
+            iter_str = f"iter={data['iter_current']}"
 
         if data["iter_lines"]:
             last_iter = data["iter_lines"][-1]
-            sigma_str = f"{last_iter['sigma']:.4f}"
-            opp_eps_str = f"{last_iter['opp_eps']:.2f}"
-            # Train WR: use avg_wr+ of last iteration as representative
-            train_wr_str = f"{last_iter['avg_wr_plus'] * 100:.1f}%"
+            sigma_str = f"sigma={last_iter['sigma']:.4f}"
+            opp_eps_str = f"opp_eps={last_iter['opp_eps']:.2f}"
+            train_wr_str = f"train_wr={last_iter['avg_wr_plus'] * 100:.1f}%"
 
         if data["base_evals"]:
-            best_base = max(e[1] for e in data["base_evals"])
             last_base = data["base_evals"][-1][1]
-            best_base_str = f"{best_base:.1f}%"
-            last_base_str = f"{last_base:.1f}%"
+            bench_str = f"bench={last_base:.1f}%"
 
-        lines.append(
-            f"{name:<40} {status:<10} {iter_str:>6} {sigma_str:>7} {opp_eps_str:>7} "
-            f"{train_wr_str:>8} {best_base_str:>9} {last_base_str:>9}"
-        )
+        parts = [p for p in [iter_str, sigma_str, opp_eps_str, train_wr_str, bench_str] if p]
+        lines.append(f"{name} {' '.join(parts)}")
 
-    lines.append("")
-
-    # Detailed sections for each experiment
-    for name, logpath, data in logs_data:
-        has_detail = (
-            data["base_evals"]
-            or data["opp_evals"]
-            or data["iter_lines"]
-            or data["sigma_adaptations"]
-            or data["opp_eps_changes"]
-        )
-        if not has_detail:
-            continue
-
-        # Base evals
+        # Last eval line if available
         if data["base_evals"]:
-            lines.append(f"--- {name} vs Base ---")
-            for iter_n, win, loss, tie in data["base_evals"]:
-                lines.append(
-                    f"  iter {iter_n:>4}: Win={win:>5.1f}% Loss={loss:>5.1f}% Tie={tie:>5.1f}%"
-                )
-            lines.append("")
+            last_eval = data["base_evals"][-1]
+            lines.append(
+                f"  Last eval (iter {last_eval[0]}): "
+                f"Win={last_eval[1]:.1f}% Loss={last_eval[2]:.1f}% Tie={last_eval[3]:.1f}%"
+            )
 
-        # Opponent evals
-        if data["opp_evals"]:
-            lines.append(f"--- {name} vs Training Opponent ---")
-            for iter_n, win, loss, tie in data["opp_evals"]:
-                lines.append(
-                    f"  iter {iter_n:>4}: Win={win:>5.1f}% Loss={loss:>5.1f}% Tie={tie:>5.1f}%"
-                )
-            lines.append("")
-
-        # Training progress (last 10 iter lines)
-        if data["iter_lines"]:
-            lines.append(f"--- {name} Training Progress (last 10) ---")
-            recent = data["iter_lines"][-10:]
-            for il in recent:
-                lines.append(
-                    f"  iter {il['iter']:>5}: avg_wr+={il['avg_wr_plus']:.3f} "
-                    f"avg_wr-={il['avg_wr_minus']:.3f} max_wr={il['max_wr']:.3f} "
-                    f"sigma={il['sigma']:.4f} opp_eps={il['opp_eps']:.2f}"
-                )
-            lines.append("")
-
-        # Sigma adaptations
-        if data["sigma_adaptations"]:
-            lines.append(f"--- {name} Sigma Adaptations ---")
-            for new_sigma, reason in data["sigma_adaptations"]:
-                lines.append(f"  sigma -> {new_sigma:.4f} ({reason})")
-            lines.append("")
-
-        # Opponent epsilon changes
-        if data["opp_eps_changes"]:
-            lines.append(f"--- {name} Opponent Epsilon Changes ---")
-            for old_eps, new_eps, reason in data["opp_eps_changes"]:
-                lines.append(f"  eps {old_eps:.2f} -> {new_eps:.2f} ({reason})")
-            lines.append("")
-
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
 
 
 def main():
@@ -264,20 +227,25 @@ def main():
                 data = parse_log(logpath)
                 logs_data.append((name, logpath, data))
 
-            # Format and write
-            output = format_output(logs_data)
-            try:
-                with open(OUTPUT, "w") as f:
-                    f.write(output)
-            except OSError:
-                pass
+            # Truncate file if it's gotten too large
+            truncate_if_needed(OUTPUT)
+
+            # Format compact block for running experiments only
+            block = format_compact(logs_data)
+
+            if block:
+                try:
+                    with open(OUTPUT, "a") as f:
+                        f.write(block)
+                except OSError:
+                    pass
 
         except Exception as e:
-            # Never crash - write error to status file
+            # Never crash - append error to status file
             try:
-                with open(OUTPUT, "w") as f:
+                with open(OUTPUT, "a") as f:
                     f.write(
-                        f"=== Live Status \u2014 {datetime.now().strftime('%H:%M:%S')} ===\n\n"
+                        f"--- {datetime.now().strftime('%H:%M:%S')} ---\n"
                         f"ERROR: {e}\n"
                     )
             except OSError:
