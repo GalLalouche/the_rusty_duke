@@ -578,6 +578,90 @@ impl GameEvaluator for LearnedHeuristicWeights {
     }
 }
 
+/// Total feature count for the merged feature set: 24 expensive + 41 combined = 65.
+pub const NUM_ALL_FEATURES: usize = NUM_FEATURES + NUM_COMBINED_FEATURES;
+
+/// Learned weight vector for the merged 65-feature set (24 expensive + 41 combined).
+#[derive(Debug, Clone)]
+pub struct AllFeaturesWeights {
+    pub weights: [f64; NUM_ALL_FEATURES],
+}
+
+impl Default for AllFeaturesWeights {
+    fn default() -> Self {
+        Self { weights: [0.0; NUM_ALL_FEATURES] }
+    }
+}
+
+impl AllFeaturesWeights {
+    pub fn evaluate_raw(&self, gs: &GameState) -> f64 {
+        let expensive = extract_features(gs);
+        let combined = extract_combined_features(gs);
+        let mut score = 0.0;
+        for i in 0..NUM_FEATURES {
+            score += self.weights[i] * expensive[i];
+        }
+        for i in 0..NUM_COMBINED_FEATURES {
+            score += self.weights[NUM_FEATURES + i] * combined[i];
+        }
+        score
+    }
+
+    /// Save weights to a JSON file (same format as other weight structs).
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        let json = format!(
+            "{{\"weights\":[{}]}}",
+            self.weights
+                .iter()
+                .map(|w| format!("{:.15e}", w))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        fs::write(path, json)
+    }
+
+    /// Load weights from a JSON file.
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        let data = fs::read_to_string(path)?;
+        let start = data.find('[').ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "No '[' found in JSON")
+        })?;
+        let end = data.find(']').ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "No ']' found in JSON")
+        })?;
+        let array_str = &data[start + 1..end];
+        let values: Vec<f64> = array_str
+            .split(',')
+            .map(|s| s.trim().parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to parse weight: {}", e),
+                )
+            })?;
+        if values.len() != NUM_ALL_FEATURES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Expected {} weights, found {}",
+                    NUM_ALL_FEATURES,
+                    values.len()
+                ),
+            ));
+        }
+        let mut weights = [0.0f64; NUM_ALL_FEATURES];
+        weights.copy_from_slice(&values);
+        Ok(Self { weights })
+    }
+}
+
+impl GameEvaluator for AllFeaturesWeights {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        self.evaluate_raw(gs) as f32
+    }
+}
+
 /// Load a JSON weight file and return the raw weight vector.
 ///
 /// Both `LearnedHeuristicWeights` (24) and `CombinedWeights` (41) use the same

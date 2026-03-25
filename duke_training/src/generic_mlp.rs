@@ -9,7 +9,8 @@ use crate::encoding::{active_board_features, bag_features, BOARD_FEATURES, TOTAL
 use crate::game_setup::{GameEvaluator, StaticHeuristicEvaluator};
 use crate::learned_heuristic::{
     extract_combined_features, extract_features, load_lr_weights_raw,
-    CombinedWeights, LearnedHeuristicWeights, NUM_COMBINED_FEATURES, NUM_FEATURES as LR_NUM_FEATURES,
+    AllFeaturesWeights, CombinedWeights, LearnedHeuristicWeights,
+    NUM_ALL_FEATURES, NUM_COMBINED_FEATURES, NUM_FEATURES as LR_NUM_FEATURES,
 };
 use crate::nnue::{NnueEvaluator, NnueWeights, NUM_FEATURES};
 
@@ -545,10 +546,17 @@ pub fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>
                     let desc = format!("LR-Cheap ({} weights)", n);
                     (Some(Box::new(cw)), desc)
                 }
+                NUM_ALL_FEATURES => {
+                    let mut weights = [0.0f64; NUM_ALL_FEATURES];
+                    weights.copy_from_slice(&raw);
+                    let aw = AllFeaturesWeights { weights };
+                    let desc = format!("LR-All ({} weights)", n);
+                    (Some(Box::new(aw)), desc)
+                }
                 _ => {
                     panic!(
-                        "JSON weight file '{}' has {} weights. Expected {} (LR-Guard) or {} (LR-Cheap).",
-                        path, n, LR_NUM_FEATURES, NUM_COMBINED_FEATURES
+                        "JSON weight file '{}' has {} weights. Expected {} (LR-Guard), {} (LR-Cheap), or {} (LR-All).",
+                        path, n, LR_NUM_FEATURES, NUM_COMBINED_FEATURES, NUM_ALL_FEATURES
                     );
                 }
             }

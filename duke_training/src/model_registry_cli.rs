@@ -149,9 +149,10 @@ fn cmd_register(db_path: &str, args: &[String]) {
         let label = match n {
             24 => "LR-Guard",
             41 => "LR-Cheap",
+            65 => "LR-All",
             _ => {
                 eprintln!(
-                    "JSON weight file has {} weights. Expected 24 (LR-Guard) or 41 (LR-Cheap).",
+                    "JSON weight file has {} weights. Expected 24 (LR-Guard), 41 (LR-Cheap), or 65 (LR-All).",
                     n
                 );
                 std::process::exit(1);
