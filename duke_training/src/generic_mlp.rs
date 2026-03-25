@@ -7,7 +7,10 @@ use duke_rust::game::state::GameState;
 
 use crate::encoding::{active_board_features, bag_features, BOARD_FEATURES, TOTAL_FEATURES};
 use crate::game_setup::{GameEvaluator, StaticHeuristicEvaluator};
-use crate::learned_heuristic::{extract_combined_features, extract_features, NUM_COMBINED_FEATURES};
+use crate::learned_heuristic::{
+    extract_combined_features, extract_features, load_lr_weights_raw,
+    CombinedWeights, LearnedHeuristicWeights, NUM_COMBINED_FEATURES, NUM_FEATURES as LR_NUM_FEATURES,
+};
 use crate::nnue::{NnueEvaluator, NnueWeights, NUM_FEATURES};
 
 // ── Generic MLP network (N hidden layers) ────────────────────────────────
@@ -524,9 +527,35 @@ pub fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>
             let eval = NnueEvaluator::new(weights);
             (Some(Box::new(eval)), desc)
         }
+        path if path.ends_with(".json") => {
+            let raw = load_lr_weights_raw(path).expect("Failed to load .json LR weights");
+            let n = raw.len();
+            match n {
+                LR_NUM_FEATURES => {
+                    let mut weights = [0.0f64; LR_NUM_FEATURES];
+                    weights.copy_from_slice(&raw);
+                    let lhw = LearnedHeuristicWeights { weights };
+                    let desc = format!("LR-Guard ({} weights)", n);
+                    (Some(Box::new(lhw)), desc)
+                }
+                NUM_COMBINED_FEATURES => {
+                    let mut weights = [0.0f64; NUM_COMBINED_FEATURES];
+                    weights.copy_from_slice(&raw);
+                    let cw = CombinedWeights { weights };
+                    let desc = format!("LR-Cheap ({} weights)", n);
+                    (Some(Box::new(cw)), desc)
+                }
+                _ => {
+                    panic!(
+                        "JSON weight file '{}' has {} weights. Expected {} (LR-Guard) or {} (LR-Cheap).",
+                        path, n, LR_NUM_FEATURES, NUM_COMBINED_FEATURES
+                    );
+                }
+            }
+        }
         other => {
             panic!(
-                "Unknown opponent '{}'. Use 'base', 'random', or a path ending in .gmlp / .nnue",
+                "Unknown opponent '{}'. Use 'base', 'random', or a path ending in .gmlp / .nnue / .json",
                 other
             );
         }

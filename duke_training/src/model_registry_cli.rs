@@ -9,6 +9,7 @@
 //! Default DB path: D:/temp/duke_models.db
 
 use duke_training::generic_mlp::GenericMlp;
+use duke_training::learned_heuristic::load_lr_weights_raw;
 use duke_training::model_registry::{ModelRecord, ModelRegistry};
 use duke_training::nnue::{NnueWeights, NUM_FEATURES};
 
@@ -142,9 +143,26 @@ fn cmd_register(db_path: &str, args: &[String]) {
         );
         reg.register_nnue(model_path, &weights, description.as_deref(), None)
             .expect("Failed to register model")
+    } else if model_path.ends_with(".json") {
+        let raw = load_lr_weights_raw(model_path).expect("Failed to load .json weight file");
+        let n = raw.len();
+        let label = match n {
+            24 => "LR-Guard",
+            41 => "LR-Cheap",
+            _ => {
+                eprintln!(
+                    "JSON weight file has {} weights. Expected 24 (LR-Guard) or 41 (LR-Cheap).",
+                    n
+                );
+                std::process::exit(1);
+            }
+        };
+        println!("Loaded {}: {} weights", label, n);
+        reg.register_lr(model_path, n, description.as_deref(), None)
+            .expect("Failed to register model")
     } else {
         eprintln!(
-            "Unknown file format: {}. Expected .gmlp or .nnue extension.",
+            "Unknown file format: {}. Expected .gmlp, .nnue, or .json extension.",
             model_path
         );
         std::process::exit(1);

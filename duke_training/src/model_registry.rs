@@ -235,6 +235,57 @@ impl ModelRegistry {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Register a Linear Regression weight file (.json). Returns the new model ID.
+    ///
+    /// `num_weights` determines the architecture label:
+    ///   - 24 -> "LR-24" (expensive heuristic features, guard checking)
+    ///   - 41 -> "LR-41" (cheap combined features, no guard checking)
+    pub fn register_lr(
+        &self,
+        path: &str,
+        num_weights: usize,
+        description: Option<&str>,
+        training: Option<&TrainingInfo>,
+    ) -> Result<i64, rusqlite::Error> {
+        let architecture = format!("LR-{}", num_weights);
+        let now = now_iso8601();
+
+        let (iterations, sigma, lr, opponent, parent) = match training {
+            Some(t) => (
+                t.iterations.map(|v| v as i64),
+                t.sigma.map(|v| v as f64),
+                t.lr.map(|v| v as f64),
+                t.opponent.as_deref(),
+                t.parent_model_id,
+            ),
+            None => (None, None, None, None, None),
+        };
+
+        self.conn.execute(
+            "INSERT INTO models (file_path, file_format, architecture, input_size,
+                param_count, description, created_at,
+                training_iterations, training_sigma, training_lr,
+                training_opponent, parent_model_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                path,
+                "json",
+                architecture,
+                num_weights as i64,
+                num_weights as i64,
+                description,
+                now,
+                iterations,
+                sigma,
+                lr,
+                opponent,
+                parent,
+            ],
+        )?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
     /// Record a benchmark result for a model. Returns the new benchmark ID.
     pub fn record_benchmark(
         &self,
@@ -487,6 +538,46 @@ mod tests {
         // win_rate = (600 + 0.5*50) / 1000 = 0.625
         assert!((b.win_rate.unwrap() - 0.625).abs() < 1e-6);
         assert!((b.elo.unwrap() - 1650.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_register_lr24_and_query() {
+        let reg = ModelRegistry::open(":memory:").unwrap();
+        let id = reg
+            .register_lr("/tmp/guard.json", 24, Some("LR-Guard test"), None)
+            .unwrap();
+        assert_eq!(id, 1);
+
+        let record = reg.find_by_path("/tmp/guard.json").unwrap().unwrap();
+        assert_eq!(record.file_format, "json");
+        assert_eq!(record.architecture, "LR-24");
+        assert_eq!(record.input_size, 24);
+        assert_eq!(record.param_count, 24);
+        assert_eq!(record.description.as_deref(), Some("LR-Guard test"));
+    }
+
+    #[test]
+    fn test_register_lr41_and_query() {
+        let reg = ModelRegistry::open(":memory:").unwrap();
+        let training = TrainingInfo {
+            iterations: Some(500),
+            sigma: Some(0.05),
+            lr: Some(0.01),
+            opponent: Some("base".to_string()),
+            parent_model_id: None,
+        };
+        let id = reg
+            .register_lr("/tmp/cheap.json", 41, Some("LR-Cheap test"), Some(&training))
+            .unwrap();
+        assert_eq!(id, 1);
+
+        let record = reg.find_by_path("/tmp/cheap.json").unwrap().unwrap();
+        assert_eq!(record.file_format, "json");
+        assert_eq!(record.architecture, "LR-41");
+        assert_eq!(record.input_size, 41);
+        assert_eq!(record.param_count, 41);
+        assert_eq!(record.training_iterations, Some(500));
+        assert!((record.training_sigma.unwrap() - 0.05).abs() < 1e-6);
     }
 
     #[test]
