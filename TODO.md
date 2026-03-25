@@ -10,6 +10,14 @@
 - [ ] Live dashboard (replace plain text live_status.txt with something richer)
 - [ ] Proper storage of models (organized model registry instead of scattered D:/temp checkpoints)
 
+## Performance
+- [ ] Profile training iteration to find actual bottleneck (instead of guessing)
+- [ ] NNUE incremental accumulator (update L1 activations on make/unmake instead of full recompute)
+- [ ] Const-generic specialization for common NNUE layer sizes (enables LLVM to emit AVX2)
+- [ ] Explore single-allocation contiguous weight buffer for NnueWeights (currently 6 separate Vecs)
+- [ ] Engine: evaluate returning iterators instead of Vec from move generation methods
+- [ ] Engine: SmallVec or counter for idle_move_count stack (avoid heap alloc on GameState clone)
+
 ## Testing
 - [ ] Additional test coverage from review (lower priority):
   - trajectory_io: roundtrip bags/discards/idle_move_count, error paths (bad magic/version)
@@ -21,4 +29,4 @@
   - weight_export: transpose helper unit test, non-default layer sizes
 
 ## UI
-- [ ] Terminal UI for playing against the AI
+- [ ] Integrate trained NN models into existing TUI (play human vs trained model)

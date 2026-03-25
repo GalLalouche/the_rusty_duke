@@ -12,6 +12,7 @@ pub mod serialization;
 pub mod trajectory_io;
 pub mod weight_export;
 pub mod game_setup;
+pub mod model_registry;
 
 #[cfg(test)]
 mod tests;

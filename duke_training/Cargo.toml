@@ -9,6 +9,7 @@ rand = { version = "0.8", features = ["small_rng"] }
 strum = "0.24"
 burn = { version = "0.16", features = ["wgpu", "autodiff", "ndarray"] }
 rayon = "1.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [[bin]]
 name = "duke_training"
@@ -45,3 +46,7 @@ path = "src/es_train.rs"
 [[bin]]
 name = "elo_tournament"
 path = "src/elo_tournament.rs"
+
+[[bin]]
+name = "model_registry"
+path = "src/model_registry_cli.rs"
