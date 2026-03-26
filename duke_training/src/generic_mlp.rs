@@ -1,5 +1,6 @@
 //! Generic MLP network and evaluator wrappers, shared between es_train and elo_tournament.
 
+use matrixmultiply::sgemm;
 use rand::rngs::StdRng;
 use rand::Rng;
 
@@ -118,14 +119,25 @@ impl GenericMlp {
             } else {
                 (&*buf_b as &[f32; MAX_HIDDEN], &mut *buf_a)
             };
-            // Initialize with bias, then scatter-accumulate (contiguous weight access)
+            // Initialize with bias, then BLAS-like matmul: dst = bias + x^T * W
             dst[..cur_size].copy_from_slice(lb);
-            for i in 0..prev_size {
-                let w_row = &lw[i * cur_size..(i + 1) * cur_size];
-                let s = src[i];
-                for j in 0..cur_size {
-                    dst[j] += w_row[j] * s;
-                }
+            unsafe {
+                sgemm(
+                    1,                        // m: rows of output (row vector)
+                    prev_size,                // k: shared dimension
+                    cur_size,                 // n: cols of output
+                    1.0,                      // alpha
+                    src.as_ptr(),             // A: 1 x prev_size row vector
+                    prev_size as isize,       // rsa (row stride of A, irrelevant for m=1)
+                    1,                        // csa (col stride of A)
+                    lw.as_ptr(),              // B: prev_size x cur_size (row-major)
+                    cur_size as isize,        // rsb (row stride of B)
+                    1,                        // csb (col stride of B)
+                    1.0,                      // beta: add to existing dst (bias)
+                    dst.as_mut_ptr(),         // C: 1 x cur_size
+                    cur_size as isize,        // rsc
+                    1,                        // csc
+                );
             }
             for j in 0..cur_size {
                 dst[j] = dst[j].max(0.0); // ReLU
@@ -162,14 +174,26 @@ impl GenericMlp {
         let mut buf_a = [0.0f32; MAX_HIDDEN];
         let mut buf_b = [0.0f32; MAX_HIDDEN];
 
-        // Initialize with bias, then scatter-accumulate (contiguous weight access)
+        // Convert f64 input to f32 scratch buffer, then BLAS matmul
+        let input_f32: Vec<f32> = input.iter().map(|&x| x as f32).collect();
         buf_a[..h_size].copy_from_slice(hb);
-        for i in 0..self.input_size {
-            let w_row = &hw[i * h_size..(i + 1) * h_size];
-            let inp = input[i] as f32;
-            for j in 0..h_size {
-                buf_a[j] += w_row[j] * inp;
-            }
+        unsafe {
+            sgemm(
+                1,                         // m
+                self.input_size,           // k
+                h_size,                    // n
+                1.0,                       // alpha
+                input_f32.as_ptr(),        // A: 1 x input_size
+                self.input_size as isize,  // rsa
+                1,                         // csa
+                hw.as_ptr(),               // B: input_size x h_size
+                h_size as isize,           // rsb
+                1,                         // csb
+                1.0,                       // beta
+                buf_a.as_mut_ptr(),        // C: 1 x h_size
+                h_size as isize,           // rsc
+                1,                         // csc
+            );
         }
         for j in 0..h_size {
             buf_a[j] = buf_a[j].max(0.0); // ReLU
@@ -192,14 +216,25 @@ impl GenericMlp {
         let mut buf_a = [0.0f32; MAX_HIDDEN];
         let mut buf_b = [0.0f32; MAX_HIDDEN];
 
-        // Initialize with bias, then scatter-accumulate (contiguous weight access)
+        // BLAS-like matmul: buf_a = bias + input^T * W
         buf_a[..h_size].copy_from_slice(hb);
-        for i in 0..self.input_size {
-            let w_row = &hw[i * h_size..(i + 1) * h_size];
-            let inp = input[i];
-            for j in 0..h_size {
-                buf_a[j] += w_row[j] * inp;
-            }
+        unsafe {
+            sgemm(
+                1,                         // m
+                self.input_size,           // k
+                h_size,                    // n
+                1.0,                       // alpha
+                input.as_ptr(),            // A: 1 x input_size
+                self.input_size as isize,  // rsa
+                1,                         // csa
+                hw.as_ptr(),               // B: input_size x h_size
+                h_size as isize,           // rsb
+                1,                         // csb
+                1.0,                       // beta
+                buf_a.as_mut_ptr(),        // C: 1 x h_size
+                h_size as isize,           // rsc
+                1,                         // csc
+            );
         }
         for j in 0..h_size {
             buf_a[j] = buf_a[j].max(0.0); // ReLU
