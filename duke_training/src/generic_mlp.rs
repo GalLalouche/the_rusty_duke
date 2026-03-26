@@ -277,6 +277,105 @@ impl GenericMlp {
         self.forward_inner(&mut buf_a, &mut buf_b, off)
     }
 
+    /// Evaluate multiple L1 accumulators in a batch.
+    ///
+    /// Groups all accumulators into a matrix and performs a single matrix-matrix
+    /// multiply per layer instead of one matrix-vector multiply per accumulator.
+    /// This loads weight matrices once and has much better cache utilization
+    /// when evaluating ~11 candidates.
+    ///
+    /// Returns a Vec of output values (one per accumulator).
+    pub fn forward_batch(&self, accumulators: &[L1Accumulator]) -> Vec<f32> {
+        let n = accumulators.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![accumulators[0].forward(self)];
+        }
+
+        let h1 = self.hidden_layers[0];
+
+        // Build input matrix: n rows x h1 cols (each row = one accumulator with ReLU applied)
+        let mut input = vec![0.0f32; n * h1];
+        for (i, acc) in accumulators.iter().enumerate() {
+            for j in 0..h1 {
+                input[i * h1 + j] = acc.hidden[j].max(0.0); // ReLU
+            }
+        }
+
+        // Process through remaining hidden layers using sgemm
+        // For each layer: output = ReLU(input * W + bias)
+        // W is prev_size x cur_size, input is n x prev_size
+        // Result is n x cur_size
+
+        let w = &self.weights;
+        let mut off = self.input_size * h1 + h1; // skip L1 weights and bias
+
+        let mut current = input;
+        let mut prev_size = h1;
+
+        for layer_idx in 1..self.hidden_layers.len() {
+            let cur_size = self.hidden_layers[layer_idx];
+            let lw = &w[off..off + prev_size * cur_size];
+            off += prev_size * cur_size;
+            let lb = &w[off..off + cur_size];
+            off += cur_size;
+
+            // Initialize output with bias (broadcast to all n rows)
+            let mut output = vec![0.0f32; n * cur_size];
+            for i in 0..n {
+                output[i * cur_size..i * cur_size + cur_size].copy_from_slice(&lb[..cur_size]);
+            }
+
+            // output += current * W  (n x prev_size * prev_size x cur_size = n x cur_size)
+            unsafe {
+                matrixmultiply::sgemm(
+                    n,                       // m
+                    prev_size,               // k
+                    cur_size,                // n
+                    1.0,                     // alpha
+                    current.as_ptr(),
+                    prev_size as isize,      // rsa
+                    1,                       // csa
+                    lw.as_ptr(),
+                    cur_size as isize,       // rsb
+                    1,                       // csb
+                    1.0,                     // beta (add to bias-initialized output)
+                    output.as_mut_ptr(),
+                    cur_size as isize,       // rsc
+                    1,                       // csc
+                );
+            }
+
+            // ReLU
+            for v in output.iter_mut() {
+                *v = v.max(0.0);
+            }
+
+            current = output;
+            prev_size = cur_size;
+        }
+
+        // Output layer: n x last_hidden -> n x 1 (sigmoid)
+        let last_h = *self.hidden_layers.last().unwrap();
+        let out_w = &w[off..off + last_h];
+        off += last_h;
+        let out_b = w[off];
+
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            let row = &current[i * last_h..(i + 1) * last_h];
+            let mut logit = out_b;
+            for j in 0..last_h {
+                logit += out_w[j] * row[j];
+            }
+            results.push(1.0 / (1.0 + (-logit).exp()));
+        }
+
+        results
+    }
+
     /// Format the architecture as a string like "1106->64->64->32->1"
     pub fn arch_string(&self) -> String {
         let mut s = format!("{}", self.input_size);

@@ -2583,6 +2583,123 @@ fn l1_accumulator_incremental_matches_full_1147() {
     }
 }
 
+/// Verify that `forward_batch` produces the same results as calling `forward`
+/// individually for each accumulator.
+#[test]
+fn forward_batch_matches_individual_forward() {
+    use crate::encoding::{active_board_features, bag_features};
+    use duke_rust::game::ai::player::AiMove;
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![128, 32], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    // Build accumulators for each candidate move
+    let base_acc = L1Accumulator::from_state(&net, &gs, false);
+    let base_board = active_board_features(&gs);
+    let base_bag = bag_features(&gs);
+
+    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
+    assert!(!moves.is_empty());
+
+    let eval_rng_base = StdRng::seed_from_u64(0);
+    let mut accumulators = Vec::new();
+    for mv in &moves {
+        let mut clone = gs.clone();
+        let mut eval_rng = eval_rng_base.clone();
+        mv.play(&mut clone, &mut eval_rng);
+
+        let new_board = active_board_features(&clone);
+        let new_bag = bag_features(&clone);
+        let mut acc = base_acc.clone();
+        acc.update_features(&net, &base_board, &new_board, &base_bag, &new_bag, None, None);
+        accumulators.push(acc);
+    }
+
+    // Get individual results
+    let individual: Vec<f32> = accumulators.iter().map(|acc| acc.forward(&net)).collect();
+
+    // Get batch results
+    let batch = net.forward_batch(&accumulators);
+
+    assert_eq!(individual.len(), batch.len(), "Length mismatch");
+    for (i, (ind, bat)) in individual.iter().zip(batch.iter()).enumerate() {
+        let diff = (ind - bat).abs();
+        assert!(diff < 1e-5,
+            "forward_batch mismatch at index {}: individual={}, batch={}, diff={}",
+            i, ind, bat, diff);
+    }
+}
+
+/// Same batch test but with 1147-input model (combined features appended).
+#[test]
+fn forward_batch_matches_individual_forward_1147() {
+    use crate::encoding::{active_board_features, bag_features};
+    use duke_rust::game::ai::player::AiMove;
+
+    let mut rng = StdRng::seed_from_u64(99);
+    let net = GenericMlp::random(1147, vec![128, 64], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let base_acc = L1Accumulator::from_state(&net, &gs, true);
+    let base_board = active_board_features(&gs);
+    let base_bag = bag_features(&gs);
+    let base_combined = extract_combined_features(&gs);
+
+    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
+    let eval_rng_base = StdRng::seed_from_u64(0);
+    let mut accumulators = Vec::new();
+    for mv in &moves {
+        let mut clone = gs.clone();
+        let mut eval_rng = eval_rng_base.clone();
+        mv.play(&mut clone, &mut eval_rng);
+
+        let new_board = active_board_features(&clone);
+        let new_bag = bag_features(&clone);
+        let new_combined = extract_combined_features(&clone);
+        let mut acc = base_acc.clone();
+        acc.update_features(
+            &net, &base_board, &new_board, &base_bag, &new_bag,
+            Some(&base_combined), Some(&new_combined),
+        );
+        accumulators.push(acc);
+    }
+
+    let individual: Vec<f32> = accumulators.iter().map(|acc| acc.forward(&net)).collect();
+    let batch = net.forward_batch(&accumulators);
+
+    assert_eq!(individual.len(), batch.len());
+    for (i, (ind, bat)) in individual.iter().zip(batch.iter()).enumerate() {
+        let diff = (ind - bat).abs();
+        assert!(diff < 1e-5,
+            "1147 forward_batch mismatch at index {}: individual={}, batch={}, diff={}",
+            i, ind, bat, diff);
+    }
+}
+
+/// Verify that forward_batch handles edge cases: empty input and single accumulator.
+#[test]
+fn forward_batch_edge_cases() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    // Empty
+    let empty: Vec<f32> = net.forward_batch(&[]);
+    assert!(empty.is_empty());
+
+    // Single
+    let acc = L1Accumulator::from_state(&net, &gs, false);
+    let single_batch = net.forward_batch(&[acc.clone()]);
+    let single_individual = acc.forward(&net);
+    assert_eq!(single_batch.len(), 1);
+    assert!((single_batch[0] - single_individual).abs() < 1e-6,
+        "Single-element batch should match individual forward");
+}
+
 /// Verify that `greedy_move` with a GenericNnueEvaluator (which triggers the
 /// accumulator path) picks the same move as when called through `forward_sparse`
 /// directly.
