@@ -10,7 +10,6 @@ strum = "0.24"
 burn = { version = "0.16", features = ["wgpu", "autodiff", "ndarray"] }
 rayon = "1.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
-matrixmultiply = "0.3"
 
 [[bin]]
 name = "duke_training"
