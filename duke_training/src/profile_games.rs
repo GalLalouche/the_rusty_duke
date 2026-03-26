@@ -5,9 +5,13 @@
 //! evaluation.
 //!
 //! Usage:
-//!   profile_games [--model <spec>] [--opponent <spec>] [--games N]
+//!   profile_games [--model <spec>] [--opponent <spec>] [--games N] [--eval-breakdown]
 //!
 //! Defaults: model=base, opponent=same as model, games=1000
+//!
+//! The --eval-breakdown flag, when the model is a 1147-input .gmlp file,
+//! reports a sub-breakdown of evaluation time into feature extraction
+//! vs forward pass (matmul).
 
 use std::env;
 use std::time::{Duration, Instant};
@@ -20,8 +24,10 @@ use duke_rust::game::ai::player::AiMove;
 use duke_rust::game::state::GameResult;
 
 use duke_training::cli::parse_flag;
+use duke_training::encoding::{active_board_features, bag_features};
 use duke_training::game_setup::{create_bag, create_initial_state, GameEvaluator};
-use duke_training::generic_mlp::LoadedModel;
+use duke_training::generic_mlp::{GenericMlp, LoadedModel};
+use duke_training::learned_heuristic::extract_combined_features;
 
 /// Safety limit: if a game exceeds this many turns, force a draw.
 const MAX_TURNS: u32 = 500;
@@ -32,11 +38,25 @@ fn main() {
     let model_spec: String = parse_flag(&args, "--model").unwrap_or_else(|| "base".to_string());
     let opponent_spec: String = parse_flag(&args, "--opponent").unwrap_or_else(|| model_spec.clone());
     let num_games: u32 = parse_flag(&args, "--games").unwrap_or(1000);
+    let eval_breakdown = args.iter().any(|a| a == "--eval-breakdown");
+
+    // Check if model qualifies for eval breakdown (1147-input .gmlp)
+    let breakdown_active = eval_breakdown && model_spec.ends_with(".gmlp") && {
+        let net = GenericMlp::load(&model_spec).expect("Failed to load .gmlp for breakdown check");
+        net.input_size == 1147
+    };
 
     println!("=== Profile Games ===");
     println!("  Model:    {}", model_spec);
     println!("  Opponent: {}", opponent_spec);
     println!("  Games:    {}", num_games);
+    if eval_breakdown {
+        if breakdown_active {
+            println!("  Eval breakdown: ON (1147-input model)");
+        } else {
+            println!("  Eval breakdown: requested but model is not a 1147-input .gmlp — skipping");
+        }
+    }
     println!();
 
     let model = LoadedModel::from_spec(&model_spec);
@@ -53,6 +73,10 @@ fn main() {
     let mut total_moves: u64 = 0;
     let mut total_candidates: u64 = 0;
     let mut total_games_completed: u32 = 0;
+
+    // Eval breakdown accumulators (only used when breakdown_active)
+    let mut feature_time = Duration::ZERO;
+    let mut total_evals: u64 = 0;
 
     // Deterministic eval rng (same as greedy_move uses)
     let base_eval_rng = StdRng::seed_from_u64(0);
@@ -75,6 +99,7 @@ fn main() {
 
                     // Pick the evaluator for the current player
                     let current = game_state.current_player_turn();
+                    let is_model_player = matches!(current, duke_rust::game::tile::Owner::TopPlayer);
                     let evaluator: &dyn GameEvaluator = match current {
                         duke_rust::game::tile::Owner::TopPlayer => {
                             match &model.evaluator {
@@ -125,6 +150,16 @@ fn main() {
                         let mut eval_rng = base_eval_rng.clone();
                         mv.play(&mut clone, &mut eval_rng);
                         play_time += t.elapsed();
+
+                        // Feature extraction sub-profiling (model player only)
+                        if breakdown_active && is_model_player {
+                            let t = Instant::now();
+                            let _combined = extract_combined_features(&clone);
+                            let _board = active_board_features(&clone);
+                            let _bag = bag_features(&clone);
+                            feature_time += t.elapsed();
+                            total_evals += 1;
+                        }
 
                         let t = Instant::now();
                         let score = -(evaluator.evaluate(&clone) as f64);
@@ -232,4 +267,35 @@ fn main() {
     );
     println!("  Avg moves/game:   {:.1}", avg_moves_per_game);
     println!("  Avg candidates:   {:.1}", avg_candidates);
+
+    // Evaluation breakdown report
+    if breakdown_active && total_evals > 0 {
+        let feature_secs = feature_time.as_secs_f64();
+        let eval_secs = eval_time.as_secs_f64();
+        // Forward pass time is total eval time minus feature extraction time
+        let forward_secs = (eval_secs - feature_secs).max(0.0);
+
+        let feature_pct = if eval_secs > 0.0 { feature_secs / eval_secs * 100.0 } else { 0.0 };
+        let forward_pct = if eval_secs > 0.0 { forward_secs / eval_secs * 100.0 } else { 0.0 };
+
+        let avg_feature_us = feature_secs * 1_000_000.0 / total_evals as f64;
+        let avg_forward_us = forward_secs * 1_000_000.0 / total_evals as f64;
+        let avg_eval_us = eval_secs * 1_000_000.0 / total_evals as f64;
+
+        println!();
+        println!("=== Evaluation Breakdown (1147-input model) ===");
+        println!(
+            "  Feature extraction: {:>6.1}s ({:>5.1}%)  avg {:>7.0}us/eval",
+            feature_secs, feature_pct, avg_feature_us,
+        );
+        println!(
+            "  Forward pass:       {:>6.1}s ({:>5.1}%)  avg {:>7.0}us/eval",
+            forward_secs, forward_pct, avg_forward_us,
+        );
+        println!(
+            "  Total evaluation:   {:>6.1}s          avg {:>7.0}us/eval",
+            eval_secs, avg_eval_us,
+        );
+        println!("  Eval count:         {}", total_evals);
+    }
 }
