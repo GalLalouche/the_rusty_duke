@@ -2741,3 +2741,198 @@ fn greedy_move_incremental_is_deterministic() {
 
     assert_eq!(mv1, mv2, "Same seed should produce same move with incremental path");
 }
+
+// ── Quantized MLP tests ─────────────────────────────────────────────────
+
+/// Verify that quantization of a single hidden layer network produces output
+/// close to the f32 version (output layer stays f32, only L1 stays f32, so
+/// with 1 hidden layer there's nothing to quantize — output should be exact).
+#[test]
+fn quantized_single_hidden_is_exact() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(10, vec![8], &mut rng);
+    let qnet = net.quantize();
+
+    // With only 1 hidden layer, there are no quantized hidden layers
+    // (L1 stays f32, output stays f32). Output should be identical.
+    let input: Vec<f32> = (0..10).map(|i| (i as f32) * 0.1 - 0.5).collect();
+    let f32_result = net.forward_f32(&input);
+    // Build an L1 accumulator manually to test forward_from_l1
+    let mut hidden = [0.0f32; 1024];
+    let h1 = 8;
+    let w = &net.weights;
+    hidden[..h1].copy_from_slice(&w[10 * h1..10 * h1 + h1]);
+    for i in 0..10 {
+        let w_row = &w[i * h1..(i + 1) * h1];
+        for j in 0..h1 {
+            hidden[j] += w_row[j] * input[i];
+        }
+    }
+    let l1 = L1Accumulator::from_raw(hidden, h1);
+    let q_result = qnet.forward_from_l1(&l1);
+
+    assert!((f32_result - q_result).abs() < 1e-6,
+        "Single hidden layer: f32={}, quantized={}", f32_result, q_result);
+}
+
+/// Verify that quantized output is close to f32 for a multi-layer network.
+/// Quantization introduces small rounding errors (~0.5/127 per weight).
+#[test]
+fn quantized_two_hidden_close_to_f32() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(10, vec![8, 4], &mut rng);
+    let qnet = net.quantize();
+
+    // Test with several different inputs
+    for seed in 0..20 {
+        let input: Vec<f32> = (0..10).map(|i| {
+            ((i as f32 + seed as f32) * 0.37).sin()
+        }).collect();
+        let f32_result = net.forward_f32(&input);
+
+        // Build L1 accumulator
+        let h1 = 8;
+        let w = &net.weights;
+        let mut hidden = [0.0f32; 1024];
+        hidden[..h1].copy_from_slice(&w[10 * h1..10 * h1 + h1]);
+        for i in 0..10 {
+            let w_row = &w[i * h1..(i + 1) * h1];
+            for j in 0..h1 {
+                hidden[j] += w_row[j] * input[i];
+            }
+        }
+        let l1 = L1Accumulator::from_raw(hidden, h1);
+        let q_result = qnet.forward_from_l1(&l1);
+
+        // Sigmoid output is [0,1], allow ~1% tolerance for quantization error
+        assert!((f32_result - q_result).abs() < 0.02,
+            "seed={}: f32={}, quantized={}, diff={}",
+            seed, f32_result, q_result, (f32_result - q_result).abs());
+    }
+}
+
+/// Verify quantized three-hidden-layer network stays close to f32.
+#[test]
+fn quantized_three_hidden_close_to_f32() {
+    let mut rng = StdRng::seed_from_u64(99);
+    let net = GenericMlp::random(20, vec![16, 8, 4], &mut rng);
+    let qnet = net.quantize();
+
+    for seed in 0..20 {
+        let input: Vec<f32> = (0..20).map(|i| {
+            ((i as f32 + seed as f32) * 0.23).cos() * 0.5
+        }).collect();
+        let f32_result = net.forward_f32(&input);
+
+        let h1 = 16;
+        let w = &net.weights;
+        let mut hidden = [0.0f32; 1024];
+        hidden[..h1].copy_from_slice(&w[20 * h1..20 * h1 + h1]);
+        for i in 0..20 {
+            let w_row = &w[i * h1..(i + 1) * h1];
+            for j in 0..h1 {
+                hidden[j] += w_row[j] * input[i];
+            }
+        }
+        let l1 = L1Accumulator::from_raw(hidden, h1);
+        let q_result = qnet.forward_from_l1(&l1);
+
+        assert!((f32_result - q_result).abs() < 0.05,
+            "seed={}: f32={}, quantized={}, diff={}",
+            seed, f32_result, q_result, (f32_result - q_result).abs());
+    }
+}
+
+/// Verify quantized forward_sparse matches f32 forward_sparse closely.
+#[test]
+fn quantized_forward_sparse_close_to_f32() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
+    let qnet = net.quantize();
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let f32_result = net.forward_sparse(&gs, false);
+    let q_result = qnet.forward_sparse(&gs, false);
+
+    assert!((f32_result - q_result).abs() < 0.02,
+        "forward_sparse: f32={}, quantized={}, diff={}",
+        f32_result, q_result, (f32_result - q_result).abs());
+}
+
+/// Verify quantized forward_sparse with combined features (1147 inputs).
+#[test]
+fn quantized_forward_sparse_combined_close_to_f32() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1147, vec![64, 32], &mut rng);
+    let qnet = net.quantize();
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let f32_result = net.forward_sparse(&gs, true);
+    let q_result = qnet.forward_sparse(&gs, true);
+
+    assert!((f32_result - q_result).abs() < 0.02,
+        "forward_sparse combined: f32={}, quantized={}, diff={}",
+        f32_result, q_result, (f32_result - q_result).abs());
+}
+
+/// Verify that quantize() preserves network dimensions.
+#[test]
+fn quantized_preserves_dimensions() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![256, 128, 64], &mut rng);
+    let qnet = net.quantize();
+
+    assert_eq!(qnet.input_size, 1106);
+    assert_eq!(qnet.hidden_layers, vec![256, 128, 64]);
+    assert_eq!(qnet.arch_string(), "1106->256->128->64->1 (q)");
+}
+
+/// Verify that a network with all-zero weights quantizes correctly and produces
+/// sigmoid(0) = 0.5 output.
+#[test]
+fn quantized_zero_weights() {
+    let n = GenericMlp::param_count(4, &[3, 2]);
+    let flat = vec![0.0f32; n];
+    let net = GenericMlp::from_flat(flat, 4, vec![3, 2]);
+    let qnet = net.quantize();
+
+    let input = [1.0f32, 2.0, 3.0, 4.0];
+    let f32_result = net.forward_f32(&input);
+    let h1 = 3;
+    let w = &net.weights;
+    let mut hidden = [0.0f32; 1024];
+    hidden[..h1].copy_from_slice(&w[4 * h1..4 * h1 + h1]);
+    for i in 0..4 {
+        let w_row = &w[i * h1..(i + 1) * h1];
+        for j in 0..h1 {
+            hidden[j] += w_row[j] * input[i];
+        }
+    }
+    let l1 = L1Accumulator::from_raw(hidden, h1);
+    let q_result = qnet.forward_from_l1(&l1);
+
+    assert!((f32_result - 0.5).abs() < 1e-6, "zero net should give 0.5");
+    assert!((q_result - 0.5).abs() < 1e-6, "quantized zero net should give 0.5");
+}
+
+/// Verify L1Accumulator::forward_quantized is consistent with QuantizedGenericMlp::forward_from_l1.
+#[test]
+fn l1_accumulator_forward_quantized_consistent() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
+    let qnet = net.quantize();
+
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let acc = L1Accumulator::from_state(&net, &gs, false);
+    let result1 = acc.forward_quantized(&qnet);
+    let result2 = qnet.forward_from_l1(&acc);
+
+    assert!((result1 - result2).abs() < 1e-10,
+        "forward_quantized and forward_from_l1 should be identical: {} vs {}", result1, result2);
+}
