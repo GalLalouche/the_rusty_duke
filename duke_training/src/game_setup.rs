@@ -274,9 +274,12 @@ pub fn greedy_move_incremental(
         None
     };
 
-    // Build all accumulators (one per candidate move), then batch-evaluate.
+    // Evaluate each candidate move individually using incremental accumulator updates.
     let base_eval_rng = StdRng::seed_from_u64(0);
-    let accumulators: Vec<L1Accumulator> = moves.iter().map(|mv| {
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_move = None;
+
+    for mv in &moves {
         let mut clone = gs.clone();
         let mut eval_rng = base_eval_rng.clone();
         mv.play(&mut clone, &mut eval_rng);
@@ -301,18 +304,15 @@ pub fn greedy_move_incremental(
             base_combined.as_ref(),
             new_combined.as_ref(),
         );
-        acc
-    }).collect();
 
-    let scores = net.forward_batch(&accumulators);
+        let prediction = acc.forward(net);
+        // Negate: opponent's score is negative of ours.
+        let score = -(prediction as f64);
+        if score > best_score {
+            best_score = score;
+            best_move = Some(mv.clone());
+        }
+    }
 
-    // Find best (negate because we want the lowest eval for the opponent)
-    let best_idx = scores.iter().enumerate()
-        .max_by(|(_, a), (_, b)| {
-            // Lower prediction = better for current player (negamax)
-            b.partial_cmp(a).unwrap()
-        })
-        .unwrap().0;
-
-    moves.swap_remove(best_idx)
+    best_move.unwrap()
 }
