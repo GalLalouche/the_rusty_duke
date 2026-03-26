@@ -24,10 +24,8 @@ use duke_rust::game::ai::player::AiMove;
 use duke_rust::game::state::GameResult;
 
 use duke_training::cli::parse_flag;
-use duke_training::encoding::{active_board_features, bag_features};
 use duke_training::game_setup::{create_bag, create_initial_state, GameEvaluator};
-use duke_training::generic_mlp::{GenericMlp, LoadedModel};
-use duke_training::learned_heuristic::extract_combined_features;
+use duke_training::generic_mlp::{GenericMlp, L1Accumulator, LoadedModel};
 
 /// Safety limit: if a game exceeds this many turns, force a draw.
 const MAX_TURNS: u32 = 500;
@@ -76,7 +74,15 @@ fn main() {
 
     // Eval breakdown accumulators (only used when breakdown_active)
     let mut feature_time = Duration::ZERO;
+    let mut forward_time = Duration::ZERO;
     let mut total_evals: u64 = 0;
+
+    // Pre-load the network reference for breakdown mode
+    let breakdown_net: Option<GenericMlp> = if breakdown_active {
+        Some(GenericMlp::load(&model_spec).expect("Failed to load .gmlp for breakdown"))
+    } else {
+        None
+    };
 
     // Deterministic eval rng (same as greedy_move uses)
     let base_eval_rng = StdRng::seed_from_u64(0);
@@ -151,19 +157,34 @@ fn main() {
                         mv.play(&mut clone, &mut eval_rng);
                         play_time += t.elapsed();
 
-                        // Feature extraction sub-profiling (model player only)
-                        if breakdown_active && is_model_player {
-                            let t = Instant::now();
-                            let _combined = extract_combined_features(&clone);
-                            let _board = active_board_features(&clone);
-                            let _bag = bag_features(&clone);
-                            feature_time += t.elapsed();
-                            total_evals += 1;
-                        }
+                        // When breakdown is active for the model player,
+                        // manually decompose into feature extraction + forward
+                        // pass instead of calling evaluator.evaluate() (which
+                        // does its own internal extraction, making a separate
+                        // extraction measurement meaningless).
+                        let score = if breakdown_active && is_model_player {
+                            let net = breakdown_net.as_ref().unwrap();
 
-                        let t = Instant::now();
-                        let score = -(evaluator.evaluate(&clone) as f64);
-                        eval_time += t.elapsed();
+                            let t = Instant::now();
+                            let acc = L1Accumulator::from_state(net, &clone, true);
+                            let feat_elapsed = t.elapsed();
+                            feature_time += feat_elapsed;
+
+                            let t = Instant::now();
+                            let val = acc.forward(net);
+                            let fwd_elapsed = t.elapsed();
+                            forward_time += fwd_elapsed;
+
+                            eval_time += feat_elapsed + fwd_elapsed;
+                            total_evals += 1;
+
+                            -(val as f64)
+                        } else {
+                            let t = Instant::now();
+                            let val = evaluator.evaluate(&clone);
+                            eval_time += t.elapsed();
+                            -(val as f64)
+                        };
 
                         if score > best_score {
                             best_score = score;
@@ -271,16 +292,15 @@ fn main() {
     // Evaluation breakdown report
     if breakdown_active && total_evals > 0 {
         let feature_secs = feature_time.as_secs_f64();
-        let eval_secs = eval_time.as_secs_f64();
-        // Forward pass time is total eval time minus feature extraction time
-        let forward_secs = (eval_secs - feature_secs).max(0.0);
+        let forward_secs = forward_time.as_secs_f64();
+        let breakdown_total = feature_secs + forward_secs;
 
-        let feature_pct = if eval_secs > 0.0 { feature_secs / eval_secs * 100.0 } else { 0.0 };
-        let forward_pct = if eval_secs > 0.0 { forward_secs / eval_secs * 100.0 } else { 0.0 };
+        let feature_pct = if breakdown_total > 0.0 { feature_secs / breakdown_total * 100.0 } else { 0.0 };
+        let forward_pct = if breakdown_total > 0.0 { forward_secs / breakdown_total * 100.0 } else { 0.0 };
 
         let avg_feature_us = feature_secs * 1_000_000.0 / total_evals as f64;
         let avg_forward_us = forward_secs * 1_000_000.0 / total_evals as f64;
-        let avg_eval_us = eval_secs * 1_000_000.0 / total_evals as f64;
+        let avg_eval_us = breakdown_total * 1_000_000.0 / total_evals as f64;
 
         println!();
         println!("=== Evaluation Breakdown (1147-input model) ===");
@@ -294,7 +314,7 @@ fn main() {
         );
         println!(
             "  Total evaluation:   {:>6.1}s          avg {:>7.0}us/eval",
-            eval_secs, avg_eval_us,
+            breakdown_total, avg_eval_us,
         );
         println!("  Eval count:         {}", total_evals);
     }

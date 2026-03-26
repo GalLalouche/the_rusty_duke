@@ -184,17 +184,13 @@ fn cmd_info(db_path: &str, args: &[String]) {
 
     let reg = ModelRegistry::open(db_path).expect("Failed to open registry DB");
 
-    // Find model by listing and filtering (no get_by_id method, use list)
-    let models = reg.list_models().expect("Failed to list models");
-    let model = models.iter().find(|m| m.id == id);
-
-    match model {
+    match reg.get_model(id).expect("Failed to query model") {
         None => {
             eprintln!("Model ID {} not found.", id);
             std::process::exit(1);
         }
         Some(m) => {
-            print_model_detail(m);
+            print_model_detail(&m);
 
             let benchmarks = reg.get_benchmarks(id).expect("Failed to get benchmarks");
             if benchmarks.is_empty() {
@@ -218,6 +214,13 @@ fn cmd_benchmarks(db_path: &str, args: &[String]) {
         .expect("Model ID must be a positive integer");
 
     let reg = ModelRegistry::open(db_path).expect("Failed to open registry DB");
+
+    // Verify the model exists before querying benchmarks
+    if reg.get_model(id).expect("Failed to query model").is_none() {
+        eprintln!("Model #{} not found.", id);
+        std::process::exit(1);
+    }
+
     let benchmarks = reg.get_benchmarks(id).expect("Failed to get benchmarks");
 
     if benchmarks.is_empty() {
