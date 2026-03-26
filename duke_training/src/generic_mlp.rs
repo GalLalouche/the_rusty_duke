@@ -5,7 +5,10 @@ use rand::Rng;
 
 use duke_rust::game::state::GameState;
 
-use crate::encoding::{active_board_features, bag_features, BOARD_FEATURES, TOTAL_FEATURES};
+use crate::encoding::{
+    active_board_features, bag_features, FeatureBuffer, BOARD_FEATURES, BAG_FEATURES,
+    TOTAL_FEATURES,
+};
 use crate::game_setup::{GameEvaluator, StaticHeuristicEvaluator};
 use crate::learned_heuristic::{
     extract_combined_features, extract_features, load_lr_weights_raw,
@@ -352,6 +355,181 @@ impl GenericMlp {
     }
 }
 
+// ── L1 Accumulator for incremental updates ──────────────────────────────
+
+/// Pre-computed first hidden layer (L1) activations for incremental updates.
+///
+/// Stores the raw accumulation BEFORE ReLU (bias + weighted sum of active
+/// features).  ReLU is applied lazily when completing the forward pass via
+/// [`L1Accumulator::forward`].
+///
+/// Typical workflow in move search:
+/// 1. Build an accumulator from the current position (`from_state`).
+/// 2. For each candidate move, clone the accumulator, apply the feature
+///    diff (`update_features`), then call `forward` to get the evaluation.
+///
+/// This avoids redundant L1 recomputation across candidates — only the
+/// 2-4 changed features need to be patched instead of all ~24.
+pub struct L1Accumulator {
+    /// Raw L1 values (bias + weighted sum of active features), before ReLU.
+    hidden: [f32; MAX_HIDDEN],
+    /// Number of active hidden units (= hidden_layers[0]).
+    h1_size: usize,
+}
+
+impl Clone for L1Accumulator {
+    fn clone(&self) -> Self {
+        Self {
+            hidden: self.hidden,
+            h1_size: self.h1_size,
+        }
+    }
+}
+
+impl L1Accumulator {
+    /// Build an L1 accumulator from a game state (full recompute).
+    ///
+    /// Performs the same sparse accumulation as `forward_sparse`, but stops
+    /// before applying ReLU, storing the raw weighted sums.
+    pub fn from_state(net: &GenericMlp, gs: &GameState, include_combined: bool) -> Self {
+        let h1 = net.hidden_layers[0];
+        let w = &net.weights;
+        let l1_w = &w[0..net.input_size * h1];
+        let l1_b = &w[net.input_size * h1..net.input_size * h1 + h1];
+
+        let mut hidden = [0.0f32; MAX_HIDDEN];
+        hidden[..h1].copy_from_slice(l1_b);
+
+        // Sparse board features (binary)
+        let board_feats = active_board_features(gs);
+        for &feat in board_feats.as_slice() {
+            let col = &l1_w[feat * h1..(feat + 1) * h1];
+            for j in 0..h1 {
+                hidden[j] += col[j];
+            }
+        }
+
+        // Bag features (dense, dimensions 1080..1106)
+        let bag = bag_features(gs);
+        for (i, &val) in bag.iter().enumerate() {
+            if val != 0.0 {
+                let feat = BOARD_FEATURES + i;
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                for j in 0..h1 {
+                    hidden[j] += col[j] * val;
+                }
+            }
+        }
+
+        // Combined features (if appended mode, dimensions 1106..1147)
+        if include_combined {
+            let combined = extract_combined_features(gs);
+            for (i, &val) in combined.iter().enumerate() {
+                let fval = val as f32;
+                if fval != 0.0 {
+                    let feat = TOTAL_FEATURES + i;
+                    let col = &l1_w[feat * h1..(feat + 1) * h1];
+                    if fval == 1.0 {
+                        for j in 0..h1 {
+                            hidden[j] += col[j];
+                        }
+                    } else {
+                        for j in 0..h1 {
+                            hidden[j] += col[j] * fval;
+                        }
+                    }
+                }
+            }
+        }
+
+        Self { hidden, h1_size: h1 }
+    }
+
+    /// Update this accumulator to reflect a feature diff.
+    ///
+    /// Given the old and new board features, bag features, and optionally
+    /// combined features, patches the raw L1 values by subtracting removed
+    /// contributions and adding new ones.
+    ///
+    /// This is much cheaper than a full rebuild when only 2-4 features change
+    /// (the common case for a single move).
+    pub fn update_features(
+        &mut self,
+        net: &GenericMlp,
+        old_board: &FeatureBuffer,
+        new_board: &FeatureBuffer,
+        old_bag: &[f32; BAG_FEATURES],
+        new_bag: &[f32; BAG_FEATURES],
+        old_combined: Option<&[f64; NUM_COMBINED_FEATURES]>,
+        new_combined: Option<&[f64; NUM_COMBINED_FEATURES]>,
+    ) {
+        let h1 = self.h1_size;
+        let l1_w = &net.weights[0..net.input_size * h1];
+
+        // --- Board features diff (binary: just add/remove weight rows) ---
+        // Remove old board features not in new set
+        for &feat in old_board.as_slice() {
+            if !new_board.as_slice().contains(&feat) {
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                for j in 0..h1 {
+                    self.hidden[j] -= col[j];
+                }
+            }
+        }
+        // Add new board features not in old set
+        for &feat in new_board.as_slice() {
+            if !old_board.as_slice().contains(&feat) {
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                for j in 0..h1 {
+                    self.hidden[j] += col[j];
+                }
+            }
+        }
+
+        // --- Bag features diff (dense: subtract old, add new for changed dims) ---
+        for i in 0..BAG_FEATURES {
+            let delta = new_bag[i] - old_bag[i];
+            if delta != 0.0 {
+                let feat = BOARD_FEATURES + i;
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                for j in 0..h1 {
+                    self.hidden[j] += col[j] * delta;
+                }
+            }
+        }
+
+        // --- Combined features diff ---
+        if let (Some(old_c), Some(new_c)) = (old_combined, new_combined) {
+            for i in 0..NUM_COMBINED_FEATURES {
+                let delta = (new_c[i] - old_c[i]) as f32;
+                if delta != 0.0 {
+                    let feat = TOTAL_FEATURES + i;
+                    let col = &l1_w[feat * h1..(feat + 1) * h1];
+                    for j in 0..h1 {
+                        self.hidden[j] += col[j] * delta;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Complete the forward pass: apply ReLU to the stored L1 values, then
+    /// propagate through the remaining hidden layers and output sigmoid.
+    pub fn forward(&self, net: &GenericMlp) -> f32 {
+        let h1 = self.h1_size;
+        let off = net.input_size * h1 + h1;
+
+        // Copy hidden into buf_a and apply ReLU
+        let mut buf_a = [0.0f32; MAX_HIDDEN];
+        for j in 0..h1 {
+            buf_a[j] = self.hidden[j].max(0.0);
+        }
+
+        let mut buf_b = [0.0f32; MAX_HIDDEN];
+        net.forward_inner(&mut buf_a, &mut buf_b, off)
+    }
+}
+
 /// Evaluator that wraps a GenericMlp: extracts combined features then forward-passes.
 pub struct CombinedNetEvaluator {
     pub net: GenericMlp,
@@ -402,6 +580,9 @@ impl GameEvaluator for GenericNnueEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
         self.net.forward_sparse(gs, false)
     }
+    fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> {
+        Some((&self.net, false))
+    }
 }
 
 /// Evaluator that wraps a GenericMlp for appended features (1147 inputs).
@@ -412,6 +593,9 @@ pub struct GenericAppendedEvaluator {
 impl GameEvaluator for GenericAppendedEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
         self.net.forward_sparse(gs, true)
+    }
+    fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> {
+        Some((&self.net, true))
     }
 }
 

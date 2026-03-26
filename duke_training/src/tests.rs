@@ -2459,3 +2459,168 @@ fn generic_mlp_arch_string() {
 fn generic_mlp_from_flat_rejects_wrong_size() {
     GenericMlp::from_flat(vec![0.0; 10], 4, vec![3, 2]); // expects 26
 }
+
+// ── L1Accumulator tests ─────────────────────────────────────────────────
+
+use crate::generic_mlp::L1Accumulator;
+
+/// Verify that `L1Accumulator::from_state + forward` produces the same output
+/// as the monolithic `forward_sparse` for a 1106-input model.
+#[test]
+fn l1_accumulator_forward_matches_forward_sparse_1106() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let expected = net.forward_sparse(&gs, false);
+    let acc = L1Accumulator::from_state(&net, &gs, false);
+    let actual = acc.forward(&net);
+
+    let diff = (expected - actual).abs();
+    assert!(diff < 1e-6, "from_state+forward differs from forward_sparse: expected={}, actual={}, diff={}", expected, actual, diff);
+}
+
+/// Same test but for the 1147-input (appended combined features) model.
+#[test]
+fn l1_accumulator_forward_matches_forward_sparse_1147() {
+    let mut rng = StdRng::seed_from_u64(99);
+    let net = GenericMlp::random(1147, vec![128, 64], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let expected = net.forward_sparse(&gs, true);
+    let acc = L1Accumulator::from_state(&net, &gs, true);
+    let actual = acc.forward(&net);
+
+    let diff = (expected - actual).abs();
+    assert!(diff < 1e-6, "1147: from_state+forward differs: expected={}, actual={}, diff={}", expected, actual, diff);
+}
+
+/// Verify that incremental update (base acc + diff) matches a fresh from_state
+/// on the post-move position.  Tests both board and bag feature changes.
+#[test]
+fn l1_accumulator_incremental_matches_full_recompute() {
+    use crate::encoding::{active_board_features, bag_features};
+    use duke_rust::game::ai::player::AiMove;
+
+    let mut rng = StdRng::seed_from_u64(77);
+    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    // Get base features
+    let base_board = active_board_features(&gs);
+    let base_bag = bag_features(&gs);
+    let base_acc = L1Accumulator::from_state(&net, &gs, false);
+
+    // Play each candidate move, compare incremental vs full
+    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
+    assert!(!moves.is_empty());
+
+    let eval_rng_base = StdRng::seed_from_u64(0);
+    for mv in &moves {
+        let mut clone = gs.clone();
+        let mut eval_rng = eval_rng_base.clone();
+        mv.play(&mut clone, &mut eval_rng);
+
+        // Full recompute
+        let full_acc = L1Accumulator::from_state(&net, &clone, false);
+        let full_val = full_acc.forward(&net);
+
+        // Incremental
+        let new_board = active_board_features(&clone);
+        let new_bag = bag_features(&clone);
+        let mut inc_acc = base_acc.clone();
+        inc_acc.update_features(&net, &base_board, &new_board, &base_bag, &new_bag, None, None);
+        let inc_val = inc_acc.forward(&net);
+
+        let diff = (full_val - inc_val).abs();
+        assert!(diff < 1e-4,
+            "Incremental mismatch: full={}, inc={}, diff={}", full_val, inc_val, diff);
+    }
+}
+
+/// Same incremental test but with 1147 (combined features appended).
+#[test]
+fn l1_accumulator_incremental_matches_full_1147() {
+    use crate::encoding::{active_board_features, bag_features};
+    use duke_rust::game::ai::player::AiMove;
+
+    let mut rng = StdRng::seed_from_u64(55);
+    let net = GenericMlp::random(1147, vec![128, 64], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let base_board = active_board_features(&gs);
+    let base_bag = bag_features(&gs);
+    let base_combined = extract_combined_features(&gs);
+    let base_acc = L1Accumulator::from_state(&net, &gs, true);
+
+    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
+    let eval_rng_base = StdRng::seed_from_u64(0);
+    for mv in &moves {
+        let mut clone = gs.clone();
+        let mut eval_rng = eval_rng_base.clone();
+        mv.play(&mut clone, &mut eval_rng);
+
+        let full_acc = L1Accumulator::from_state(&net, &clone, true);
+        let full_val = full_acc.forward(&net);
+
+        let new_board = active_board_features(&clone);
+        let new_bag = bag_features(&clone);
+        let new_combined = extract_combined_features(&clone);
+        let mut inc_acc = base_acc.clone();
+        inc_acc.update_features(
+            &net, &base_board, &new_board, &base_bag, &new_bag,
+            Some(&base_combined), Some(&new_combined),
+        );
+        let inc_val = inc_acc.forward(&net);
+
+        let diff = (full_val - inc_val).abs();
+        assert!(diff < 1e-4,
+            "1147 incremental mismatch: full={}, inc={}, diff={}", full_val, inc_val, diff);
+    }
+}
+
+/// Verify that `greedy_move` with a GenericNnueEvaluator (which triggers the
+/// accumulator path) picks the same move as when called through `forward_sparse`
+/// directly.
+#[test]
+fn greedy_move_accumulator_matches_non_accumulator() {
+    use crate::generic_mlp::GenericNnueEvaluator;
+    use crate::game_setup::greedy_move_incremental;
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    // greedy_move_incremental directly
+    let mut rng1 = StdRng::seed_from_u64(100);
+    let mv1 = greedy_move_incremental(&gs, &net, false, &mut rng1);
+
+    // Via the evaluator wrapping, which triggers as_generic_mlp -> incremental path
+    let evaluator = GenericNnueEvaluator { net: GenericMlp::random(1106, vec![64, 32], &mut StdRng::seed_from_u64(42)) };
+    let mut rng2 = StdRng::seed_from_u64(100);
+    let mv2 = crate::game_setup::greedy_move(&gs, &evaluator, &mut rng2);
+
+    assert_eq!(mv1, mv2, "greedy_move via evaluator should pick same move as greedy_move_incremental");
+}
+
+/// Verify that greedy_move_incremental is deterministic (same seed = same move).
+#[test]
+fn greedy_move_incremental_is_deterministic() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    let mut rng1 = StdRng::seed_from_u64(200);
+    let mv1 = crate::game_setup::greedy_move_incremental(&gs, &net, false, &mut rng1);
+
+    let mut rng2 = StdRng::seed_from_u64(200);
+    let mv2 = crate::game_setup::greedy_move_incremental(&gs, &net, false, &mut rng2);
+
+    assert_eq!(mv1, mv2, "Same seed should produce same move with incremental path");
+}

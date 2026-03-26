@@ -16,6 +16,9 @@ use duke_rust::game::units;
 
 use duke_rust::game::ai::heuristics::Heuristic;
 
+use crate::encoding::{active_board_features, bag_features};
+use crate::generic_mlp::{GenericMlp, L1Accumulator};
+use crate::learned_heuristic::{extract_combined_features, NUM_COMBINED_FEATURES};
 use crate::nnue::NnueEvaluator;
 
 /// Safety limit: if a game exceeds this many turns, force a draw.
@@ -27,6 +30,14 @@ const MAX_TURNS: u32 = 500;
 /// The scale is arbitrary — only relative ordering matters for move selection.
 pub trait GameEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32;
+
+    /// If this evaluator wraps a `GenericMlp` with sparse NNUE-style inputs,
+    /// return a reference to the network and whether combined features are
+    /// included (true for 1147-input, false for 1106-input models).
+    ///
+    /// Used by `greedy_move` to enable the incremental L1 accumulator path.
+    /// Default implementation returns `None` (no accumulator support).
+    fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> { None }
 }
 
 impl GameEvaluator for NnueEvaluator {
@@ -195,8 +206,17 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
 /// Pick the move that minimizes the opponent's value (= maximizes our value).
 ///
 /// Works with any `GameEvaluator` implementation (NNUE, heuristic, etc.).
+/// When the evaluator wraps a sparse `GenericMlp` (1106 or 1147 inputs),
+/// automatically uses the incremental L1 accumulator path for faster
+/// candidate evaluation.
+///
 /// Panics if the game state has no legal moves.
 pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &GameState, evaluator: &E, rng: &mut impl Rng) -> AiMove {
+    // Check if the evaluator supports the incremental accumulator path.
+    if let Some((net, include_combined)) = evaluator.as_generic_mlp() {
+        return greedy_move_incremental(gs, net, include_combined, rng);
+    }
+
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
     assert!(!moves.is_empty(), "greedy_move called with no legal moves");
     moves.shuffle(rng);
@@ -212,6 +232,79 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &GameState, evaluator: &E, rng
         mv.play(&mut clone, &mut eval_rng);
         let prediction = evaluator.evaluate(&clone);
         // Negate: opponent's score is negative of ours.
+        let score = -(prediction as f64);
+        if score > best_score {
+            best_score = score;
+            best_move = Some(mv.clone());
+        }
+    }
+
+    best_move.unwrap()
+}
+
+/// Pick the best move using incremental L1 accumulator updates.
+///
+/// Like `greedy_move`, but exploits the fact that most candidate moves only
+/// change 2-4 features in the L1 input.  Builds the base L1 accumulator once
+/// from the current position, then for each candidate:
+///   1. Clone the state and play the move.
+///   2. Clone the base accumulator.
+///   3. Compute the feature diff (old vs new board/bag/combined features).
+///   4. Patch the accumulator with the diff.
+///   5. Complete the forward pass (ReLU + remaining layers).
+///
+/// `include_combined` should be `true` for 1147-input models, `false` for 1106.
+pub fn greedy_move_incremental(
+    gs: &GameState,
+    net: &GenericMlp,
+    include_combined: bool,
+    rng: &mut impl Rng,
+) -> AiMove {
+    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
+    assert!(!moves.is_empty(), "greedy_move_incremental called with no legal moves");
+    moves.shuffle(rng);
+
+    // Build base accumulator and extract base features from the current position.
+    let base_acc = L1Accumulator::from_state(net, gs, include_combined);
+    let base_board = active_board_features(gs);
+    let base_bag = bag_features(gs);
+    let base_combined: Option<[f64; NUM_COMBINED_FEATURES]> = if include_combined {
+        Some(extract_combined_features(gs))
+    } else {
+        None
+    };
+
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_move = None;
+
+    let base_eval_rng = StdRng::seed_from_u64(0);
+    for mv in &moves {
+        let mut clone = gs.clone();
+        let mut eval_rng = base_eval_rng.clone();
+        mv.play(&mut clone, &mut eval_rng);
+
+        // Extract features from the post-move state.
+        let new_board = active_board_features(&clone);
+        let new_bag = bag_features(&clone);
+        let new_combined: Option<[f64; NUM_COMBINED_FEATURES]> = if include_combined {
+            Some(extract_combined_features(&clone))
+        } else {
+            None
+        };
+
+        // Clone the base accumulator and patch it with the diff.
+        let mut acc = base_acc.clone();
+        acc.update_features(
+            net,
+            &base_board,
+            &new_board,
+            &base_bag,
+            &new_bag,
+            base_combined.as_ref(),
+            new_combined.as_ref(),
+        );
+
+        let prediction = acc.forward(net);
         let score = -(prediction as f64);
         if score > best_score {
             best_score = score;
