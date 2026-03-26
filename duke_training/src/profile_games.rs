@@ -25,7 +25,8 @@ use duke_rust::game::state::GameResult;
 
 use duke_training::cli::parse_flag;
 use duke_training::game_setup::{create_bag, create_initial_state, GameEvaluator};
-use duke_training::generic_mlp::{GenericMlp, L1Accumulator, LoadedModel};
+use duke_training::generic_mlp::{GenericMlp, L1Accumulator};
+use duke_training::loaded_model::LoadedModel;
 
 /// Safety limit: if a game exceeds this many turns, force a draw.
 const MAX_TURNS: u32 = 500;

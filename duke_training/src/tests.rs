@@ -10,7 +10,7 @@ use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameSnapshot, GameState};
 use duke_rust::game::tile::Owner;
 
-use crate::encoding::{active_feature_indices, encode_state, encode_state_flat, BOARD_SIZE, NUM_PLANES};
+use crate::encoding::{active_feature_indices, encode_state_flat, BOARD_SIZE};
 use crate::fc_model::FcValueNetwork;
 use crate::fc_td_training::{FcTdTrainer, GameTrajectory};
 use crate::game_setup::{create_bag, create_initial_state, play_random_game};
@@ -51,37 +51,6 @@ fn create_test_state() -> GameState {
 }
 
 // ── encoding tests ──────────────────────────────────────────────────────
-
-#[test]
-fn encode_state_has_correct_shape() {
-    let gs = create_test_state();
-    let device = Default::default();
-    let tensor = encode_state::<TestBackend>(&gs, &device);
-    let dims = tensor.dims();
-    assert_eq!(dims, [NUM_PLANES, BOARD_SIZE, BOARD_SIZE]);
-}
-
-#[test]
-fn encode_state_initial_board_has_six_tiles() {
-    // Initial board has 3 tiles per player (Duke + 2 Footmen = 6 total).
-    // Sum of all tile-type planes (0..25) should equal 6.0.
-    let gs = create_test_state();
-    let device = Default::default();
-    let tensor = encode_state::<TestBackend>(&gs, &device);
-
-    // Planes 0..26 are tile-type planes
-    let tile_planes = tensor.clone().slice([0..26]);
-    let total: f32 = tile_planes
-        .sum()
-        .into_data()
-        .to_vec::<f32>()
-        .expect("to_vec")[0];
-    assert!(
-        (total - 6.0).abs() < 1e-5,
-        "Expected 6 tiles on initial board, got {}",
-        total
-    );
-}
 
 #[test]
 fn encode_state_is_relative_to_current_player() {
@@ -138,66 +107,6 @@ fn encode_state_is_relative_to_current_player() {
         "After move, BottomPlayer's 3 tiles should be in my planes, got {}", my_planes_sum2);
     assert!((opp_planes_sum2 - 3.0).abs() < 1e-5,
         "After move, TopPlayer's 3 tiles should be in opponent planes, got {}", opp_planes_sum2);
-}
-
-#[test]
-fn encode_state_side_planes_are_correct() {
-    // Initially all tiles are on Initial side.
-    // Plane 26 (current player initial) and 28 (opponent initial) should have values.
-    // Plane 27 (current player flipped) and 29 (opponent flipped) should be zero.
-    let gs = create_test_state();
-    let device = Default::default();
-    let tensor = encode_state::<TestBackend>(&gs, &device);
-
-    let plane_27_sum: f32 = tensor
-        .clone()
-        .slice([27..28])
-        .sum()
-        .into_data()
-        .to_vec::<f32>()
-        .expect("to_vec")[0];
-    assert!(
-        plane_27_sum.abs() < 1e-5,
-        "Plane 27 (current player flipped) should be zero on initial board, got {}",
-        plane_27_sum
-    );
-
-    let plane_29_sum: f32 = tensor
-        .clone()
-        .slice([29..30])
-        .sum()
-        .into_data()
-        .to_vec::<f32>()
-        .expect("to_vec")[0];
-    assert!(
-        plane_29_sum.abs() < 1e-5,
-        "Plane 29 (opponent flipped) should be zero on initial board, got {}",
-        plane_29_sum
-    );
-
-    let plane_26_sum: f32 = tensor
-        .clone()
-        .slice([26..27])
-        .sum()
-        .into_data()
-        .to_vec::<f32>()
-        .expect("to_vec")[0];
-    assert!(
-        plane_26_sum > 0.0,
-        "Plane 26 (current player initial) should have non-zero values"
-    );
-
-    let plane_28_sum: f32 = tensor
-        .clone()
-        .slice([28..29])
-        .sum()
-        .into_data()
-        .to_vec::<f32>()
-        .expect("to_vec")[0];
-    assert!(
-        plane_28_sum > 0.0,
-        "Plane 28 (opponent initial) should have non-zero values"
-    );
 }
 
 // ── fc_td_training tests ────────────────────────────────────────────────
@@ -306,30 +215,6 @@ fn terminal_state_target_is_correct() {
 }
 
 // ── NNUE / FC model tests ────────────────────────────────────────────────
-
-#[test]
-fn active_features_matches_encoding() {
-    use crate::encoding::BOARD_FEATURES;
-    let gs = create_test_state();
-    let device = Default::default();
-    let tensor = encode_state::<TestBackend>(&gs, &device);
-    let flat: Vec<f32> = tensor.reshape([BOARD_FEATURES as i32]).into_data().to_vec().expect("flat");
-
-    let active = active_feature_indices(&gs);
-    // Every active index should have a 1.0 in the flat tensor
-    for &idx in &active {
-        assert_eq!(flat[idx], 1.0, "Feature {} should be 1.0", idx);
-    }
-    // Count of 1.0s in tensor should equal number of active features
-    let ones_count = flat.iter().filter(|&&v| v == 1.0).count();
-    assert_eq!(
-        ones_count,
-        active.len(),
-        "Mismatch: {} ones in tensor but {} active features",
-        ones_count,
-        active.len()
-    );
-}
 
 #[test]
 fn fc_model_forward_produces_valid_output() {
@@ -466,74 +351,6 @@ fn accumulator_remove_feature_matches_full() {
             inc_acc.hidden[i]
         );
     }
-}
-
-#[test]
-fn encode_state_flat_board_portion_matches_encode_state() {
-    use crate::encoding::BOARD_FEATURES;
-    let device = Default::default();
-    let gs = create_test_state();
-
-    // 3D encoding = board only (1080)
-    let tensor_3d = encode_state::<TestBackend>(&gs, &device);
-    let flat_from_3d: Vec<f32> = tensor_3d
-        .reshape([BOARD_FEATURES as i32])
-        .into_data()
-        .to_vec()
-        .expect("reshape");
-
-    // Flat encoding = board (1080) + bag (26) = 1106
-    let tensor_flat = encode_state_flat::<TestBackend>(&gs, &device);
-    let flat_direct: Vec<f32> = tensor_flat
-        .into_data()
-        .to_vec()
-        .expect("flat");
-
-    // Board portion should match
-    for i in 0..BOARD_FEATURES {
-        assert_eq!(
-            flat_from_3d[i], flat_direct[i],
-            "Board feature mismatch at index {}", i
-        );
-    }
-
-    // Bag portion should have non-zero values (initial state has tiles in bag)
-    let bag_sum: f32 = flat_direct[BOARD_FEATURES..].iter().sum();
-    assert!(bag_sum > 0.0, "Bag features should be non-zero for initial state");
-}
-
-#[test]
-fn active_features_matches_encoding_after_moves() {
-    // Test encoding consistency after several moves (flipped tiles, captures)
-    let gs = create_test_state();
-    let mut game = gs;
-    let ai = StupidSyncAi {};
-    let mut rng = StdRng::seed_from_u64(42);
-    let device = Default::default();
-
-    // Play a few moves to get flipped tiles
-    for _ in 0..6 {
-        if game.game_result() != GameResult::Ongoing {
-            break;
-        }
-        ai.play_next_move(&mut rng, &mut game);
-    }
-
-    let tensor = encode_state::<TestBackend>(&game, &device);
-    let flat: Vec<f32> = tensor.reshape([crate::encoding::BOARD_FEATURES as i32]).into_data().to_vec().expect("flat");
-
-    let active = active_feature_indices(&game);
-    for &idx in &active {
-        assert_eq!(flat[idx], 1.0, "Feature {} should be 1.0 after moves", idx);
-    }
-    let ones_count = flat.iter().filter(|&&v| v == 1.0).count();
-    assert_eq!(
-        ones_count,
-        active.len(),
-        "After moves: {} ones in tensor but {} active features",
-        ones_count,
-        active.len()
-    );
 }
 
 #[test]
@@ -1681,7 +1498,7 @@ mod manhattan_tests {
 mod board_control_tests {
     use super::*;
     use std::sync::Arc;
-    use crate::learned_heuristic::board_control_features;
+    use crate::learned_heuristic::board_control_features_with_duke_mob;
 
     #[test]
     fn simple_two_dukes() {
@@ -1690,7 +1507,7 @@ mod board_control_tests {
             (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
         ], Owner::TopPlayer);
 
-        let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features(&gs);
+        let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features_with_duke_mob(&gs).0;
         assert_eq!(my_moves, 5.0);
         assert_eq!(opp_moves, 5.0);
         assert_eq!(my_reach, 5.0);
@@ -1706,7 +1523,7 @@ mod board_control_tests {
             (coord(0, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
         ], Owner::TopPlayer);
 
-        let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features(&gs);
+        let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features_with_duke_mob(&gs).0;
         assert_eq!(my_moves, 7.0, "3 duke + 4 footman");
         assert_eq!(opp_moves, 5.0);
         assert_eq!(my_reach, 6.0, "6 unique squares (duke and footman share (2,3))");
@@ -1726,7 +1543,7 @@ mod board_control_tests {
             (coord(3, 5), bottom_duke),
         ], Owner::TopPlayer);
 
-        let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features(&gs);
+        let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features_with_duke_mob(&gs).0;
         assert_eq!(my_moves, 5.0);
         assert_eq!(opp_moves, 5.0);
         assert_eq!(my_reach, 5.0);
@@ -1753,7 +1570,7 @@ mod board_control_tests {
             TileBag::new(vec![]),  // BottomPlayer empty bag
         );
 
-        let [my_moves, _opp_moves, my_reach, _opp_reach, _contested, ..] = board_control_features(&gs);
+        let [my_moves, _opp_moves, my_reach, _opp_reach, _contested, ..] = board_control_features_with_duke_mob(&gs).0;
         // TopPlayer duke (Initial) at (2,0) slides left/right: x=0,1 (left 2) + x=3,4,5 (right 3) = 5.
         // Placement moves should NOT be counted.
         assert_eq!(my_moves, 5.0,
@@ -1789,7 +1606,7 @@ mod board_control_tests {
             (coord(4, 2), PlacedTile::new(Owner::BottomPlayer, units::footman())),
         ], Owner::TopPlayer);
 
-        let [my_moves, _opp_moves, my_reach, _opp_reach, _contested, ..] = board_control_features(&gs);
+        let [my_moves, _opp_moves, my_reach, _opp_reach, _contested, ..] = board_control_features_with_duke_mob(&gs).0;
 
         // Duke (Initial) at (2,0) slides left/right: x=0,1 (left 2) + x=3,4,5 (right 3) = 5 duke moves.
         // Bowman (Flipped/B) at (3,3):
@@ -1826,7 +1643,7 @@ mod board_control_tests {
             (coord(5, 3), PlacedTile::new(Owner::BottomPlayer, units::footman())),
         ], Owner::TopPlayer);
 
-        let feats = board_control_features(&gs);
+        let feats = board_control_features_with_duke_mob(&gs).0;
         let my_threatened = feats[6];
         let opp_threatened = feats[8];
 
@@ -1898,7 +1715,7 @@ mod board_control_tests {
             (coord(5, 3), PlacedTile::new(Owner::BottomPlayer, units::footman())),
         ], Owner::TopPlayer);
 
-        let feats = board_control_features(&gs);
+        let feats = board_control_features_with_duke_mob(&gs).0;
         let my_threatened = feats[6];
         let opp_threatened = feats[8];
 
@@ -1983,9 +1800,9 @@ fn tile_type_try_from_invalid_returns_error() {
 // ── extract_combined_features layout tests ──────────────────────────────
 
 use crate::learned_heuristic::{
-    extract_combined_features, extract_cheap_features, discard_vector,
-    NUM_COMBINED_FEATURES, NUM_CHEAP_FEATURES,
-    manhattan_distance_features, board_control_features, duke_mobility_no_guard,
+    extract_combined_features, discard_vector,
+    NUM_COMBINED_FEATURES,
+    manhattan_distance_features, board_control_features_with_duke_mob,
 };
 
 #[test]
@@ -2004,8 +1821,7 @@ fn extract_combined_features_length_and_layout() {
 
     // Verify sub-array placement matches individual extractions
     let manhattan = manhattan_distance_features(&gs);
-    let control = board_control_features(&gs);
-    let duke_mob = duke_mobility_no_guard(&gs);
+    let (control, duke_mob) = board_control_features_with_duke_mob(&gs);
     let discards = discard_vector(&gs);
 
     for i in 0..4 {
@@ -2024,52 +1840,6 @@ fn extract_combined_features_length_and_layout() {
         assert_eq!(combined[15 + i], discards[i],
             "combined[{}] should match discards[{}]: {} vs {}", 15 + i, i, combined[15 + i], discards[i]);
     }
-}
-
-// ── extract_cheap_features tests ────────────────────────────────────────
-
-#[test]
-fn extract_cheap_features_basic() {
-    // TopPlayer: duke at (2,2), footman at (2,3) (adjacent, center)
-    // BottomPlayer: duke at (4,4), footman at (5,5) (not adjacent, not center)
-    let gs = snapshot_state_with_bags(
-        vec![
-            (coord(2, 2), PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (coord(2, 3), PlacedTile::new(Owner::TopPlayer, units::footman())),
-            (coord(4, 4), PlacedTile::new(Owner::BottomPlayer, units::duke())),
-            (coord(5, 5), PlacedTile::new(Owner::BottomPlayer, units::footman())),
-        ],
-        Owner::TopPlayer,
-        TileBag::new(vec![]),
-        TileBag::new(vec![]),
-    );
-
-    let f = extract_cheap_features(&gs);
-    assert_eq!(f.len(), NUM_CHEAP_FEATURES);
-    assert_eq!(NUM_CHEAP_FEATURES, 15);
-
-    // [0] my_tile_count = 2 (duke + footman)
-    assert_eq!(f[0], 2.0, "my_tile_count");
-    // [1] opp_tile_count = 2
-    assert_eq!(f[1], 2.0, "opp_tile_count");
-    // [2] my_bag_size = 0
-    assert_eq!(f[2], 0.0, "my_bag_size");
-    // [3] opp_bag_size = 0
-    assert_eq!(f[3], 0.0, "opp_bag_size");
-    // [4] my_discard_count = 0
-    assert_eq!(f[4], 0.0, "my_discard_count");
-    // [5] opp_discard_count = 0
-    assert_eq!(f[5], 0.0, "opp_discard_count");
-    // [6] my_adjacency: duke(2,2) and footman(2,3) are adjacent => 1
-    assert_eq!(f[6], 1.0, "my_adjacency");
-    // [7] opp_adjacency: duke(4,4) and footman(5,5) are NOT adjacent (Manhattan=2)
-    assert_eq!(f[7], 0.0, "opp_adjacency");
-    // [8] my_center_control: duke(2,2) is center, footman(2,3) is center => 2
-    assert_eq!(f[8], 2.0, "my_center_control");
-    // [9] opp_center_control: duke(4,4) not in center, footman(5,5) not in center => 0
-    assert_eq!(f[9], 0.0, "opp_center_control");
-    // [14] bias = always 1.0
-    assert_eq!(f[14], 1.0, "bias");
 }
 
 // ── discard_vector per-tile-type tests ──────────────────────────────────
@@ -2581,123 +2351,6 @@ fn l1_accumulator_incremental_matches_full_1147() {
         assert!(diff < 1e-4,
             "1147 incremental mismatch: full={}, inc={}, diff={}", full_val, inc_val, diff);
     }
-}
-
-/// Verify that `forward_batch` produces the same results as calling `forward`
-/// individually for each accumulator.
-#[test]
-fn forward_batch_matches_individual_forward() {
-    use crate::encoding::{active_board_features, bag_features};
-    use duke_rust::game::ai::player::AiMove;
-
-    let mut rng = StdRng::seed_from_u64(42);
-    let net = GenericMlp::random(1106, vec![128, 32], &mut rng);
-    let bag = create_bag();
-    let gs = create_initial_state(&bag);
-
-    // Build accumulators for each candidate move
-    let base_acc = L1Accumulator::from_state(&net, &gs, false);
-    let base_board = active_board_features(&gs);
-    let base_bag = bag_features(&gs);
-
-    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
-    assert!(!moves.is_empty());
-
-    let eval_rng_base = StdRng::seed_from_u64(0);
-    let mut accumulators = Vec::new();
-    for mv in &moves {
-        let mut clone = gs.clone();
-        let mut eval_rng = eval_rng_base.clone();
-        mv.play(&mut clone, &mut eval_rng);
-
-        let new_board = active_board_features(&clone);
-        let new_bag = bag_features(&clone);
-        let mut acc = base_acc.clone();
-        acc.update_features(&net, &base_board, &new_board, &base_bag, &new_bag, None, None);
-        accumulators.push(acc);
-    }
-
-    // Get individual results
-    let individual: Vec<f32> = accumulators.iter().map(|acc| acc.forward(&net)).collect();
-
-    // Get batch results
-    let batch = net.forward_batch(&accumulators);
-
-    assert_eq!(individual.len(), batch.len(), "Length mismatch");
-    for (i, (ind, bat)) in individual.iter().zip(batch.iter()).enumerate() {
-        let diff = (ind - bat).abs();
-        assert!(diff < 1e-5,
-            "forward_batch mismatch at index {}: individual={}, batch={}, diff={}",
-            i, ind, bat, diff);
-    }
-}
-
-/// Same batch test but with 1147-input model (combined features appended).
-#[test]
-fn forward_batch_matches_individual_forward_1147() {
-    use crate::encoding::{active_board_features, bag_features};
-    use duke_rust::game::ai::player::AiMove;
-
-    let mut rng = StdRng::seed_from_u64(99);
-    let net = GenericMlp::random(1147, vec![128, 64], &mut rng);
-    let bag = create_bag();
-    let gs = create_initial_state(&bag);
-
-    let base_acc = L1Accumulator::from_state(&net, &gs, true);
-    let base_board = active_board_features(&gs);
-    let base_bag = bag_features(&gs);
-    let base_combined = extract_combined_features(&gs);
-
-    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
-    let eval_rng_base = StdRng::seed_from_u64(0);
-    let mut accumulators = Vec::new();
-    for mv in &moves {
-        let mut clone = gs.clone();
-        let mut eval_rng = eval_rng_base.clone();
-        mv.play(&mut clone, &mut eval_rng);
-
-        let new_board = active_board_features(&clone);
-        let new_bag = bag_features(&clone);
-        let new_combined = extract_combined_features(&clone);
-        let mut acc = base_acc.clone();
-        acc.update_features(
-            &net, &base_board, &new_board, &base_bag, &new_bag,
-            Some(&base_combined), Some(&new_combined),
-        );
-        accumulators.push(acc);
-    }
-
-    let individual: Vec<f32> = accumulators.iter().map(|acc| acc.forward(&net)).collect();
-    let batch = net.forward_batch(&accumulators);
-
-    assert_eq!(individual.len(), batch.len());
-    for (i, (ind, bat)) in individual.iter().zip(batch.iter()).enumerate() {
-        let diff = (ind - bat).abs();
-        assert!(diff < 1e-5,
-            "1147 forward_batch mismatch at index {}: individual={}, batch={}, diff={}",
-            i, ind, bat, diff);
-    }
-}
-
-/// Verify that forward_batch handles edge cases: empty input and single accumulator.
-#[test]
-fn forward_batch_edge_cases() {
-    let mut rng = StdRng::seed_from_u64(42);
-    let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
-    let bag = create_bag();
-    let gs = create_initial_state(&bag);
-
-    // Empty
-    let empty: Vec<f32> = net.forward_batch(&[]);
-    assert!(empty.is_empty());
-
-    // Single
-    let acc = L1Accumulator::from_state(&net, &gs, false);
-    let single_batch = net.forward_batch(&[acc.clone()]);
-    let single_individual = acc.forward(&net);
-    assert_eq!(single_batch.len(), 1);
-    assert!((single_batch[0] - single_individual).abs() < 1e-6,
-        "Single-element batch should match individual forward");
 }
 
 /// Verify that `greedy_move` with a GenericNnueEvaluator (which triggers the
@@ -3337,13 +2990,13 @@ fn regression_accumulator_save_load_roundtrip() {
 
 #[test]
 fn board_control_features_initial_board_expected_values() {
-    use crate::learned_heuristic::board_control_features;
+    use crate::learned_heuristic::board_control_features_with_duke_mob;
 
     // On an initial board (symmetric setup), both players should have similar
     // control features. The board_control_features function returns 9 values.
     let bag = create_bag();
     let gs = create_initial_state(&bag);
-    let control = board_control_features(&gs);
+    let control = board_control_features_with_duke_mob(&gs).0;
 
     // All values should be finite and non-negative
     for (i, &val) in control.iter().enumerate() {

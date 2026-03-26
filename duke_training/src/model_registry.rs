@@ -7,6 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::time::SystemTime;
 
 use crate::generic_mlp::GenericMlp;
+use crate::match_runner::win_rate;
 use crate::nnue::{NnueWeights, NUM_FEATURES};
 
 /// Format the current time as an ISO 8601 string (UTC).
@@ -296,13 +297,8 @@ impl ModelRegistry {
             .benchmark_date
             .clone()
             .unwrap_or_else(|| now_iso8601());
-        let win_rate = result.win_rate.unwrap_or_else(|| {
-            let total = result.num_games as f64;
-            if total > 0.0 {
-                (result.wins as f64 + 0.5 * result.ties as f64) / total
-            } else {
-                0.0
-            }
+        let wr = result.win_rate.unwrap_or_else(|| {
+            win_rate(result.wins, result.ties, result.num_games)
         });
 
         self.conn.execute(
@@ -317,7 +313,7 @@ impl ModelRegistry {
                 result.wins as i64,
                 result.losses as i64,
                 result.ties as i64,
-                win_rate,
+                wr,
                 result.elo,
                 now,
             ],

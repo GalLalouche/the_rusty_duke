@@ -38,7 +38,7 @@ use duke_training::game_setup::{
     create_bag, create_initial_state, greedy_move, GameEvaluator, StaticHeuristicEvaluator,
 };
 use duke_training::learned_heuristic::NUM_COMBINED_FEATURES;
-use duke_training::match_runner::{run_matches, Player};
+use duke_training::match_runner::{run_matches, win_rate, Player};
 use duke_training::nnue::{NnueEvaluator, NnueWeights, NUM_FEATURES};
 
 // ── Flatten / unflatten ──────────────────────────────────────────────────
@@ -123,9 +123,9 @@ const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES; // 11
 
 use duke_training::generic_mlp::{
     GenericMlp, CombinedNetEvaluator, GuardFeatureEvaluator,
-    GenericNnueEvaluator, GenericAppendedEvaluator, LoadedModel,
-    NUM_GUARD_ALL_FEATURES,
+    GenericNnueEvaluator, GenericAppendedEvaluator,
 };
+use duke_training::loaded_model::{LoadedModel, NUM_GUARD_ALL_FEATURES};
 use duke_training::model_registry::{ModelRegistry, TrainingInfo, BenchmarkRecord};
 
 
@@ -281,6 +281,7 @@ impl ProfileStats {
 // ── Shared ES training loop ──────────────────────────────────────────────
 
 /// Configuration for the ES training loop.
+#[derive(Clone, Copy)]
 struct EsConfig<'a> {
     pop_size: usize,
     games_per_eval: u32,
@@ -560,7 +561,7 @@ fn run_es_training_loop(
             last_eval_ties = eval_result.ties;
 
             // Adaptive sigma: track improvement
-            let eval_wr = (eval_result.player_a_wins as f32 + 0.5 * eval_result.ties as f32) / config.eval_games as f32;
+            let eval_wr = win_rate(eval_result.player_a_wins, eval_result.ties, config.eval_games) as f32;
             if eval_wr > best_eval_wr + 0.01 {
                 best_eval_wr = eval_wr;
                 evals_without_improvement = 0;
@@ -617,121 +618,25 @@ fn run_es_training_loop(
     }
 }
 
-// ── Thin entry points that configure closures for the shared loop ────────
+// ── Thin entry point that configures closures for the shared loop ─────────
 
-/// Run the ES training loop with dense features (combined 41 or guard 65) as input.
-fn run_dense_training(
-    feature_mode: DenseFeatureMode,
-    hidden_layers: &[usize],
-    pop_size: usize,
-    games_per_eval: u32,
-    sigma: f32,
-    lr: f32,
-    iterations: u32,
-    eval_interval: u32,
-    eval_games: u32,
-    checkpoint_dir: &str,
-    gs: &GameState,
-    time_limit_secs: Option<u64>,
-    resume_path: Option<&str>,
-    seed: u64,
-    initial_opponent_epsilon: f32,
-    training_opponent: &TrainingOpponent,
-    benchmark_opponent: &TrainingOpponent,
-    benchmark_label: &str,
-    profile: bool,
-) -> TrainingResult {
-    let input_size = feature_mode.input_size();
-    let hidden_layers_owned = hidden_layers.to_vec();
-
-    let init_weights = if let Some(path) = resume_path {
-        let net = GenericMlp::load(path).expect("Failed to load combined net weights");
-        assert_eq!(net.input_size, input_size, "input_size mismatch");
-        assert_eq!(net.hidden_layers, hidden_layers, "hidden_layers mismatch");
-        println!("  resuming from: {}", path);
-        net.weights
-    } else {
-        let mut rng = StdRng::seed_from_u64(seed);
-        println!("  starting from random weights");
-        GenericMlp::random(input_size, hidden_layers.to_vec(), &mut rng).weights
-    };
-
-    let tmp_net = GenericMlp::from_flat(vec![0.0; init_weights.len()], input_size, hidden_layers.to_vec());
-    let arch_desc = tmp_net.arch_string();
-    let mode_label = feature_mode.label();
-
-    // Guard features are expensive (guard checking per eval), use 50-turn cap
-    let train_max_turns = match feature_mode {
-        DenseFeatureMode::Guard => 50,
-        DenseFeatureMode::Combined => 200,
-    };
-
-    let make_evaluator = move |weights: &[f32]| -> Box<dyn GameEvaluator + Sync> {
-        let net = GenericMlp::from_flat(weights.to_vec(), input_size, hidden_layers_owned.clone());
-        match feature_mode {
-            DenseFeatureMode::Combined => Box::new(CombinedNetEvaluator::new(net)),
-            DenseFeatureMode::Guard => Box::new(GuardFeatureEvaluator::new(net)),
-        }
-    };
-
-    let hl_for_save = hidden_layers.to_vec();
-    let save_checkpoint = move |weights: &[f32], path: &str| {
-        let net = GenericMlp::from_flat(weights.to_vec(), input_size, hl_for_save.clone());
-        let full_path = format!("{}.gmlp", path);
-        net.save(&full_path).expect("Failed to save checkpoint");
-    };
-
-    let config = EsConfig {
-        pop_size,
-        games_per_eval,
-        sigma,
-        lr,
-        iterations,
-        eval_interval,
-        eval_games,
-        checkpoint_dir,
-        gs,
-        time_limit_secs,
-        seed,
-        initial_opponent_epsilon,
-        training_opponent,
-        train_max_turns,
-        benchmark_opponent,
-        benchmark_label,
-        profile,
-    };
-
-    run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, mode_label, &arch_desc)
-}
-
-/// Run the ES training loop using GenericMlp with sparse NNUE features.
-/// `input_size` should be NUM_FEATURES (1106) for standard or APPENDED_INPUT_SIZE (1147) for appended.
-/// `include_combined` controls whether combined features are appended.
-fn run_generic_sparse_training(
+/// Run the ES training loop with a GenericMlp network.
+///
+/// Unified entry point for all GenericMlp modes (dense 41/65, sparse 1106/1147).
+/// The caller provides the pre-built `EsConfig` plus GenericMlp-specific parameters:
+/// - `input_size`: total input dimension
+/// - `hidden_layers`: hidden layer sizes
+/// - `make_evaluator`: closure that wraps a flat weight vec into a `GameEvaluator`
+/// - `mode_label`: human-readable label for log/checkpoint naming
+/// - `resume_path`: optional path to resume from
+fn run_gmlp_training(
+    config: &EsConfig,
     input_size: usize,
-    include_combined: bool,
     hidden_layers: &[usize],
-    pop_size: usize,
-    games_per_eval: u32,
-    sigma: f32,
-    lr: f32,
-    iterations: u32,
-    eval_interval: u32,
-    eval_games: u32,
-    checkpoint_dir: &str,
-    gs: &GameState,
-    initial_opponent_epsilon: f32,
-    time_limit_secs: Option<u64>,
+    make_evaluator: impl Fn(&[f32]) -> Box<dyn GameEvaluator + Sync> + Sync,
+    mode_label: &str,
     resume_path: Option<&str>,
-    seed: u64,
-    training_opponent: &TrainingOpponent,
-    benchmark_opponent: &TrainingOpponent,
-    benchmark_label: &str,
-    profile: bool,
 ) -> TrainingResult {
-    let hidden_layers_owned = hidden_layers.to_vec();
-    let mode_name = if include_combined { "Appended" } else { "NNUE" };
-
     let init_weights = if let Some(path) = resume_path {
         let net = GenericMlp::load(path).expect("Failed to load weights");
         assert_eq!(net.input_size, input_size, "input_size mismatch");
@@ -739,26 +644,13 @@ fn run_generic_sparse_training(
         println!("  resuming from: {}", path);
         net.weights
     } else {
-        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rng = StdRng::seed_from_u64(config.seed);
         println!("  starting from random weights");
         GenericMlp::random(input_size, hidden_layers.to_vec(), &mut rng).weights
     };
 
     let tmp_net = GenericMlp::from_flat(vec![0.0; init_weights.len()], input_size, hidden_layers.to_vec());
     let arch_desc = tmp_net.arch_string();
-
-    // Appended mode uses 50-turn cap because combined feature extraction
-    // is expensive (involves full move generation per eval).
-    let train_max_turns = if include_combined { 50 } else { 200 };
-
-    let make_evaluator = move |weights: &[f32]| -> Box<dyn GameEvaluator + Sync> {
-        let net = GenericMlp::from_flat(weights.to_vec(), input_size, hidden_layers_owned.clone());
-        if include_combined {
-            Box::new(GenericAppendedEvaluator { net })
-        } else {
-            Box::new(GenericNnueEvaluator { net })
-        }
-    };
 
     let hl_for_save = hidden_layers.to_vec();
     let save_checkpoint = move |weights: &[f32], path: &str| {
@@ -767,27 +659,133 @@ fn run_generic_sparse_training(
         net.save(&full_path).expect("Failed to save checkpoint");
     };
 
-    let config = EsConfig {
-        pop_size,
-        games_per_eval,
-        sigma,
-        lr,
-        iterations,
-        eval_interval,
-        eval_games,
-        checkpoint_dir,
-        gs,
-        time_limit_secs,
-        seed,
-        initial_opponent_epsilon,
-        training_opponent,
-        train_max_turns,
-        benchmark_opponent,
-        benchmark_label,
-        profile,
+    run_es_training_loop(config, &make_evaluator, &save_checkpoint, init_weights, mode_label, &arch_desc)
+}
+
+/// Run the legacy 2-hidden-layer NNUE training path.
+///
+/// Kept for backward compatibility with `.nnue` files. Supports `--self-play`
+/// and `--last-layer-only` modes that are specific to the fixed-depth NNUE architecture.
+fn run_legacy_nnue_training(
+    config: &EsConfig,
+    l1_size: usize,
+    l2_size: usize,
+    resume_path: Option<&str>,
+    self_play: bool,
+    last_layer_only: bool,
+    seed: u64,
+    training_opponent: &TrainingOpponent,
+) -> TrainingResult {
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    // In last-layer-only mode, we keep the frozen base weights separately
+    // and only optimize the last layer (l3_weight + l3_bias).
+    let base_weights: Option<NnueWeights> = if last_layer_only {
+        if resume_path.is_none() {
+            panic!("--last-layer-only requires --resume to provide frozen lower layers");
+        }
+        let weights = NnueWeights::load(resume_path.unwrap())
+            .expect("Failed to load NNUE weights");
+        assert_eq!(weights.l1_size, l1_size, "l1 mismatch");
+        assert_eq!(weights.l2_size, l2_size, "l2 mismatch");
+        Some(weights)
+    } else {
+        None
     };
 
-    run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, mode_name, &arch_desc)
+    let init_weights: Vec<f32> = if last_layer_only {
+        flatten_last_layer(base_weights.as_ref().unwrap())
+    } else if let Some(path) = resume_path {
+        let weights = NnueWeights::load(path).expect("Failed to load NNUE weights");
+        assert_eq!(weights.l1_size, l1_size, "l1 mismatch");
+        assert_eq!(weights.l2_size, l2_size, "l2 mismatch");
+        flatten_weights(&weights)
+    } else {
+        let weights = random_weights(l1_size, l2_size, &mut rng);
+        flatten_weights(&weights)
+    };
+
+    if resume_path.is_some() {
+        println!("  resuming from: {}", resume_path.unwrap());
+    } else {
+        println!("  starting from random weights");
+    }
+    if last_layer_only {
+        println!("  ** LAST-LAYER-ONLY mode: optimizing {} params (l3_weight + l3_bias) **", init_weights.len());
+    }
+    if self_play {
+        println!("  mode: self-play");
+    }
+
+    let arch_desc = format!("{}->{}->{}->1", NUM_FEATURES, l1_size, l2_size);
+
+    // For self-play, the opponent is the current unperturbed weights -- but the
+    // shared loop uses TrainingOpponent which is fixed. We handle self-play by
+    // wrapping it: we create an evaluator from the *current* weights each iteration.
+    // However, the shared loop doesn't support dynamic opponents (it snapshots the
+    // opponent once). Self-play in the legacy path was rarely used, so we keep it
+    // as a special case using the shared loop's Eval variant with a periodically
+    // stale snapshot (updated every eval interval via the checkpoint). For true
+    // self-play fidelity, users should switch to --layers which avoids this path.
+    //
+    // Actually, let's just handle the legacy case fully through the shared loop.
+    // Self-play will use the opponent from the start of training (base weights),
+    // which is close enough -- in practice self-play was barely used.
+
+    // Helper to reconstruct full weights from the optimized vector
+    let base_weights_clone = base_weights.clone();
+    let make_evaluator = move |w: &[f32]| -> Box<dyn GameEvaluator + Sync> {
+        let weights = if last_layer_only {
+            unflatten_last_layer(w, base_weights_clone.as_ref().unwrap())
+        } else {
+            unflatten_weights(w, l1_size, l2_size)
+        };
+        Box::new(NnueEvaluator::new(weights))
+    };
+
+    let base_weights_for_selfplay = base_weights.clone();
+    let base_weights_clone2 = base_weights;
+    let save_checkpoint = move |w: &[f32], path: &str| {
+        let weights = if last_layer_only {
+            unflatten_last_layer(w, base_weights_clone2.as_ref().unwrap())
+        } else {
+            unflatten_weights(w, l1_size, l2_size)
+        };
+        let full_path = format!("{}.nnue", path);
+        weights.save(&full_path).expect("Failed to save checkpoint");
+    };
+
+    // For self-play, create a training opponent from the initial weights
+    let self_play_eval: Option<NnueEvaluator> = if self_play {
+        let init_w = if last_layer_only {
+            // init_weights is truncated to last-layer only; need the full base weights
+            let full_base = base_weights_for_selfplay.as_ref().expect(
+                "BUG: --self-play with --last-layer-only requires --base-weights"
+            );
+            unflatten_last_layer(&init_weights, full_base)
+        } else {
+            unflatten_weights(&init_weights, l1_size, l2_size)
+        };
+        Some(NnueEvaluator::new(init_w))
+    } else {
+        None
+    };
+    let effective_opponent: TrainingOpponent = if self_play {
+        TrainingOpponent::Eval(self_play_eval.as_ref().unwrap())
+    } else {
+        match training_opponent {
+            TrainingOpponent::Random => TrainingOpponent::Random,
+            TrainingOpponent::Eval(e) => TrainingOpponent::Eval(*e),
+        }
+    };
+
+    // Build a local config that overrides training_opponent with the effective one
+    let legacy_config = EsConfig {
+        training_opponent: &effective_opponent,
+        ..*config
+    };
+
+    run_es_training_loop(&legacy_config, &make_evaluator, &save_checkpoint, init_weights, "NNUE-Legacy", &arch_desc)
 }
 
 /// Create randomly initialized weights using Kaiming-like initialization.
@@ -908,192 +906,123 @@ fn main() {
         panic!("--layers must specify at least one hidden layer size");
     }
 
+    // Create game state once, shared by all training modes
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
     // Track the file format for registry ("gmlp" or "nnue")
     let mut model_format = "gmlp";
 
     // Dispatch to combined-features mode (41 inputs)
     let training_result = if input_features == "combined" {
-        let bag = create_bag();
-        let gs = create_initial_state(&bag);
-        run_dense_training(
-            DenseFeatureMode::Combined,
-            &hidden_layers, pop_size, games_per_eval,
-            sigma, lr, iterations, eval_interval, eval_games,
-            &checkpoint_dir, &gs, time_limit_secs,
-            resume_path.as_deref(), seed, opponent_epsilon,
-            &training_opponent, &benchmark_opponent, benchmark_label,
-            profile,
+        let input_size = DenseFeatureMode::Combined.input_size();
+        let hl = hidden_layers.clone();
+        let config = EsConfig {
+            pop_size, games_per_eval, sigma, lr, iterations,
+            eval_interval, eval_games, checkpoint_dir: &checkpoint_dir,
+            gs: &gs, time_limit_secs, seed,
+            initial_opponent_epsilon: opponent_epsilon,
+            training_opponent: &training_opponent,
+            train_max_turns: 200,
+            benchmark_opponent: &benchmark_opponent,
+            benchmark_label, profile,
+        };
+        run_gmlp_training(
+            &config, input_size, &hidden_layers,
+            move |weights: &[f32]| {
+                let net = GenericMlp::from_flat(weights.to_vec(), input_size, hl.clone());
+                Box::new(CombinedNetEvaluator::new(net))
+            },
+            DenseFeatureMode::Combined.label(),
+            resume_path.as_deref(),
         )
     }
     // Dispatch to guard-features mode (65 inputs: 24 expensive + 41 combined)
     else if input_features == "guard" {
-        let bag = create_bag();
-        let gs = create_initial_state(&bag);
-        run_dense_training(
-            DenseFeatureMode::Guard,
-            &hidden_layers, pop_size, games_per_eval,
-            sigma, lr, iterations, eval_interval, eval_games,
-            &checkpoint_dir, &gs, time_limit_secs,
-            resume_path.as_deref(), seed, opponent_epsilon,
-            &training_opponent, &benchmark_opponent, benchmark_label,
-            profile,
+        let input_size = DenseFeatureMode::Guard.input_size();
+        let hl = hidden_layers.clone();
+        let config = EsConfig {
+            pop_size, games_per_eval, sigma, lr, iterations,
+            eval_interval, eval_games, checkpoint_dir: &checkpoint_dir,
+            gs: &gs, time_limit_secs, seed,
+            initial_opponent_epsilon: opponent_epsilon,
+            training_opponent: &training_opponent,
+            train_max_turns: 50,
+            benchmark_opponent: &benchmark_opponent,
+            benchmark_label, profile,
+        };
+        run_gmlp_training(
+            &config, input_size, &hidden_layers,
+            move |weights: &[f32]| {
+                let net = GenericMlp::from_flat(weights.to_vec(), input_size, hl.clone());
+                Box::new(GuardFeatureEvaluator::new(net))
+            },
+            DenseFeatureMode::Guard.label(),
+            resume_path.as_deref(),
         )
     }
     // Dispatch to appended-input mode if requested (uses GenericMlp with 1147 inputs)
     else if append_combined {
-        let bag = create_bag();
-        let gs = create_initial_state(&bag);
-        run_generic_sparse_training(
-            APPENDED_INPUT_SIZE, true, &hidden_layers,
+        let hl = hidden_layers.clone();
+        let config = EsConfig {
             pop_size, games_per_eval, sigma, lr, iterations,
-            eval_interval, eval_games, &checkpoint_dir, &gs,
-            opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
-            &training_opponent, &benchmark_opponent, benchmark_label,
-            profile,
+            eval_interval, eval_games, checkpoint_dir: &checkpoint_dir,
+            gs: &gs, time_limit_secs, seed,
+            initial_opponent_epsilon: opponent_epsilon,
+            training_opponent: &training_opponent,
+            train_max_turns: 50,
+            benchmark_opponent: &benchmark_opponent,
+            benchmark_label, profile,
+        };
+        run_gmlp_training(
+            &config, APPENDED_INPUT_SIZE, &hidden_layers,
+            move |weights: &[f32]| {
+                let net = GenericMlp::from_flat(weights.to_vec(), APPENDED_INPUT_SIZE, hl.clone());
+                Box::new(GenericAppendedEvaluator { net })
+            },
+            "Appended",
+            resume_path.as_deref(),
         )
     }
-    // Standard NNUE path (1106 sparse features) — generic (arbitrary depth)
+    // Standard NNUE path (1106 sparse features) -- generic (arbitrary depth)
     else if layers_str.is_some() || hidden_layers.len() > 2 {
-        let bag = create_bag();
-        let gs = create_initial_state(&bag);
-        run_generic_sparse_training(
-            NUM_FEATURES, false, &hidden_layers,
+        let hl = hidden_layers.clone();
+        let config = EsConfig {
             pop_size, games_per_eval, sigma, lr, iterations,
-            eval_interval, eval_games, &checkpoint_dir, &gs,
-            opponent_epsilon, time_limit_secs, resume_path.as_deref(), seed,
-            &training_opponent, &benchmark_opponent, benchmark_label,
-            profile,
+            eval_interval, eval_games, checkpoint_dir: &checkpoint_dir,
+            gs: &gs, time_limit_secs, seed,
+            initial_opponent_epsilon: opponent_epsilon,
+            training_opponent: &training_opponent,
+            train_max_turns: 200,
+            benchmark_opponent: &benchmark_opponent,
+            benchmark_label, profile,
+        };
+        run_gmlp_training(
+            &config, NUM_FEATURES, &hidden_layers,
+            move |weights: &[f32]| {
+                let net = GenericMlp::from_flat(weights.to_vec(), NUM_FEATURES, hl.clone());
+                Box::new(GenericNnueEvaluator { net })
+            },
+            "NNUE",
+            resume_path.as_deref(),
         )
     } else {
         // Legacy 2-hidden-layer NNUE path (kept for backward compatibility with .nnue files)
         model_format = "nnue";
-        let bag = create_bag();
-        let gs = create_initial_state(&bag);
-
-        let mut rng = StdRng::seed_from_u64(seed);
-
-        // In last-layer-only mode, we keep the frozen base weights separately
-        // and only optimize the last layer (l3_weight + l3_bias).
-        let base_weights: Option<NnueWeights> = if last_layer_only {
-            if resume_path.is_none() {
-                panic!("--last-layer-only requires --resume to provide frozen lower layers");
-            }
-            let weights = NnueWeights::load(resume_path.as_ref().unwrap())
-                .expect("Failed to load NNUE weights");
-            assert_eq!(weights.l1_size, l1_size, "l1 mismatch");
-            assert_eq!(weights.l2_size, l2_size, "l2 mismatch");
-            Some(weights)
-        } else {
-            None
-        };
-
-        let init_weights: Vec<f32> = if last_layer_only {
-            flatten_last_layer(base_weights.as_ref().unwrap())
-        } else if let Some(ref path) = resume_path {
-            let weights = NnueWeights::load(path).expect("Failed to load NNUE weights");
-            assert_eq!(weights.l1_size, l1_size, "l1 mismatch");
-            assert_eq!(weights.l2_size, l2_size, "l2 mismatch");
-            flatten_weights(&weights)
-        } else {
-            let weights = random_weights(l1_size, l2_size, &mut rng);
-            flatten_weights(&weights)
-        };
-
-        if resume_path.is_some() {
-            println!("  resuming from: {}", resume_path.as_ref().unwrap());
-        } else {
-            println!("  starting from random weights");
-        }
-        if last_layer_only {
-            println!("  ** LAST-LAYER-ONLY mode: optimizing {} params (l3_weight + l3_bias) **", init_weights.len());
-        }
-        if self_play {
-            println!("  mode: self-play");
-        }
-
-        let arch_desc = format!("{}->{}->{}->1", NUM_FEATURES, l1_size, l2_size);
-
-        // For self-play, the opponent is the current unperturbed weights — but the
-        // shared loop uses TrainingOpponent which is fixed. We handle self-play by
-        // wrapping it: we create an evaluator from the *current* weights each iteration.
-        // However, the shared loop doesn't support dynamic opponents (it snapshots the
-        // opponent once). Self-play in the legacy path was rarely used, so we keep it
-        // as a special case using the shared loop's Eval variant with a periodically
-        // stale snapshot (updated every eval interval via the checkpoint). For true
-        // self-play fidelity, users should switch to --layers which avoids this path.
-        //
-        // Actually, let's just handle the legacy case fully through the shared loop.
-        // Self-play will use the opponent from the start of training (base weights),
-        // which is close enough — in practice self-play was barely used.
-
-        // Helper to reconstruct full weights from the optimized vector
-        let base_weights_clone = base_weights.clone();
-        let make_evaluator = move |w: &[f32]| -> Box<dyn GameEvaluator + Sync> {
-            let weights = if last_layer_only {
-                unflatten_last_layer(w, base_weights_clone.as_ref().unwrap())
-            } else {
-                unflatten_weights(w, l1_size, l2_size)
-            };
-            Box::new(NnueEvaluator::new(weights))
-        };
-
-        let base_weights_for_selfplay = base_weights.clone();
-        let base_weights_clone2 = base_weights;
-        let save_checkpoint = move |w: &[f32], path: &str| {
-            let weights = if last_layer_only {
-                unflatten_last_layer(w, base_weights_clone2.as_ref().unwrap())
-            } else {
-                unflatten_weights(w, l1_size, l2_size)
-            };
-            let full_path = format!("{}.nnue", path);
-            weights.save(&full_path).expect("Failed to save checkpoint");
-        };
-
-        // For self-play, create a training opponent from the initial weights
-        let self_play_eval: Option<NnueEvaluator> = if self_play {
-            let init_w = if last_layer_only {
-                // init_weights is truncated to last-layer only; need the full base weights
-                let full_base = base_weights_for_selfplay.as_ref().expect(
-                    "BUG: --self-play with --last-layer-only requires --base-weights"
-                );
-                unflatten_last_layer(&init_weights, full_base)
-            } else {
-                unflatten_weights(&init_weights, l1_size, l2_size)
-            };
-            Some(NnueEvaluator::new(init_w))
-        } else {
-            None
-        };
-        let effective_opponent: TrainingOpponent = if self_play {
-            TrainingOpponent::Eval(self_play_eval.as_ref().unwrap())
-        } else {
-            match training_opponent {
-                TrainingOpponent::Random => TrainingOpponent::Random,
-                TrainingOpponent::Eval(e) => TrainingOpponent::Eval(e),
-            }
-        };
-
         let config = EsConfig {
-            pop_size,
-            games_per_eval,
-            sigma,
-            lr,
-            iterations,
-            eval_interval,
-            eval_games,
-            checkpoint_dir: &checkpoint_dir,
-            gs: &gs,
-            time_limit_secs,
-            seed,
+            pop_size, games_per_eval, sigma, lr, iterations,
+            eval_interval, eval_games, checkpoint_dir: &checkpoint_dir,
+            gs: &gs, time_limit_secs, seed,
             initial_opponent_epsilon: opponent_epsilon,
-            training_opponent: &effective_opponent,
+            training_opponent: &training_opponent,
             train_max_turns: 200,
             benchmark_opponent: &benchmark_opponent,
-            benchmark_label,
-            profile,
+            benchmark_label, profile,
         };
-
-        run_es_training_loop(&config, &make_evaluator, &save_checkpoint, init_weights, "NNUE-Legacy", &arch_desc)
+        run_legacy_nnue_training(
+            &config, l1_size, l2_size, resume_path.as_deref(),
+            self_play, last_layer_only, seed, &training_opponent,
+        )
     };
 
     // ── Auto-register model in registry if --db was provided ─────────────
@@ -1149,8 +1078,7 @@ fn main() {
             };
             let bench_id = registry.record_benchmark(model_id, &bench)
                 .expect("Failed to record benchmark");
-            let wr = (training_result.eval_wins as f64 + 0.5 * training_result.eval_ties as f64)
-                / training_result.eval_games as f64;
+            let wr = win_rate(training_result.eval_wins, training_result.eval_ties, training_result.eval_games);
             println!("  Recorded benchmark ID {} (vs {}: {:.1}% win rate)", bench_id, benchmark_spec, wr * 100.0);
         }
     }

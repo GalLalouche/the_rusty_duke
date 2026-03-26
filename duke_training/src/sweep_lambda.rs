@@ -7,7 +7,7 @@
 use std::io::BufReader;
 use std::time::Instant;
 
-use duke_training::feature_cache::{stream_feature_cache, FeatureCacheHeader};
+use duke_training::feature_cache::{stream_feature_cache, FeatureCacheHeader, parse_header, read_one_game};
 use duke_training::game_setup::{create_bag, create_initial_state, StaticHeuristicEvaluator};
 use duke_training::learned_heuristic::{
     AllFeaturesWeights, CombinedWeights,
@@ -380,59 +380,4 @@ fn print_weights(mode: &str, w: &[f64]) {
             println!("  [{:>2}] {:>20} = {:+.6e}", i, name, val);
         }
     }
-}
-
-// ── Inlined feature_cache helpers for dual-stream reading ─────────────────
-
-use duke_training::feature_cache::{CachedGame, CachedState};
-use duke_rust::game::tile::Owner;
-
-fn parse_header(reader: &mut impl std::io::Read) -> std::io::Result<FeatureCacheHeader> {
-    let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic)?;
-    if &magic != b"FEAT" {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid feature cache magic"));
-    }
-    let mut buf4 = [0u8; 4];
-    reader.read_exact(&mut buf4)?;
-    let version = u32::from_le_bytes(buf4);
-    if version != 1 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Unsupported feature cache version (expected 1, got {})", version),
-        ));
-    }
-    reader.read_exact(&mut buf4)?;
-    let num_features = u32::from_le_bytes(buf4) as usize;
-    reader.read_exact(&mut buf4)?;
-    let num_games = u32::from_le_bytes(buf4) as usize;
-    Ok(FeatureCacheHeader { num_features, num_games })
-}
-
-fn read_one_game(reader: &mut impl std::io::Read, num_features: usize) -> std::io::Result<CachedGame> {
-    let result = duke_training::serialization::read_result(reader)?;
-    let mut buf4 = [0u8; 4];
-    reader.read_exact(&mut buf4)?;
-    let num_states = u32::from_le_bytes(buf4) as usize;
-
-    let mut buf1 = [0u8; 1];
-    let mut buf8 = [0u8; 8];
-    let mut states = Vec::with_capacity(num_states);
-    for _ in 0..num_states {
-        reader.read_exact(&mut buf1)?;
-        let current_player = match buf1[0] {
-            0 => Owner::TopPlayer,
-            1 => Owner::BottomPlayer,
-            b => return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData, format!("Invalid player byte: {}", b),
-            )),
-        };
-        let mut features = Vec::with_capacity(num_features);
-        for _ in 0..num_features {
-            reader.read_exact(&mut buf8)?;
-            features.push(f64::from_le_bytes(buf8));
-        }
-        states.push(CachedState { current_player, features });
-    }
-    Ok(CachedGame { result, states })
 }

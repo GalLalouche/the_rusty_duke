@@ -218,17 +218,6 @@ pub fn discard_vector(gs: &GameState) -> [f64; 26] {
     counts
 }
 
-/// Duke mobility (ignoring guard) for both players.
-/// Returns [my_duke_mobility, opp_duke_mobility].
-pub fn duke_mobility_no_guard(gs: &GameState) -> [f64; 2] {
-    let me = gs.current_player_turn();
-    let opp = me.next_player();
-    [
-        Heuristics::DukeMovementOptions.approx_evaluate_for_owner(me, gs),
-        Heuristics::DukeMovementOptions.approx_evaluate_for_owner(opp, gs),
-    ]
-}
-
 /// Total feature count for the new combined feature set.
 /// Manhattan(4) + board_control(9) + duke_mobility(2) + discard_vector(26) = 41
 pub const NUM_COMBINED_FEATURES: usize = 41;
@@ -326,62 +315,6 @@ impl GameEvaluator for CombinedWeights {
     fn evaluate(&self, gs: &GameState) -> f32 {
         self.evaluate_raw(gs) as f32
     }
-}
-
-/// Number of cheap features (no move generation, no guard checking).
-pub const NUM_CHEAP_FEATURES: usize = 15;
-
-/// Extract only cheap features — O(tiles), no move generation or guard checking.
-///
-/// Returns 15 features:
-///  [0] my_tile_count
-///  [1] opp_tile_count
-///  [2] my_bag_size
-///  [3] opp_bag_size
-///  [4] my_discard_count
-///  [5] opp_discard_count
-///  [6] my_adjacency (orthogonal adjacent own-tile pairs)
-///  [7] opp_adjacency
-///  [8] my_center_control (tiles in center 4 squares)
-///  [9] opp_center_control
-/// [10] my_units_near_my_duke (Manhattan dist <= 2, excl duke)
-/// [11] enemy_units_near_my_duke
-/// [12] my_units_near_enemy_duke (excl duke)
-/// [13] enemy_units_near_enemy_duke (excl duke)
-/// [14] bias (always 1.0)
-pub fn extract_cheap_features(gs: &GameState) -> [f64; NUM_CHEAP_FEATURES] {
-    let me = gs.current_player_turn();
-    let opp = me.next_player();
-
-    let my_tiles = gs.get_tiles_for_owner(me);
-    let opp_tiles = gs.get_tiles_for_owner(opp);
-
-    let my_tile_count = my_tiles.len() as f64;
-    let opp_tile_count = opp_tiles.len() as f64;
-
-    let my_bag = gs.bag_for_owner(me).remaining().len() as f64;
-    let opp_bag = gs.bag_for_owner(opp).remaining().len() as f64;
-
-    let my_discard = gs.discard_bag_for(me).len() as f64;
-    let opp_discard = gs.discard_bag_for(opp).len() as f64;
-
-    let my_adj = count_adjacent_pairs_from(&my_tiles) as f64;
-    let opp_adj = count_adjacent_pairs_from(&opp_tiles) as f64;
-
-    let my_center = count_center_tiles_from(&my_tiles) as f64;
-    let opp_center = count_center_tiles_from(&opp_tiles) as f64;
-
-    let manhattan = manhattan_distance_features(gs);
-
-    [
-        my_tile_count, opp_tile_count,
-        my_bag, opp_bag,
-        my_discard, opp_discard,
-        my_adj, opp_adj,
-        my_center, opp_center,
-        manhattan[0], manhattan[1], manhattan[2], manhattan[3],
-        1.0, // bias
-    ]
 }
 
 /// Board control features plus duke mobility, computed in a single pass over
@@ -502,13 +435,6 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
             opp_duke_moves as f64,
         ],
     )
-}
-
-/// Convenience wrapper that returns only the 9 board-control features
-/// (discarding duke mobility). Use `board_control_features_with_duke_mob`
-/// when you also need duke mobility to avoid a redundant move generation pass.
-pub fn board_control_features(gs: &GameState) -> [f64; 9] {
-    board_control_features_with_duke_mob(gs).0
 }
 
 impl LearnedHeuristicWeights {

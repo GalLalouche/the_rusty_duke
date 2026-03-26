@@ -14,8 +14,8 @@
 use std::time::Instant;
 
 use duke_training::game_setup::{create_bag, create_initial_state};
-use duke_training::generic_mlp::LoadedModel;
-use duke_training::match_runner::run_matches;
+use duke_training::loaded_model::LoadedModel;
+use duke_training::match_runner::{run_matches, win_rate};
 use duke_training::model_registry::{BenchmarkRecord, ModelRegistry};
 
 const DEFAULT_DB_PATH: &str = "D:/temp/duke_models.db";
@@ -188,13 +188,11 @@ fn compute_elo(wins: &[Vec<u32>], ties: &[Vec<u32>], n: usize) -> Vec<f64> {
                 if total == 0 {
                     continue;
                 }
-                let total_f = total as f64;
-
                 let e_a = 1.0 / (1.0 + 10.0f64.powf((elo[b] - elo[a]) / 400.0));
                 let e_b = 1.0 - e_a;
 
-                let s_a = (wins[a][b] as f64 + 0.5 * (ties[a][b] as f64)) / total_f;
-                let s_b = (wins[b][a] as f64 + 0.5 * (ties[b][a] as f64)) / total_f;
+                let s_a = win_rate(wins[a][b], ties[a][b], total);
+                let s_b = win_rate(wins[b][a], ties[b][a], total);
 
                 delta[a] += k * (s_a - e_a);
                 delta[b] += k * (s_b - e_b);
@@ -233,12 +231,7 @@ fn print_results(
                 print!("       ---");
             } else {
                 let total = wins[i][j] + wins[j][i] + ties[i][j];
-                let wr = if total > 0 {
-                    (wins[i][j] as f64 + 0.5 * (ties[i][j] as f64)) / total as f64 * 100.0
-                } else {
-                    0.0
-                };
-                print!("    {:5.1}%", wr);
+                print!("    {:5.1}%", win_rate(wins[i][j], ties[i][j], total) * 100.0);
             }
         }
         println!();
@@ -267,16 +260,11 @@ fn print_results(
     for a in 0..n {
         for b in (a + 1)..n {
             let total = wins[a][b] + wins[b][a] + ties[a][b];
-            let wr_a = if total > 0 {
-                (wins[a][b] as f64 + 0.5 * (ties[a][b] as f64)) / total as f64 * 100.0
-            } else {
-                0.0
-            };
             println!(
                 "  {} vs {}: {}-{}-{} (W-L-T)  {:.1}% win rate for {}",
                 labels[a], labels[b],
                 wins[a][b], wins[b][a], ties[a][b],
-                wr_a, labels[a],
+                win_rate(wins[a][b], ties[a][b], total) * 100.0, labels[a],
             );
         }
     }

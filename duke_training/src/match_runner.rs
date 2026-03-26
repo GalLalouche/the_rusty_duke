@@ -60,6 +60,12 @@ pub fn play_match(
     }
 }
 
+/// Compute win rate including ties as half-wins.
+pub fn win_rate(wins: u32, ties: u32, total: u32) -> f64 {
+    if total == 0 { return 0.0; }
+    (wins as f64 + 0.5 * ties as f64) / total as f64
+}
+
 /// Aggregated result of running multiple matches between two players.
 pub struct MatchResult {
     pub player_a_wins: u32,

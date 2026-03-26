@@ -116,7 +116,7 @@ pub fn save_feature_cache(
 
 /// Parse a feature cache header from any reader.
 /// Returns (num_features, num_games).
-fn parse_header(reader: &mut impl Read) -> io::Result<FeatureCacheHeader> {
+pub fn parse_header(reader: &mut impl Read) -> io::Result<FeatureCacheHeader> {
     let mut magic = [0u8; 4];
     reader.read_exact(&mut magic)?;
     if &magic != MAGIC {
@@ -143,7 +143,7 @@ fn parse_header(reader: &mut impl Read) -> io::Result<FeatureCacheHeader> {
 }
 
 /// Deserialize a single game from any reader.
-fn read_one_game(reader: &mut impl Read, num_features: usize) -> io::Result<CachedGame> {
+pub fn read_one_game(reader: &mut impl Read, num_features: usize) -> io::Result<CachedGame> {
     let result = serialization::read_result(reader)?;
 
     let mut buf4 = [0u8; 4];

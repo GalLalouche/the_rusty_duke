@@ -5,6 +5,7 @@ pub mod fc_td_training;
 pub mod feature_cache;
 pub mod generic_mlp;
 pub mod learned_heuristic;
+pub mod loaded_model;
 pub mod match_runner;
 pub mod regression;
 pub mod nnue;

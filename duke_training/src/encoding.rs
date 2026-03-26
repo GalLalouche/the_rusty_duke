@@ -15,21 +15,6 @@ pub const MAX_BOARD_FEATURE_COUNT: usize = 72;
 /// Total input size for the flat FC model.
 pub const TOTAL_FEATURES: usize = BOARD_FEATURES + BAG_FEATURES; // 1106
 
-// Keep NUM_PLANES for backward compatibility with CNN model
-pub const NUM_PLANES: usize = NUM_BOARD_PLANES;
-
-/// Encode a `GameState` into a tensor of shape `[NUM_PLANES, 6, 6]`.
-/// NOTE: This is the CNN encoding and does NOT include bag features.
-pub fn encode_state<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 3> {
-    let mut data = [0.0f32; BOARD_FEATURES];
-    let features = active_board_features(gs);
-    for &idx in features.as_slice() {
-        data[idx] = 1.0;
-    }
-    Tensor::<B, 1>::from_floats(data.as_slice(), device)
-        .reshape([NUM_PLANES as i32, BOARD_SIZE as i32, BOARD_SIZE as i32])
-}
-
 /// Stack-allocated feature buffer. Avoids heap allocation in hot path.
 pub struct FeatureBuffer {
     pub data: [usize; MAX_BOARD_FEATURE_COUNT],
