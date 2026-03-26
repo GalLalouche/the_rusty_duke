@@ -1060,12 +1060,92 @@ impl LoadedModel {
         })
     }
 
+    /// Load from a spec string with quantization for .gmlp models.
+    /// Same as [`from_spec`] but wraps 1106/1147 .gmlp models in quantized evaluators.
+    pub fn from_spec_quantized(spec: &str) -> Self {
+        let (eval, desc) = load_opponent_quantized(spec);
+        let label = if spec == "base" || spec == "random" {
+            spec.to_string()
+        } else {
+            let stem = std::path::Path::new(spec)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| spec.to_string());
+            if let Some(start) = desc.find('(') {
+                format!("{} {}", stem, &desc[start..])
+            } else {
+                stem
+            }
+        };
+        LoadedModel { id: None, label, evaluator: eval }
+    }
+
+    /// Load from a database model ID with quantization for .gmlp models.
+    /// Same as [`from_db_id`] but wraps 1106/1147 .gmlp models in quantized evaluators.
+    pub fn from_db_id_quantized(registry: &ModelRegistry, model_id: i64) -> Result<Self, String> {
+        let record = registry
+            .get_model(model_id)
+            .map_err(|e| format!("DB error looking up model #{}: {}", model_id, e))?
+            .ok_or_else(|| format!("Model #{} not found in registry", model_id))?;
+
+        let (eval, _desc) = load_opponent_quantized(&record.file_path);
+        let label = if let Some(ref desc) = record.description {
+            // Append " (Q)" to mark quantized
+            if record.file_path.ends_with(".gmlp") {
+                format!("{} (Q)", desc)
+            } else {
+                desc.clone()
+            }
+        } else {
+            let stem = std::path::Path::new(&record.file_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| record.file_path.clone());
+            if record.file_path.ends_with(".gmlp") {
+                format!("{} ({}) (Q)", stem, record.architecture)
+            } else {
+                format!("{} ({})", stem, record.architecture)
+            }
+        };
+
+        Ok(LoadedModel {
+            id: Some(model_id),
+            label,
+            evaluator: eval,
+        })
+    }
+
     /// Convert to a Player reference for match_runner.
     pub fn as_player(&self) -> crate::match_runner::Player<'_> {
         match &self.evaluator {
             Some(eval) => crate::match_runner::Player::Evaluator(eval.as_ref()),
             None => crate::match_runner::Player::Random,
         }
+    }
+}
+
+/// Load an opponent evaluator from a file path or keyword, with quantization for .gmlp models.
+///
+/// Same as [`load_opponent`], but wraps `.gmlp` models (input_size 1106 or 1147) in
+/// quantized evaluators using `GenericMlp::quantize()`. Non-`.gmlp` specs fall through
+/// to [`load_opponent`].
+pub fn load_opponent_quantized(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>>, String) {
+    match spec {
+        path if path.ends_with(".gmlp") => {
+            let net = GenericMlp::load(path).expect("Failed to load .gmlp opponent");
+            let qnet = net.quantize();
+            let desc = format!("GMLP-Q ({})", qnet.arch_string());
+            let eval: Box<dyn GameEvaluator + Sync + Send> = match qnet.input_size {
+                1106 => Box::new(QuantizedNnueEvaluator { qnet }),
+                1147 => Box::new(QuantizedAppendedEvaluator { qnet }),
+                other => panic!(
+                    "Quantization only supported for 1106/1147 input models, got {} in '{}'",
+                    other, path
+                ),
+            };
+            (Some(eval), desc)
+        }
+        _ => load_opponent(spec), // non-gmlp: fall through to normal
     }
 }
 

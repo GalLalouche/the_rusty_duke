@@ -1,6 +1,6 @@
 //! Elo tournament: round-robin play between multiple players with Elo rating computation.
 //!
-//! Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>]
+//! Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>] [--quantize]
 //!
 //! Flags:
 //!   --models <list>  Comma-separated player list (REQUIRED). Each entry is either:
@@ -9,6 +9,7 @@
 //!                       - "random" (random move selection)
 //!   --games N        Number of games per matchup (default 1000)
 //!   --db <path>      Path to model registry SQLite DB (default D:/temp/duke_models.db)
+//!   --quantize       Quantize .gmlp models (int8 hidden weights, f32 L1 and output)
 
 use std::time::Instant;
 
@@ -20,23 +21,25 @@ use duke_training::model_registry::{BenchmarkRecord, ModelRegistry};
 const DEFAULT_DB_PATH: &str = "D:/temp/duke_models.db";
 
 fn print_usage_and_exit() -> ! {
-    eprintln!("Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>]");
+    eprintln!("Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>] [--quantize]");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  --models <list>  Comma-separated player list (required)");
     eprintln!("                   Each entry: a number (DB model ID), \"base\", or \"random\"");
     eprintln!("  --games N        Number of games per matchup (default 1000)");
     eprintln!("  --db <path>      Path to model registry SQLite DB (default {})", DEFAULT_DB_PATH);
+    eprintln!("  --quantize       Quantize .gmlp models (int8 hidden weights)");
     std::process::exit(1);
 }
 
-/// Parse CLI arguments into the models list, number of games per matchup, and DB path.
-fn parse_args() -> (Vec<String>, u32, String) {
+/// Parse CLI arguments into the models list, number of games per matchup, DB path, and quantize flag.
+fn parse_args() -> (Vec<String>, u32, String, bool) {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut games_per_matchup: u32 = 1000;
     let mut models_raw: Option<String> = None;
     let mut db_path: Option<String> = None;
+    let mut quantize = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -61,6 +64,8 @@ fn parse_args() -> (Vec<String>, u32, String) {
                 std::process::exit(1);
             }
             db_path = Some(args[i].clone());
+        } else if args[i] == "--quantize" {
+            quantize = true;
         } else if args[i].starts_with("--") {
             eprintln!("Unknown flag: {}", args[i]);
             std::process::exit(1);
@@ -92,22 +97,30 @@ fn parse_args() -> (Vec<String>, u32, String) {
 
     let db_path = db_path.unwrap_or_else(|| DEFAULT_DB_PATH.to_string());
 
-    (models, games_per_matchup, db_path)
+    (models, games_per_matchup, db_path, quantize)
 }
 
 /// Load all players from the models list.
 /// Numeric entries are loaded as DB model IDs from the registry.
 /// "base" and "random" are loaded via `LoadedModel::from_spec`.
-fn load_players(models: &[String], registry: &ModelRegistry) -> Vec<LoadedModel> {
+/// When `quantize` is true, .gmlp models are loaded with int8-quantized hidden layers.
+fn load_players(models: &[String], registry: &ModelRegistry, quantize: bool) -> Vec<LoadedModel> {
     let mut players = Vec::with_capacity(models.len());
     for (idx, entry) in models.iter().enumerate() {
         let model = if entry == "base" || entry == "random" {
             LoadedModel::from_spec(entry)
         } else if let Ok(model_id) = entry.parse::<i64>() {
-            LoadedModel::from_db_id(registry, model_id).unwrap_or_else(|e| {
-                eprintln!("Error loading model ID {}: {}", model_id, e);
-                std::process::exit(1);
-            })
+            if quantize {
+                LoadedModel::from_db_id_quantized(registry, model_id).unwrap_or_else(|e| {
+                    eprintln!("Error loading model ID {}: {}", model_id, e);
+                    std::process::exit(1);
+                })
+            } else {
+                LoadedModel::from_db_id(registry, model_id).unwrap_or_else(|e| {
+                    eprintln!("Error loading model ID {}: {}", model_id, e);
+                    std::process::exit(1);
+                })
+            }
         } else {
             eprintln!(
                 "Error: unrecognized model entry '{}'. Expected a number (DB model ID), \"base\", or \"random\".",
@@ -270,19 +283,22 @@ fn print_results(
 }
 
 fn main() {
-    let (models, games_per_matchup, db_path) = parse_args();
+    let (models, games_per_matchup, db_path, quantize) = parse_args();
     let n = models.len();
 
     println!("=== Elo Tournament ===");
     println!("  {} players, {} games per matchup", n, games_per_matchup);
     println!("  registry DB: {}", db_path);
+    if quantize {
+        println!("  quantize: ON (int8 hidden weights for .gmlp models)");
+    }
     println!();
 
     // Always open the registry (we have a default DB path)
     let registry =
         ModelRegistry::open(&db_path).expect("Failed to open model registry DB");
 
-    let players = load_players(&models, &registry);
+    let players = load_players(&models, &registry, quantize);
     println!();
 
     let total_start = Instant::now();
