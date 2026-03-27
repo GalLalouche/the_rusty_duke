@@ -21,31 +21,25 @@ KEEP_LINES = 5000
 
 
 def discover_logs(directory):
-    """Scan directory for .log files containing 'ES Training' in first 5 lines."""
+    """Scan directory and subdirectories for .log files containing 'ES Training' in first 5 lines."""
     logs = []
-    try:
-        entries = os.listdir(directory)
-    except OSError:
-        return logs
-
-    for fname in sorted(entries):
-        if not fname.endswith(".log"):
-            continue
-        fpath = os.path.join(directory, fname)
-        if not os.path.isfile(fpath):
-            continue
-        try:
-            with open(fpath, "r", errors="replace") as f:
-                head = []
-                for i, line in enumerate(f):
-                    if i >= 5:
-                        break
-                    head.append(line)
-            if any("ES Training" in l for l in head):
-                name = derive_name(fname, head)
-                logs.append((name, fpath))
-        except OSError:
-            continue
+    for root, _dirs, files in os.walk(directory):
+        for fname in sorted(files):
+            if not fname.endswith(".log"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                with open(fpath, "r", errors="replace") as f:
+                    head = []
+                    for i, line in enumerate(f):
+                        if i >= 5:
+                            break
+                        head.append(line)
+                if any("ES Training" in l for l in head):
+                    name = derive_name(fname, head)
+                    logs.append((name, fpath))
+            except OSError:
+                continue
     return logs
 
 
