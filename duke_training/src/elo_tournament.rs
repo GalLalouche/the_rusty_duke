@@ -17,6 +17,7 @@ use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, win_rate};
 use duke_training::model_registry::{BenchmarkRecord, ModelRegistry};
+use whr::{MatchRecord, WhrBuilder};
 
 const DEFAULT_DB_PATH: &str = "D:/temp/duke_models.db";
 
@@ -174,36 +175,58 @@ fn run_round_robin(
     (wins, ties)
 }
 
-/// Compute Elo ratings from win/loss/tie matrices using iterative updates.
+/// Compute Elo-scale ratings via Whole-History Rating (WHR).
+///
+/// WHR (Rémi Coulom, 2008) simultaneously estimates all player strengths from
+/// the full set of game results using Bayesian inference, producing more
+/// accurate ratings than iterative Elo updates.
+///
+/// Each pairwise result is fed to WHR as individual game records.
+/// Draws are natively supported (winner = None).
 fn compute_elo(wins: &[Vec<u32>], ties: &[Vec<u32>], n: usize) -> Vec<f64> {
-    let mut elo = vec![1500.0f64; n];
-    let k = 32.0f64;
-    let passes = 10;
+    let mut matches = Vec::new();
 
-    for _ in 0..passes {
-        let mut delta = vec![0.0f64; n];
-        for a in 0..n {
-            for b in (a + 1)..n {
-                let total = wins[a][b] + wins[b][a] + ties[a][b];
-                if total == 0 {
-                    continue;
-                }
-                let e_a = 1.0 / (1.0 + 10.0f64.powf((elo[b] - elo[a]) / 400.0));
-                let e_b = 1.0 - e_a;
-
-                let s_a = win_rate(wins[a][b], ties[a][b], total);
-                let s_b = win_rate(wins[b][a], ties[b][a], total);
-
-                delta[a] += k * (s_a - e_a);
-                delta[b] += k * (s_b - e_b);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            // Player i wins
+            for _ in 0..wins[i][j] {
+                matches.push(
+                    MatchRecord::new(i, j, Some(i), 0, None)
+                        .expect("valid match record"),
+                );
             }
-        }
-        for i in 0..n {
-            elo[i] += delta[i];
+            // Player j wins
+            for _ in 0..wins[j][i] {
+                matches.push(
+                    MatchRecord::new(i, j, Some(j), 0, None)
+                        .expect("valid match record"),
+                );
+            }
+            // Draws
+            for _ in 0..ties[i][j] {
+                matches.push(
+                    MatchRecord::new(i, j, None, 0, None)
+                        .expect("valid match record"),
+                );
+            }
         }
     }
 
-    elo
+    let mut builder = WhrBuilder::default()
+        .with_iterations(100)
+        .with_matches(matches);
+    let whr = builder.build();
+
+    // WHR .elo() returns values centered around 0; shift to Elo-1500 scale
+    // for continuity with historical benchmark records.
+    (0..n)
+        .map(|i| {
+            whr.get_player_ratings(&i)
+                .and_then(|ratings| ratings.last())
+                .map(|r| r.elo() + 1500.0)
+                .unwrap_or(1500.0)
+        })
+        .collect()
 }
 
 /// Print the win-rate matrix, Elo rankings, and per-matchup details.
@@ -242,8 +265,8 @@ fn print_results(
     let mut ranked: Vec<(usize, f64)> = (0..n).map(|i| (i, elo[i])).collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    println!("=== Elo Ratings (K=32, 10 passes) ===");
-    println!("{:>4}  {:>width$}  {:>6}", "Rank", "Player", "Elo", width = max_label_len);
+    println!("=== Ratings (WHR) ===");
+    println!("{:>4}  {:>width$}  {:>6}", "Rank", "Player", "Rating", width = max_label_len);
     for (rank, &(idx, rating)) in ranked.iter().enumerate() {
         println!(
             "{:>4}  {:>width$}  {:>6.0}",
