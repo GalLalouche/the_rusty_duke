@@ -5,7 +5,7 @@
 
 use crate::generic_mlp::{
     GenericMlp, CombinedNetEvaluator, GuardFeatureEvaluator,
-    GenericNnueEvaluator, GenericAppendedEvaluator,
+    GenericNnueEvaluator, GenericAppendedEvaluator, AllAppendedEvaluator,
     QuantizedNnueEvaluator, QuantizedAppendedEvaluator,
 };
 use crate::game_setup::{GameEvaluator, StaticHeuristicEvaluator};
@@ -158,10 +158,15 @@ pub fn load_opponent_quantized(spec: &str) -> (Option<Box<dyn GameEvaluator + Sy
             let eval: Box<dyn GameEvaluator + Sync + Send> = match qnet.input_size {
                 1106 => Box::new(QuantizedNnueEvaluator { qnet }),
                 1147 => Box::new(QuantizedAppendedEvaluator { qnet }),
-                other => panic!(
-                    "Quantization only supported for 1106/1147 input models, got {} in '{}'",
-                    other, path
-                ),
+                other => {
+                    // Quantization not yet supported for other input sizes (e.g. 1171).
+                    // Fall through to non-quantized loading.
+                    eprintln!(
+                        "Warning: quantization not supported for input_size {} in '{}', loading as f32",
+                        other, path
+                    );
+                    return load_opponent(path);
+                }
             };
             (Some(eval), desc)
         }
@@ -196,8 +201,9 @@ pub fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>
                 65 => Box::new(GuardFeatureEvaluator::new(net)),
                 1106 => Box::new(GenericNnueEvaluator { net }),
                 1147 => Box::new(GenericAppendedEvaluator { net }),
+                1171 => Box::new(AllAppendedEvaluator { net }),
                 other => panic!(
-                    "Unknown input_size {} in .gmlp file '{}'. Expected 41, 65, 1106, or 1147.",
+                    "Unknown input_size {} in .gmlp file '{}'. Expected 41, 65, 1106, 1147, or 1171.",
                     other, path
                 ),
             };

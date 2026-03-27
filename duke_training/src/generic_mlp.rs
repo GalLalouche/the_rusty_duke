@@ -12,6 +12,7 @@ use crate::encoding::{
 use crate::game_setup::GameEvaluator;
 use crate::learned_heuristic::{
     extract_combined_features, extract_features, NUM_COMBINED_FEATURES,
+    NUM_FEATURES as LH_NUM_FEATURES,
 };
 
 // ── Generic MLP network (N hidden layers) ────────────────────────────────
@@ -260,6 +261,91 @@ impl GenericMlp {
                         for j in 0..h1 {
                             buf_a[j] += col[j] * fval;
                         }
+                    }
+                }
+            }
+        }
+
+        // ReLU
+        for j in 0..h1 {
+            buf_a[j] = buf_a[j].max(0.0);
+        }
+
+        let mut buf_b = [0.0f32; MAX_HIDDEN];
+        self.forward_inner(&mut buf_a, &mut buf_b, off)
+    }
+
+    /// Forward pass for the 1171-input "all appended" mode:
+    /// 1106 sparse board features + 41 cheap combined + 24 expensive guard features.
+    ///
+    /// This is like `forward_sparse(gs, true)` but additionally accumulates the
+    /// 24 expensive features from `extract_features` at indices 1147..1171.
+    pub fn forward_sparse_all(&self, gs: &GameState) -> f32 {
+        let w = &self.weights;
+        let h1 = self.hidden_layers[0];
+
+        // L1: sparse accumulation
+        let l1_w = &w[0..self.input_size * h1];
+        let l1_b = &w[self.input_size * h1..self.input_size * h1 + h1];
+        let off = self.input_size * h1 + h1;
+
+        let mut buf_a = [0.0f32; MAX_HIDDEN];
+        buf_a[..h1].copy_from_slice(l1_b);
+
+        // Sparse board features (binary)
+        let board_feats = active_board_features(gs);
+        for &feat in board_feats.as_slice() {
+            let col = &l1_w[feat * h1..(feat + 1) * h1];
+            for j in 0..h1 {
+                buf_a[j] += col[j];
+            }
+        }
+
+        // Bag features (dense, dimensions 1080..1106)
+        let bag = bag_features(gs);
+        for (i, &val) in bag.iter().enumerate() {
+            if val != 0.0 {
+                let feat = BOARD_FEATURES + i;
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                for j in 0..h1 {
+                    buf_a[j] += col[j] * val;
+                }
+            }
+        }
+
+        // Combined features (dimensions 1106..1147)
+        let combined = extract_combined_features(gs);
+        for (i, &val) in combined.iter().enumerate() {
+            let fval = val as f32;
+            if fval != 0.0 {
+                let feat = TOTAL_FEATURES + i;
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                if fval == 1.0 {
+                    for j in 0..h1 {
+                        buf_a[j] += col[j];
+                    }
+                } else {
+                    for j in 0..h1 {
+                        buf_a[j] += col[j] * fval;
+                    }
+                }
+            }
+        }
+
+        // Expensive guard features (dimensions 1147..1171)
+        let expensive = extract_features(gs);
+        for (i, &val) in expensive.iter().enumerate() {
+            let fval = val as f32;
+            if fval != 0.0 {
+                let feat = TOTAL_FEATURES + NUM_COMBINED_FEATURES + i;
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                if fval == 1.0 {
+                    for j in 0..h1 {
+                        buf_a[j] += col[j];
+                    }
+                } else {
+                    for j in 0..h1 {
+                        buf_a[j] += col[j] * fval;
                     }
                 }
             }
@@ -892,5 +978,27 @@ impl GameEvaluator for GenericAppendedEvaluator {
     fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> {
         Some((&self.net, true))
     }
+}
+
+/// Total input size for the "all appended" mode:
+/// 1106 NNUE features + 41 combined + 24 expensive = 1171.
+pub const ALL_APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES + LH_NUM_FEATURES;
+
+/// Evaluator that wraps a GenericMlp for all-appended features (1171 inputs).
+///
+/// Uses sparse board encoding (1106) plus all 65 heuristic features (41 cheap + 24 expensive).
+/// The expensive features include guard checking, so this is slower per evaluation than
+/// `GenericAppendedEvaluator` (1147) but has richer signal.
+pub struct AllAppendedEvaluator {
+    pub net: GenericMlp,
+}
+
+impl GameEvaluator for AllAppendedEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        self.net.forward_sparse_all(gs)
+    }
+    // Return None from as_generic_mlp: the incremental L1 accumulator path
+    // doesn't support the extra 24 expensive features yet. Fall back to the
+    // full evaluate() path above.
 }
 

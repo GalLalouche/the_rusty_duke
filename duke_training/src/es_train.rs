@@ -17,6 +17,7 @@
 //!                 [--opponent <spec>]  — training opponent (model ID, file, "base", "random")
 //!                 [--benchmark <spec>] — eval benchmark opponent (same specs; default "base")
 //!                 [--append-combined]  — use 1147-input network (1106 NNUE + 41 combined)
+//!                 [--append-all]       — use 1171-input network (1106 NNUE + 41 combined + 24 expensive)
 //!                 [--input-features combined]  — use 41 combined features only
 //!                 [--input-features guard]  — use 65 features (24 expensive + 41 combined)
 //!                 [--profile]              — print per-phase timing breakdown every 50 iters
@@ -124,6 +125,7 @@ const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES; // 11
 use duke_training::generic_mlp::{
     GenericMlp, CombinedNetEvaluator, GuardFeatureEvaluator,
     GenericNnueEvaluator, GenericAppendedEvaluator,
+    AllAppendedEvaluator, ALL_APPENDED_INPUT_SIZE,
 };
 use duke_training::loaded_model::{LoadedModel, NUM_GUARD_ALL_FEATURES};
 use duke_training::model_registry::{ModelRegistry, TrainingInfo, BenchmarkRecord};
@@ -853,6 +855,7 @@ fn main() {
     let self_play = args.iter().any(|a| a == "--self-play");
     let last_layer_only = args.iter().any(|a| a == "--last-layer-only");
     let append_combined = args.iter().any(|a| a == "--append-combined");
+    let append_all = args.iter().any(|a| a == "--append-all");
     let profile = args.iter().any(|a| a == "--profile");
     let input_features = parse_flag::<String>(&args, "--input-features")
         .unwrap_or_else(|| "nnue".to_string());
@@ -981,6 +984,29 @@ fn main() {
                 Box::new(GenericAppendedEvaluator { net })
             },
             "Appended",
+            resume_path.as_deref(),
+        )
+    }
+    // Dispatch to all-appended mode (1171 = 1106 board + 41 combined + 24 expensive)
+    else if append_all {
+        let hl = hidden_layers.clone();
+        let config = EsConfig {
+            pop_size, games_per_eval, sigma, lr, iterations,
+            eval_interval, eval_games, checkpoint_dir: &checkpoint_dir,
+            gs: &gs, time_limit_secs, seed,
+            initial_opponent_epsilon: opponent_epsilon,
+            training_opponent: &training_opponent,
+            train_max_turns: 50,
+            benchmark_opponent: &benchmark_opponent,
+            benchmark_label, profile,
+        };
+        run_gmlp_training(
+            &config, ALL_APPENDED_INPUT_SIZE, &hidden_layers,
+            move |weights: &[f32]| {
+                let net = GenericMlp::from_flat(weights.to_vec(), ALL_APPENDED_INPUT_SIZE, hl.clone());
+                Box::new(AllAppendedEvaluator { net })
+            },
+            "AllAppended",
             resume_path.as_deref(),
         )
     }
