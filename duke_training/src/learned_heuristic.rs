@@ -361,6 +361,7 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
                 my_duke_moves += 1;
             }
             let idx = dst.y as usize * 6 + dst.x as usize;
+            debug_assert!(idx < 36, "move destination ({}, {}) maps to index {} outside 6x6 board", dst.x, dst.y, idx);
             my_reach[idx] = true;
         }
     }
@@ -374,6 +375,7 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
                 opp_duke_moves += 1;
             }
             let idx = dst.y as usize * 6 + dst.x as usize;
+            debug_assert!(idx < 36, "move destination ({}, {}) maps to index {} outside 6x6 board", dst.x, dst.y, idx);
             opp_reach[idx] = true;
         }
     }

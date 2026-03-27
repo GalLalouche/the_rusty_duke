@@ -9,7 +9,12 @@
 //! Default DB path: D:/temp/duke_models.db
 
 use duke_training::generic_mlp::GenericMlp;
-use duke_training::learned_heuristic::load_lr_weights_raw;
+use duke_training::learned_heuristic::{
+    load_lr_weights_raw,
+    NUM_FEATURES as LR_NUM_FEATURES,
+    NUM_COMBINED_FEATURES,
+    NUM_ALL_FEATURES,
+};
 use duke_training::model_registry::{ModelRecord, ModelRegistry};
 use duke_training::nnue::{NnueWeights, NUM_FEATURES};
 
@@ -147,13 +152,13 @@ fn cmd_register(db_path: &str, args: &[String]) {
         let raw = load_lr_weights_raw(model_path).expect("Failed to load .json weight file");
         let n = raw.len();
         let label = match n {
-            24 => "LR-Guard",
-            41 => "LR-Cheap",
-            65 => "LR-All",
+            _ if n == LR_NUM_FEATURES => "LR-Guard",
+            _ if n == NUM_COMBINED_FEATURES => "LR-Cheap",
+            _ if n == NUM_ALL_FEATURES => "LR-All",
             _ => {
                 eprintln!(
-                    "JSON weight file has {} weights. Expected 24 (LR-Guard), 41 (LR-Cheap), or 65 (LR-All).",
-                    n
+                    "JSON weight file has {} weights. Expected {} (LR-Guard), {} (LR-Cheap), or {} (LR-All).",
+                    n, LR_NUM_FEATURES, NUM_COMBINED_FEATURES, NUM_ALL_FEATURES
                 );
                 std::process::exit(1);
             }
@@ -267,8 +272,16 @@ fn print_benchmarks(benchmarks: &[duke_training::model_registry::BenchmarkRecord
     );
     println!("  {}", "-".repeat(75));
     for b in benchmarks {
-        let opp_short = if b.opponent.len() > 10 {
-            &b.opponent[b.opponent.len() - 10..]
+        let opp_short: &str = if b.opponent.len() > 10 {
+            // Use char_indices to find a safe byte boundary for truncation
+            let start = b.opponent.len().saturating_sub(10);
+            // Find the first char boundary at or after `start`
+            let safe_start = b.opponent[start..]
+                .char_indices()
+                .next()
+                .map(|(i, _)| start + i)
+                .unwrap_or(b.opponent.len());
+            &b.opponent[safe_start..]
         } else {
             &b.opponent
         };

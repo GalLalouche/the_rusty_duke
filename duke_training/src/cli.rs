@@ -2,10 +2,19 @@
 
 /// Parse a typed flag value from CLI args: `--flag <value>`.
 ///
-/// Returns `None` if the flag is missing or the value fails to parse.
+/// Returns `None` if the flag is missing. Warns on `stderr` when the flag is
+/// present but its value fails to parse (likely a typo), then returns `None`.
 pub fn parse_flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
+    let pos = args.iter().position(|a| a == flag)?;
+    let raw = args.get(pos + 1)?;
+    match raw.parse::<T>() {
+        Ok(v) => Some(v),
+        Err(_) => {
+            eprintln!(
+                "Warning: flag '{}' has unparseable value '{}', ignoring",
+                flag, raw
+            );
+            None
+        }
+    }
 }

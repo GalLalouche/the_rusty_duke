@@ -103,6 +103,9 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
                 targets.push(outcome);
             } else {
                 // Non-terminal: TD target is 1 - V(s_{t+1}) (opponent's perspective)
+                debug_assert!(t + 1 < total_states,
+                    "Non-terminal state at index {} but total_states is {} (game boundary logic bug)",
+                    t, total_states);
                 targets.push(1.0 - pred_data[t + 1]);
             }
         }

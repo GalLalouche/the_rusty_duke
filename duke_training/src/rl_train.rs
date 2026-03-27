@@ -206,6 +206,9 @@ fn train_on_outcome<B: burn::tensor::backend::AutodiffBackend>(
     states: &[&GameState],
     targets: &[f32],
 ) -> f32 {
+    assert_eq!(states.len(), targets.len(),
+        "states/targets length mismatch: {} states vs {} targets",
+        states.len(), targets.len());
     use burn::prelude::*;
     use burn::optim::GradientsParams;
 

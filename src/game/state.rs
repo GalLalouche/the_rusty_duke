@@ -85,7 +85,8 @@ impl GameState {
     pub fn pulled_tile(&self) -> &Option<TileRef> { &self.pulled_tile }
     pub fn current_player_turn(&self) -> Owner { self.current_player_turn }
     pub fn idle_move_count(&self) -> usize {
-        *self.moves_without_capture_or_placement_stack.last().unwrap_or(&0)
+        *self.moves_without_capture_or_placement_stack.last()
+            .expect("moves_without_capture_or_placement_stack should never be empty")
     }
     pub fn top_player_bag(&self) -> &TileBag { &self.top_player_bag }
     pub fn player_1_discard(&self) -> &DiscardBag { &self.top_player_discard }
@@ -112,11 +113,25 @@ impl GameState {
     }
 
     /// Reconstruct a GameState from raw snapshot data (for deserialization).
+    ///
+    /// Panics if either player's duke is missing from the board, since many
+    /// downstream methods (e.g., `duke_coordinate`, guard checking) assume both
+    /// dukes are present.
     pub fn from_snapshot(snap: GameSnapshot) -> GameState {
         let mut board = GameBoard::empty();
         for (coords, placed) in snap.tiles {
             board.place(coords, placed);
         }
+        // Validate that both dukes exist on the board — downstream methods
+        // (duke_coordinate, guard checking) will panic if a duke is missing.
+        assert!(
+            board.get_board().find(|t: &PlacedTile| t.owner == Owner::TopPlayer && t.tile.tile_type().is_duke()).is_some(),
+            "from_snapshot: TopPlayer duke is missing from the board"
+        );
+        assert!(
+            board.get_board().find(|t: &PlacedTile| t.owner == Owner::BottomPlayer && t.tile.tile_type().is_duke()).is_some(),
+            "from_snapshot: BottomPlayer duke is missing from the board"
+        );
         GameState {
             board,
             current_player_turn: snap.current_turn,

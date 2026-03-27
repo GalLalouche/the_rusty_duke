@@ -15,6 +15,8 @@ pub struct FcValueNetwork<B: Backend> {
 
 impl<B: Backend> FcValueNetwork<B> {
     pub fn new(device: &B::Device, l1_size: usize, l2_size: usize) -> Self {
+        assert!(l1_size > 0, "l1_size must be > 0");
+        assert!(l2_size > 0, "l2_size must be > 0");
         Self {
             fc1: LinearConfig::new(INPUT_SIZE, l1_size).init(device),
             fc2: LinearConfig::new(l1_size, l2_size).init(device),

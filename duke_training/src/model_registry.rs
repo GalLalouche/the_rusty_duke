@@ -375,14 +375,18 @@ impl ModelRegistry {
         )?;
 
         let rows = stmt.query_map(params![model_id], |row| {
+            let num_games_i64 = row.get::<_, i64>(3)?;
+            let wins_i64 = row.get::<_, i64>(4)?;
+            let losses_i64 = row.get::<_, i64>(5)?;
+            let ties_i64 = row.get::<_, i64>(6)?;
             Ok(BenchmarkRecord {
                 id: Some(row.get::<_, i64>(0)?),
                 opponent: row.get(1)?,
                 opponent_model_id: row.get(2)?,
-                num_games: row.get::<_, i64>(3)? as u32,
-                wins: row.get::<_, i64>(4)? as u32,
-                losses: row.get::<_, i64>(5)? as u32,
-                ties: row.get::<_, i64>(6)? as u32,
+                num_games: u32::try_from(num_games_i64).expect("num_games exceeds u32::MAX"),
+                wins: u32::try_from(wins_i64).expect("wins exceeds u32::MAX"),
+                losses: u32::try_from(losses_i64).expect("losses exceeds u32::MAX"),
+                ties: u32::try_from(ties_i64).expect("ties exceeds u32::MAX"),
                 win_rate: Some(row.get::<_, f64>(7)?),
                 elo: row.get(8)?,
                 benchmark_date: Some(row.get::<_, String>(9)?),
@@ -403,7 +407,8 @@ fn row_to_model_record(row: &rusqlite::Row) -> Result<ModelRecord, rusqlite::Err
         param_count: row.get::<_, i64>(5)? as usize,
         description: row.get(6)?,
         created_at: row.get(7)?,
-        training_iterations: row.get::<_, Option<i64>>(8)?.map(|v| v as u32),
+        training_iterations: row.get::<_, Option<i64>>(8)?
+            .map(|v| u32::try_from(v).expect("training_iterations exceeds u32::MAX")),
         training_sigma: row.get(9)?,
         training_lr: row.get(10)?,
         training_opponent: row.get(11)?,

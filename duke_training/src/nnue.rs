@@ -74,6 +74,14 @@ impl NnueWeights {
         f.read_exact(&mut buf4)?;
         let l2_size = u32::from_le_bytes(buf4) as usize;
 
+        if l1_size == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "l1_size must be > 0"));
+        }
+        if l2_size == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "l2_size must be > 0"));
+        }
         if l1_size > MAX_L1 {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
                 format!("l1_size {} exceeds MAX_L1 {}", l1_size, MAX_L1)));
@@ -128,7 +136,7 @@ impl NnueAccumulator {
     /// are non-binary and must not be updated through this method.
     #[inline]
     pub fn add_feature(&mut self, feat: usize, weights: &NnueWeights) {
-        debug_assert!(feat < BOARD_FEATURES, "add_feature called with bag feature index {}", feat);
+        assert!(feat < BOARD_FEATURES, "add_feature called with bag feature index {}", feat);
         let l1 = self.l1_size;
         let col = &weights.l1_weight[feat * l1..(feat + 1) * l1];
         for i in 0..l1 {
@@ -138,7 +146,7 @@ impl NnueAccumulator {
 
     #[inline]
     pub fn remove_feature(&mut self, feat: usize, weights: &NnueWeights) {
-        debug_assert!(feat < BOARD_FEATURES, "remove_feature called with bag feature index {}", feat);
+        assert!(feat < BOARD_FEATURES, "remove_feature called with bag feature index {}", feat);
         let l1 = self.l1_size;
         let col = &weights.l1_weight[feat * l1..(feat + 1) * l1];
         for i in 0..l1 {

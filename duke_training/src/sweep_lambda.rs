@@ -37,7 +37,7 @@ impl RidgeAccumulator {
 
     /// Accumulate one sample. Only fills upper triangle of xtx for speed.
     fn add(&mut self, x: &[f64], target: f64) {
-        debug_assert_eq!(x.len(), self.k);
+        assert_eq!(x.len(), self.k, "feature vector length {} != expected {}", x.len(), self.k);
         let k = self.k;
         for i in 0..k {
             self.xty[i] += x[i] * target;

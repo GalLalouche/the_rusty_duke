@@ -4,10 +4,19 @@ use duke_training::match_runner::{run_matches, Player};
 use duke_training::nnue::{NnueEvaluator, NnueWeights};
 
 fn num_games() -> u32 {
-    std::env::var("NUM_GAMES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(200u32)
+    match std::env::var("NUM_GAMES") {
+        Ok(val) => match val.parse::<u32>() {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!(
+                    "Warning: NUM_GAMES='{}' is not a valid u32 ({}), falling back to 200",
+                    val, e
+                );
+                200
+            }
+        },
+        Err(_) => 200,
+    }
 }
 
 /// Parse all values for a repeated flag: --flag v1 --flag v2
@@ -20,6 +29,11 @@ fn parse_all_flags(args: &[String], flag: &str) -> Vec<String> {
                 values.push(val.clone());
                 i += 2;
                 continue;
+            } else {
+                panic!(
+                    "Flag '{}' at position {} has no value (appears as last argument)",
+                    flag, i
+                );
             }
         }
         i += 1;

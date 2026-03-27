@@ -188,6 +188,8 @@ fn evaluate_generic(
     max_turns: u32,
     opponent_epsilon: f32,
 ) -> f32 {
+    assert!(k > 0, "evaluate_generic called with k=0, would produce NaN");
+    assert!(opponent_epsilon >= 0.0, "opponent_epsilon must be non-negative, got {}", opponent_epsilon);
     let mut score = 0.0f32;
     for i in 0..k {
         let mut rng = StdRng::seed_from_u64(seed_base + i as u64);
@@ -915,6 +917,14 @@ fn main() {
 
     // Track the file format for registry ("gmlp" or "nnue")
     let mut model_format = "gmlp";
+
+    // Validate --input-features value before dispatching
+    if !["nnue", "combined", "guard"].contains(&input_features.as_str()) {
+        eprintln!(
+            "Warning: unknown --input-features '{}', expected 'nnue', 'combined', or 'guard'. Falling back to 'nnue'.",
+            input_features
+        );
+    }
 
     // Dispatch to combined-features mode (41 inputs)
     let training_result = if input_features == "combined" {

@@ -162,7 +162,8 @@ pub fn load_opponent_quantized(spec: &str) -> (Option<Box<dyn GameEvaluator + Sy
                     // Quantization not yet supported for other input sizes (e.g. 1171).
                     // Fall through to non-quantized loading.
                     eprintln!(
-                        "Warning: quantization not supported for input_size {} in '{}', loading as f32",
+                        "WARNING: quantization not supported for input_size {} in '{}'. \
+                         Loading as NON-QUANTIZED f32 model. Performance will differ from quantized models.",
                         other, path
                     );
                     return load_opponent(path);

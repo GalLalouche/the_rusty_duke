@@ -54,6 +54,8 @@ impl TrajectoryWriter {
     }
 
     pub fn write_game(&mut self, states: &[GameState], result: &GameResult) -> io::Result<()> {
+        assert!(states.len() <= u16::MAX as usize,
+            "game has {} states, exceeds u16::MAX for serialization", states.len());
         serialization::write_result(&mut self.writer, result)?;
         self.writer.write_all(&(states.len() as u16).to_le_bytes())?;
         for gs in states {
@@ -148,11 +150,16 @@ fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
     w.write_all(&[player_byte])?;
 
     // Idle move count
-    w.write_all(&[gs.idle_move_count().min(255) as u8])?;
+    assert!(gs.idle_move_count() <= 255,
+        "idle_move_count {} exceeds u8::MAX, would be truncated in serialization",
+        gs.idle_move_count());
+    w.write_all(&[gs.idle_move_count() as u8])?;
 
     // Board tiles
     let board = gs.board();
     let tiles: Vec<_> = board.active_coordinates().collect();
+    assert!(tiles.len() <= 255,
+        "board has {} tiles, exceeds u8::MAX for serialization", tiles.len());
     w.write_all(&[tiles.len() as u8])?;
     for (coords, placed) in &tiles {
         w.write_all(&[coords.x as u8, coords.y as u8])?;
@@ -177,6 +184,8 @@ fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
 }
 
 fn write_tile_list(w: &mut impl Write, tiles: &[Arc<duke_rust::game::tile::Tile>]) -> io::Result<()> {
+    assert!(tiles.len() <= 255,
+        "tile list has {} entries, exceeds u8::MAX for serialization", tiles.len());
     w.write_all(&[tiles.len() as u8])?;
     for tile in tiles {
         w.write_all(&[tile.tile_type() as u8])?;

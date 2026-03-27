@@ -187,6 +187,12 @@ impl GameBoard {
             TileAction::JumpSlide => {
                 // JumpSlide acts like Slide but can jump over one adjacent tile.
                 // Map far offset to near offset to determine direction, then reuse Slide logic.
+                // JumpSlide offsets should use "far" offsets to define the jump direction.
+                debug_assert!(
+                    matches!(offset.x, HorizontalOffset::FarLeft | HorizontalOffset::FarRight | HorizontalOffset::Center)
+                    && matches!(offset.y, VerticalOffset::FarTop | VerticalOffset::FarBottom | VerticalOffset::Center),
+                    "JumpSlide offset should use far offsets, got ({:?}, {:?})", offset.x, offset.y
+                );
                 let near_x = match offset.x {
                     HorizontalOffset::FarLeft => HorizontalOffset::Left,
                     HorizontalOffset::FarRight => HorizontalOffset::Right,

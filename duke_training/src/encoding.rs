@@ -29,7 +29,9 @@ impl FeatureBuffer {
 
     #[inline]
     fn push(&mut self, val: usize) {
-        debug_assert!(self.len < MAX_BOARD_FEATURE_COUNT);
+        assert!(self.len < MAX_BOARD_FEATURE_COUNT,
+            "FeatureBuffer overflow: tried to push {} features (max {})",
+            self.len + 1, MAX_BOARD_FEATURE_COUNT);
         self.data[self.len] = val;
         self.len += 1;
     }
@@ -66,6 +68,9 @@ pub fn active_board_features(gs: &GameState) -> FeatureBuffer {
 
     for (coords, placed_tile) in board.active_coordinates() {
         let cell = coords.y as usize * BOARD_SIZE + coords.x as usize;
+        debug_assert!(cell < BOARD_SIZE * BOARD_SIZE,
+            "Board coordinate ({}, {}) maps to cell {} which is outside the {}x{} board",
+            coords.x, coords.y, cell, BOARD_SIZE, BOARD_SIZE);
         let is_mine = placed_tile.owner == current_player;
         let tile_idx = placed_tile.tile.tile_type().index();
 
@@ -94,10 +99,14 @@ pub fn bag_features(gs: &GameState) -> [f32; BAG_FEATURES] {
     let mut features = [0.0f32; BAG_FEATURES];
 
     for tile in my_bag.remaining() {
-        features[tile.tile_type().index()] += 1.0;
+        let idx = tile.tile_type().index();
+        debug_assert!(idx < NUM_TILE_TYPES, "tile type index {} >= NUM_TILE_TYPES {}", idx, NUM_TILE_TYPES);
+        features[idx] += 1.0;
     }
     for tile in opp_bag.remaining() {
-        features[NUM_TILE_TYPES + tile.tile_type().index()] += 1.0;
+        let idx = tile.tile_type().index();
+        debug_assert!(idx < NUM_TILE_TYPES, "tile type index {} >= NUM_TILE_TYPES {}", idx, NUM_TILE_TYPES);
+        features[NUM_TILE_TYPES + idx] += 1.0;
     }
 
     features

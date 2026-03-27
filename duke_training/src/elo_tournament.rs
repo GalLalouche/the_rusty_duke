@@ -221,10 +221,20 @@ fn compute_elo(wins: &[Vec<u32>], ties: &[Vec<u32>], n: usize) -> Vec<f64> {
     // for continuity with historical benchmark records.
     (0..n)
         .map(|i| {
-            whr.get_player_ratings(&i)
+            let rating = whr
+                .get_player_ratings(&i)
                 .and_then(|ratings| ratings.last())
-                .map(|r| r.elo() + 1500.0)
-                .unwrap_or(1500.0)
+                .map(|r| r.elo() + 1500.0);
+            match rating {
+                Some(r) => r,
+                None => {
+                    eprintln!(
+                        "Warning: WHR produced no rating for player {} (0 games?), defaulting to 1500.0",
+                        i
+                    );
+                    1500.0
+                }
+            }
         })
         .collect()
 }

@@ -115,7 +115,8 @@ pub fn run_matches(
         match game_result {
             GameResult::Won(Owner::TopPlayer) => result.player_a_wins += 1,
             GameResult::Won(Owner::BottomPlayer) => result.player_b_wins += 1,
-            _ => result.ties += 1,
+            GameResult::Tie => result.ties += 1,
+            GameResult::Ongoing => unreachable!("play_match should never return Ongoing"),
         }
     }
 

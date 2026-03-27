@@ -229,9 +229,11 @@ pub fn accumulate_from_cache(games: &[CachedGame], num_features: usize) -> crate
         "Feature cache has {} features but accumulator expects {}", num_features, NUM_FEATURES);
 
     let mut acc = RegressionAccumulator::new();
+    let mut skipped_states = 0usize;
     for game in games {
         for state in &game.states {
             if state.features.len() != num_features {
+                skipped_states += 1;
                 continue;
             }
             let current = state.current_player;
@@ -246,6 +248,12 @@ pub fn accumulate_from_cache(games: &[CachedGame], num_features: usize) -> crate
             feats.copy_from_slice(&state.features);
             acc.add_sample(&feats, target);
         }
+    }
+    if skipped_states > 0 {
+        eprintln!(
+            "Warning: accumulate_from_cache skipped {} states with mismatched feature count (expected {}, possible file corruption)",
+            skipped_states, num_features
+        );
     }
     acc
 }

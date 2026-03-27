@@ -238,7 +238,7 @@ fn main() {
                 GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
                 GameResult::Won(duke_rust::game::tile::Owner::BottomPlayer) => wins[1] += 1,
                 GameResult::Tie => ties += 1,
-                _ => {}
+                GameResult::Ongoing => unreachable!("Completed game should not have Ongoing result"),
             }
         }
 

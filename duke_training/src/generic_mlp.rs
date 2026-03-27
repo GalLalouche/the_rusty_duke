@@ -213,6 +213,12 @@ impl GenericMlp {
     /// Uses active_board_features for sparse binary features,
     /// bag_features for dense bag dims, and optionally combined features.
     pub fn forward_sparse(&self, gs: &GameState, include_combined: bool) -> f32 {
+        debug_assert!(self.input_size >= TOTAL_FEATURES,
+            "forward_sparse requires input_size >= {} (TOTAL_FEATURES), got {}",
+            TOTAL_FEATURES, self.input_size);
+        debug_assert!(!include_combined || self.input_size >= TOTAL_FEATURES + NUM_COMBINED_FEATURES,
+            "forward_sparse with include_combined requires input_size >= {}, got {}",
+            TOTAL_FEATURES + NUM_COMBINED_FEATURES, self.input_size);
         let w = &self.weights;
         let h1 = self.hidden_layers[0];
 
@@ -281,6 +287,9 @@ impl GenericMlp {
     /// This is like `forward_sparse(gs, true)` but additionally accumulates the
     /// 24 expensive features from `extract_features` at indices 1147..1171.
     pub fn forward_sparse_all(&self, gs: &GameState) -> f32 {
+        debug_assert_eq!(self.input_size, ALL_APPENDED_INPUT_SIZE,
+            "forward_sparse_all requires input_size == {} (ALL_APPENDED_INPUT_SIZE), got {}",
+            ALL_APPENDED_INPUT_SIZE, self.input_size);
         let w = &self.weights;
         let h1 = self.hidden_layers[0];
 
@@ -765,6 +774,12 @@ impl L1Accumulator {
     /// Performs the same sparse accumulation as `forward_sparse`, but stops
     /// before applying ReLU, storing the raw weighted sums.
     pub fn from_state(net: &GenericMlp, gs: &GameState, include_combined: bool) -> Self {
+        debug_assert!(net.input_size >= TOTAL_FEATURES,
+            "L1Accumulator::from_state requires net.input_size >= {} (TOTAL_FEATURES), got {}",
+            TOTAL_FEATURES, net.input_size);
+        debug_assert!(!include_combined || net.input_size >= TOTAL_FEATURES + NUM_COMBINED_FEATURES,
+            "L1Accumulator::from_state with include_combined requires net.input_size >= {}, got {}",
+            TOTAL_FEATURES + NUM_COMBINED_FEATURES, net.input_size);
         let h1 = net.hidden_layers[0];
         let w = &net.weights;
         let l1_w = &w[0..net.input_size * h1];
