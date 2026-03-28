@@ -67,6 +67,84 @@ impl CheckForGuard {
     }
 }
 
+/// Stack-allocated coordinate buffer for target_coordinates results.
+/// Max slide length on a 6x6 board is 5 squares; capacity 6 provides margin.
+const MAX_TARGETS: usize = 6;
+
+#[derive(Clone, Copy)]
+struct TargetCoords {
+    coords: [Coordinates; MAX_TARGETS],
+    len: u8,
+}
+
+impl TargetCoords {
+    #[inline(always)]
+    fn empty() -> Self {
+        TargetCoords {
+            coords: [Coordinates { x: 0, y: 0 }; MAX_TARGETS],
+            len: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn from_option(opt: Option<Coordinates>) -> Self {
+        match opt {
+            None => Self::empty(),
+            Some(c) => {
+                let mut t = Self::empty();
+                t.coords[0] = c;
+                t.len = 1;
+                t
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, c: Coordinates) {
+        debug_assert!((self.len as usize) < MAX_TARGETS, "TargetCoords overflow");
+        self.coords[self.len as usize] = c;
+        self.len += 1;
+    }
+
+    #[inline(always)]
+    fn iter(&self) -> impl Iterator<Item = Coordinates> + '_ {
+        self.coords[..self.len as usize].iter().copied()
+    }
+
+    /// Returns an owned iterator (no borrow on self). Safe because TargetCoords is Copy.
+    #[inline(always)]
+    fn into_iter(self) -> TargetCoordsIter {
+        TargetCoordsIter { inner: self, pos: 0 }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TargetCoordsIter {
+    inner: TargetCoords,
+    pos: u8,
+}
+
+impl Iterator for TargetCoordsIter {
+    type Item = Coordinates;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Coordinates> {
+        if self.pos < self.inner.len {
+            let c = self.inner.coords[self.pos as usize];
+            self.pos += 1;
+            Some(c)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.inner.len - self.pos) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
 
@@ -135,51 +213,46 @@ impl GameBoard {
             .filter(|c| self.board.is_in_bounds(*c))
     }
 
-    // TODO this should return an Iterator
     fn target_coordinates(
         &self, src: Coordinates, offset: Offsets, action: TileAction, center: VerticalOffset,
-    ) -> Vec<Coordinates> {
-        macro_rules! to_list {
-            ($o: expr) => {match $o {
-                None => Vec::new(),
-                Some(x) => vec![x],
-            }
-            }
-        }
+    ) -> TargetCoords {
         match action {
-            TileAction::Move => to_list!(self.to_absolute_coordinate(src, offset, center)),
-            TileAction::Jump => to_list!(self.to_absolute_coordinate(src, offset, center)),
-            TileAction::Strike => to_list!(self.to_absolute_coordinate(src, offset, center)),
+            TileAction::Move | TileAction::Jump | TileAction::Strike =>
+                TargetCoords::from_option(self.to_absolute_coordinate(src, offset, center)),
             TileAction::Slide => {
-                let horizontal = |r: Range<u16>| r.map(|x| Coordinates { x, y: src.y }).collect();
-                let vertical = |r: Range<u16>| r.map(|y| Coordinates { x: src.x, y }).collect();
-                fn diagonal<I1, I2>(x: I1, y: I2) -> Vec<Coordinates>
+                let mut res = TargetCoords::empty();
+                let push_horizontal = |res: &mut TargetCoords, r: Range<u16>| {
+                    for x in r { res.push(Coordinates { x, y: src.y }); }
+                };
+                let push_vertical = |res: &mut TargetCoords, r: Range<u16>| {
+                    for y in r { res.push(Coordinates { x: src.x, y }); }
+                };
+                fn push_diagonal<I1, I2>(res: &mut TargetCoords, x: I1, y: I2)
                     where I1: Iterator<Item=u16>, I2: Iterator<Item=u16> {
-                    x.zip(y).map(|(x, y)| Coordinates { x, y }).collect()
+                    for (x, y) in x.zip(y) { res.push(Coordinates { x, y }); }
                 }
-                let res: Vec<Coordinates> =
-                    if offset == HorizontalOffset::Right.center() {
-                        horizontal(0..src.x)
-                    } else if offset == HorizontalOffset::Left.center() {
-                        horizontal(src.x + 1..self.width())
-                    } else if offset == VerticalOffset::Top.center() {
-                        vertical(0..src.y)
-                    } else if offset == VerticalOffset::Bottom.center() {
-                        vertical(src.y + 1..self.height())
-                        // Diagonals
-                    } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Top) {
-                        diagonal((0..src.x).rev(), (0..src.y).rev())
-                    } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Top) {
-                        diagonal(src.x + 1..self.width(), (0..src.y).rev())
-                    } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom) {
-                        diagonal((0..src.x).rev(), src.y + 1..self.height())
-                    } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom) {
-                        diagonal(src.x + 1..self.width(), src.y + 1..self.height())
-                    } else {
-                        panic!("Invalid slide offset {:?}", offset)
-                    };
+                if offset == HorizontalOffset::Right.center() {
+                    push_horizontal(&mut res, 0..src.x);
+                } else if offset == HorizontalOffset::Left.center() {
+                    push_horizontal(&mut res, src.x + 1..self.width());
+                } else if offset == VerticalOffset::Top.center() {
+                    push_vertical(&mut res, 0..src.y);
+                } else if offset == VerticalOffset::Bottom.center() {
+                    push_vertical(&mut res, src.y + 1..self.height());
+                    // Diagonals
+                } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Top) {
+                    push_diagonal(&mut res, (0..src.x).rev(), (0..src.y).rev());
+                } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Top) {
+                    push_diagonal(&mut res, src.x + 1..self.width(), (0..src.y).rev());
+                } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom) {
+                    push_diagonal(&mut res, (0..src.x).rev(), src.y + 1..self.height());
+                } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom) {
+                    push_diagonal(&mut res, src.x + 1..self.width(), src.y + 1..self.height());
+                } else {
+                    panic!("Invalid slide offset {:?}", offset)
+                };
                 if cfg!(debug_assertions) {
-                    res.iter().for_each(|e| assert!(self.board.is_in_bounds(*e)));
+                    res.iter().for_each(|e| assert!(self.board.is_in_bounds(e)));
                     res.iter().for_each(|e| assert!(e.is_straight_line_to(src)));
                 }
                 res
