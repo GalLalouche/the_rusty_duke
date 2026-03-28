@@ -139,10 +139,15 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Map label linearly from [min_label, max_label] to [0, 1].
+/// Clamp label to [-10, +10] then map linearly to [0, 1].
+/// Normal positions (±6) get good spread (0.2..0.8).
+/// Terminals (±30) clamp to 0/1.
+const LABEL_CLAMP: f32 = 10.0;
+
 #[inline]
-fn label_to_target(label: f32, min_label: f32, max_label: f32) -> f32 {
-    (label - min_label) / (max_label - min_label)
+fn label_to_target(label: f32) -> f32 {
+    let clamped = label.clamp(-LABEL_CLAMP, LABEL_CLAMP);
+    (clamped + LABEL_CLAMP) / (2.0 * LABEL_CLAMP)
 }
 
 // ── Forward pass with intermediates ────────────────────────────────────────
@@ -503,7 +508,7 @@ fn main() {
     // Print configuration
     eprintln!("=== Supervised Training ===");
     // Load data first so we know label range
-    let (positions, label_min, label_max) = load_lpos(&input_path);
+    let (positions, _label_min, _label_max) = load_lpos(&input_path);
 
     eprintln!("  Input:          {}", input_path);
     let arch_str = std::iter::once(TOTAL_FEATURES.to_string())
@@ -515,7 +520,7 @@ fn main() {
     eprintln!("  Learning rate:  {}", lr);
     eprintln!("  Epochs:         {}", epochs);
     eprintln!("  Batch size:     {}", batch_size);
-    eprintln!("  Label mapping:  linear ({:.1}..{:.1}) -> (0..1)", label_min, label_max);
+    eprintln!("  Label mapping:  clamp to +-{}, linear to (0..1)", LABEL_CLAMP);
     eprintln!("  Eval interval:  {} positions", eval_interval);
     eprintln!("  Eval games:     {}", eval_games);
     eprintln!("  Benchmark:      {:?}", benchmark_specs);
@@ -620,7 +625,7 @@ fn main() {
             for si in batch_start..batch_end {
                 let pos_idx = shuffled_indices[si] as usize;
                 let pos = &positions[pos_idx];
-                let target = label_to_target(pos.label, label_min, label_max);
+                let target = label_to_target(pos.label);
 
                 let fwd = forward_with_intermediates(
                     &net.weights,
