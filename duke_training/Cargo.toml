@@ -67,3 +67,7 @@ path = "src/label_positions.rs"
 [[bin]]
 name = "supervised_train"
 path = "src/supervised_train.rs"
+
+[[bin]]
+name = "cnn_train"
+path = "src/cnn_train.rs"

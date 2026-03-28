@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod cnn_model;
 pub mod encoding;
 pub mod fc_model;
 pub mod fc_td_training;
