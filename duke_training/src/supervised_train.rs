@@ -22,7 +22,7 @@ use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
 use duke_training::encoding::{BOARD_FEATURES, BAG_FEATURES, TOTAL_FEATURES};
-use duke_training::game_setup::{create_bag, create_initial_state};
+use duke_training::game_setup::{create_bag, create_initial_state, TERMINAL_WIN_SCORE};
 use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
 use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, win_rate, Player};
@@ -138,11 +138,12 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Map label linearly from [-1000, +1000] to [0, 1].
-/// -1000 -> 0.0, 0 -> 0.5, +1000 -> 1.0
+/// Map label linearly from [-TERMINAL_WIN_SCORE, +TERMINAL_WIN_SCORE] to [0, 1].
+/// -TERMINAL_WIN_SCORE -> 0.0, 0 -> 0.5, +TERMINAL_WIN_SCORE -> 1.0
 #[inline]
 fn label_to_target(label: f32) -> f32 {
-    (label + 1000.0) / 2000.0
+    let range = TERMINAL_WIN_SCORE as f32;
+    (label + range) / (2.0 * range)
 }
 
 // ── Forward pass with intermediates ────────────────────────────────────────

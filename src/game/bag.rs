@@ -35,6 +35,17 @@ impl TileBag {
         !self.is_empty()
     }
 
+    /// Remove one instance of a specific tile type from the bag.
+    /// Returns `true` if the tile was found and removed, `false` otherwise.
+    pub fn remove_specific(&mut self, tile: TileType) -> bool {
+        if let Some(idx) = self.bag.iter().position(|t| *t == tile) {
+            self.bag.remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+
     // For undoing
     pub fn push(&mut self, t: TileType) -> () {
         self.bag.push(t);

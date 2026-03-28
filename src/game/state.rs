@@ -196,6 +196,21 @@ impl GameState {
         self.pulled_tile = Some(result);
     }
 
+    /// Remove a specific tile type from the current player's bag and set it
+    /// as the pulled tile.  Panics if the tile is not in the bag.
+    /// After calling this, use `make_a_move(GameMove::PlaceNewTile(offset))` to place it.
+    pub fn pull_specific_tile_from_bag(&mut self, tile: TileType) {
+        let bag = match self.current_player_turn {
+            Owner::TopPlayer => &mut self.top_player_bag,
+            Owner::BottomPlayer => &mut self.bottom_player_bag,
+        };
+        assert!(
+            bag.remove_specific(tile),
+            "pull_specific_tile_from_bag: tile {:?} not found in bag", tile,
+        );
+        self.pulled_tile = Some(tile);
+    }
+
     fn is_waiting_for_tile_placement(&self) -> bool {
         self.pulled_tile.is_some()
     }

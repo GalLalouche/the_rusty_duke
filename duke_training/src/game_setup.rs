@@ -4,12 +4,15 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand::rngs::{SmallRng, StdRng};
 
+use std::collections::HashMap;
+
 use duke_rust::game::ai::player::{AiMove, EvaluatingPlayer};
 use duke_rust::game::ai::player::ArtificialPlayer;
 use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
+use duke_rust::game::board::DukeOffset;
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
-use duke_rust::game::state::{GameResult, GameState};
+use duke_rust::game::state::{GameMove, GameResult, GameState};
 use duke_rust::game::tile::{Owner, TileType};
 
 use duke_rust::game::ai::heuristics::Heuristic;
@@ -22,6 +25,13 @@ use crate::nnue::NnueEvaluator;
 /// Safety limit: if a game exceeds this many turns, force a draw.
 /// In practice the built-in idle-move draw rule should trigger well before this.
 const MAX_TURNS: u32 = 500;
+
+/// Terminal game scores for minimax / labeling.
+/// Using ±30 keeps terminal values in the same ballpark as heuristic evaluations
+/// (which typically range from roughly −20 to +20), so the search doesn't
+/// over-weight shallow forced wins relative to positional advantages.
+pub const TERMINAL_WIN_SCORE: f64 = 30.0;
+pub const TERMINAL_LOSS_SCORE: f64 = -30.0;
 
 /// Convert a game result to a training target from the perspective of `current_player`.
 ///
@@ -214,11 +224,19 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
     }
 }
 
-/// Negamax search: evaluate a position to the given depth.
+/// Negamax search with expectimax for tile draws.
 ///
 /// Returns a score from the perspective of the current player (higher = better).
-/// Terminal positions are scored as +1000 (win), -1000 (loss), or 0 (tie).
+/// Terminal positions are scored as ±[`TERMINAL_WIN_SCORE`] or 0 (tie).
 /// At depth 0 or when no moves are available, returns the static evaluation.
+///
+/// **Tile-draw handling (expectimax):** when the current player can draw a
+/// tile from the bag, the drawn tile is random.  Instead of treating each
+/// placement move deterministically, we compute the expected value of the
+/// "draw" option by averaging over all distinct tile types in the bag
+/// (weighted by their count).  For each tile type, we take the max over
+/// valid placement locations, then weight-average across tile types.
+/// The final value is the best of "best piece move" and "expected draw value".
 pub fn negamax<E: GameEvaluator + ?Sized>(
     gs: &GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> f64 {
@@ -226,9 +244,9 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
     match gs.game_result() {
         GameResult::Won(winner) => {
             if winner == gs.current_player_turn() {
-                return 1000.0; // I won
+                return TERMINAL_WIN_SCORE;
             } else {
-                return -1000.0; // I lost
+                return TERMINAL_LOSS_SCORE;
             }
         }
         GameResult::Tie => return 0.0,
@@ -244,18 +262,71 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
         return evaluator.evaluate(gs) as f64;
     }
 
+    // Separate piece moves from tile-placement moves.
+    let mut piece_moves: Vec<&AiMove> = Vec::new();
+    let mut placement_offsets: Vec<DukeOffset> = Vec::new();
+    for mv in &moves {
+        match mv {
+            AiMove::PullTileFormBagAndPlay(offset, _) => {
+                // Collect unique offsets (they should already be unique from all_moves).
+                if !placement_offsets.contains(offset) {
+                    placement_offsets.push(*offset);
+                }
+            }
+            _ => piece_moves.push(mv),
+        }
+    }
+
+    // Best score among deterministic piece moves.
     let mut best = f64::NEG_INFINITY;
     let base_rng = SmallRng::seed_from_u64(0);
-    for mv in &moves {
+    for mv in &piece_moves {
         let mut child = gs.clone();
         let mut eval_rng = base_rng.clone();
         mv.play(&mut child, &mut eval_rng);
-        // Negate because opponent's best is our worst
         let score = -negamax(&child, evaluator, depth - 1, rng);
         if score > best {
             best = score;
         }
     }
+
+    // Expectimax for the "draw from bag" option.
+    if !placement_offsets.is_empty() {
+        let bag = gs.bag_for_current_player().remaining();
+        let total_tiles = bag.len() as f64;
+        debug_assert!(total_tiles > 0.0);
+
+        // Count distinct tile types and their frequencies.
+        let mut tile_counts: HashMap<TileType, usize> = HashMap::new();
+        for &tile in bag {
+            *tile_counts.entry(tile).or_insert(0) += 1;
+        }
+
+        // Expected value = sum over tile types of P(tile) * max_offset(value(tile, offset))
+        let mut draw_value = 0.0;
+        for (&tile_type, &count) in &tile_counts {
+            let prob = count as f64 / total_tiles;
+
+            // For this tile type, find the best placement offset.
+            let mut best_for_tile = f64::NEG_INFINITY;
+            for &offset in &placement_offsets {
+                let mut child = gs.clone();
+                child.pull_specific_tile_from_bag(tile_type);
+                child.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
+                let score = -negamax(&child, evaluator, depth - 1, rng);
+                if score > best_for_tile {
+                    best_for_tile = score;
+                }
+            }
+
+            draw_value += prob * best_for_tile;
+        }
+
+        if draw_value > best {
+            best = draw_value;
+        }
+    }
+
     best
 }
 
