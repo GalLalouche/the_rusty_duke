@@ -63,3 +63,7 @@ path = "src/td_selfplay.rs"
 [[bin]]
 name = "label_positions"
 path = "src/label_positions.rs"
+
+[[bin]]
+name = "supervised_train"
+path = "src/supervised_train.rs"
