@@ -1,6 +1,6 @@
 //! Elo tournament: round-robin play between multiple players with Elo rating computation.
 //!
-//! Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>] [--quantize]
+//! Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>] [--quantize] [--depth 1,2,1,1,1]
 //!
 //! Flags:
 //!   --models <list>  Comma-separated player list (REQUIRED). Each entry is either:
@@ -10,6 +10,7 @@
 //!   --games N        Number of games per matchup (default 1000)
 //!   --db <path>      Path to model registry SQLite DB (default D:/temp/duke_models.db)
 //!   --quantize       Quantize .gmlp models (int8 hidden weights, f32 L1 and output)
+//!   --depth <list>   Comma-separated search depths matching --models (default: all 1)
 
 use std::time::Instant;
 
@@ -22,7 +23,7 @@ use whr::{MatchRecord, WhrBuilder};
 const DEFAULT_DB_PATH: &str = "D:/temp/duke_models.db";
 
 fn print_usage_and_exit() -> ! {
-    eprintln!("Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>] [--quantize]");
+    eprintln!("Usage: elo_tournament --models 1,2,3,base,random [--games N] [--db <path>] [--quantize] [--depth 1,2,1,1,1]");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  --models <list>  Comma-separated player list (required)");
@@ -30,17 +31,19 @@ fn print_usage_and_exit() -> ! {
     eprintln!("  --games N        Number of games per matchup (default 1000)");
     eprintln!("  --db <path>      Path to model registry SQLite DB (default {})", DEFAULT_DB_PATH);
     eprintln!("  --quantize       Quantize .gmlp models (int8 hidden weights)");
+    eprintln!("  --depth <list>   Comma-separated search depths matching --models (default: all 1)");
     std::process::exit(1);
 }
 
-/// Parse CLI arguments into the models list, number of games per matchup, DB path, and quantize flag.
-fn parse_args() -> (Vec<String>, u32, String, bool) {
+/// Parse CLI arguments into the models list, number of games per matchup, DB path, quantize flag, and depths.
+fn parse_args() -> (Vec<String>, u32, String, bool, Vec<u32>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut games_per_matchup: u32 = 1000;
     let mut models_raw: Option<String> = None;
     let mut db_path: Option<String> = None;
     let mut quantize = false;
+    let mut depth_raw: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -67,6 +70,13 @@ fn parse_args() -> (Vec<String>, u32, String, bool) {
             db_path = Some(args[i].clone());
         } else if args[i] == "--quantize" {
             quantize = true;
+        } else if args[i] == "--depth" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --depth requires a value");
+                std::process::exit(1);
+            }
+            depth_raw = Some(args[i].clone());
         } else if args[i].starts_with("--") {
             eprintln!("Unknown flag: {}", args[i]);
             std::process::exit(1);
@@ -98,7 +108,31 @@ fn parse_args() -> (Vec<String>, u32, String, bool) {
 
     let db_path = db_path.unwrap_or_else(|| DEFAULT_DB_PATH.to_string());
 
-    (models, games_per_matchup, db_path, quantize)
+    let depths = match depth_raw {
+        Some(s) => {
+            let d: Vec<u32> = s
+                .split(',')
+                .map(|s| s.trim().parse::<u32>().expect("--depth entries must be positive integers"))
+                .collect();
+            if d.len() != models.len() {
+                eprintln!(
+                    "Error: --depth has {} entries but --models has {} entries (must match)",
+                    d.len(), models.len()
+                );
+                std::process::exit(1);
+            }
+            for &depth in &d {
+                if depth != 1 && depth != 2 {
+                    eprintln!("Error: --depth entries must be 1 or 2, got {}", depth);
+                    std::process::exit(1);
+                }
+            }
+            d
+        }
+        None => vec![1; models.len()],
+    };
+
+    (models, games_per_matchup, db_path, quantize, depths)
 }
 
 /// Load all players from the models list.
@@ -139,6 +173,7 @@ fn load_players(models: &[String], registry: &ModelRegistry, quantize: bool) -> 
 /// Returns (wins, ties) matrices where wins[i][j] = games player i won vs j.
 fn run_round_robin(
     players: &[LoadedModel],
+    depths: &[u32],
     games_per_matchup: u32,
 ) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
     let n = players.len();
@@ -160,8 +195,8 @@ fn run_round_robin(
             );
             print!("  ");
 
-            let player_a = players[a].as_player();
-            let player_b = players[b].as_player();
+            let player_a = players[a].as_player_with_depth(depths[a]);
+            let player_b = players[b].as_player_with_depth(depths[b]);
 
             let result = run_matches(&gs, &player_a, &player_b, games_per_matchup, &label);
 
@@ -304,7 +339,7 @@ fn print_results(
 }
 
 fn main() {
-    let (models, games_per_matchup, db_path, quantize) = parse_args();
+    let (models, games_per_matchup, db_path, quantize, depths) = parse_args();
     let n = models.len();
 
     println!("=== Elo Tournament ===");
@@ -312,6 +347,10 @@ fn main() {
     println!("  registry DB: {}", db_path);
     if quantize {
         println!("  quantize: ON (int8 hidden weights for .gmlp models)");
+    }
+    if depths.iter().any(|&d| d > 1) {
+        let depth_strs: Vec<String> = depths.iter().map(|d| d.to_string()).collect();
+        println!("  search depths: [{}]", depth_strs.join(", "));
     }
     println!();
 
@@ -323,14 +362,20 @@ fn main() {
     println!();
 
     let total_start = Instant::now();
-    let (wins, ties) = run_round_robin(&players, games_per_matchup);
+    let (wins, ties) = run_round_robin(&players, &depths, games_per_matchup);
     let total_elapsed = total_start.elapsed();
 
     println!();
     println!("All matches complete in {:.1?}", total_elapsed);
     println!();
 
-    let labels: Vec<String> = players.iter().map(|m| m.label.clone()).collect();
+    let labels: Vec<String> = players.iter().enumerate().map(|(i, m)| {
+        if depths[i] > 1 {
+            format!("{} (d{})", m.label, depths[i])
+        } else {
+            m.label.clone()
+        }
+    }).collect();
     let elo = compute_elo(&wins, &ties, n);
     print_results(&labels, &wins, &ties, &elo);
 
