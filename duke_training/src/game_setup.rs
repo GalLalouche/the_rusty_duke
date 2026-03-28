@@ -25,7 +25,7 @@ const MAX_TURNS: u32 = 500;
 
 /// Common trait for anything that can evaluate a game state.
 /// Higher values = better for the current player.
-/// The scale is arbitrary — only relative ordering matters for move selection.
+/// The scale is arbitrary -- only relative ordering matters for move selection.
 pub trait GameEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32;
 
@@ -62,7 +62,7 @@ impl GameEvaluator for HeuristicEvaluator<'_> {
 }
 
 /// Static heuristic evaluator using the four known heuristic enum values.
-/// Fully `Send + Sync` — no trait objects, works with rayon.
+/// Fully `Send + Sync` -- no trait objects, works with rayon.
 pub struct StaticHeuristicEvaluator {
     heuristics: Vec<duke_rust::game::ai::heuristics::Heuristics>,
 }

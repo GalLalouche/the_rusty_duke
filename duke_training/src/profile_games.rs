@@ -53,7 +53,7 @@ fn main() {
         if breakdown_active {
             println!("  Eval breakdown: ON (1147-input model)");
         } else {
-            println!("  Eval breakdown: requested but model is not a 1147-input .gmlp — skipping");
+            println!("  Eval breakdown: requested but model is not a 1147-input .gmlp -- skipping");
         }
     }
     println!();

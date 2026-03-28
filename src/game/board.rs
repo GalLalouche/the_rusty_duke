@@ -496,7 +496,7 @@ impl GameBoard {
     /// Check if the tile at `src` can attack/reach `target` in a single action
     /// (ignoring guard constraints). This is equivalent to checking whether
     /// `target` appears in `get_legal_moves_aux(src, CheckForGuard(false))`,
-    /// but avoids generating all moves — we only probe one target square.
+    /// but avoids generating all moves -- we only probe one target square.
     fn can_attack_square(&self, src: Coordinates, target: Coordinates) -> bool {
         let tile = match self.get(src) {
             Some(t) => t,
@@ -549,7 +549,7 @@ impl GameBoard {
     }
 
     /// Check if `target` lies on the slide line defined by `src` + direction `offset`.
-    /// Does NOT check obstruction — that is handled by `can_apply_action`.
+    /// Does NOT check obstruction -- that is handled by `can_apply_action`.
     fn is_target_on_slide(&self, src: Coordinates, offset: Offsets, target: Coordinates) -> bool {
         if target == src || !self.board.is_in_bounds(target) {
             return false;

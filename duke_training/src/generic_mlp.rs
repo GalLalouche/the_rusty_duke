@@ -472,7 +472,7 @@ struct QuantizedLayer {
 /// by 4x and allows the compiler to auto-vectorize the i8->f32 cast +
 /// multiply pattern.
 ///
-/// The output layer is kept as f32 (tiny — just `last_hidden + 1` params).
+/// The output layer is kept as f32 (tiny -- just `last_hidden + 1` params).
 pub struct QuantizedGenericMlp {
     pub input_size: usize,
     pub hidden_layers: Vec<usize>,
@@ -482,7 +482,7 @@ pub struct QuantizedGenericMlp {
     l1_weights_f32: Vec<f32>,
     /// L1 biases (f32).
     l1_biases: Vec<f32>,
-    /// Output layer weights (f32) — tiny, not worth quantizing.
+    /// Output layer weights (f32) -- tiny, not worth quantizing.
     output_weights: Vec<f32>,
     /// Output layer bias (f32).
     output_bias: f32,
@@ -742,7 +742,7 @@ impl GameEvaluator for QuantizedAppendedEvaluator {
 /// 2. For each candidate move, clone the accumulator, apply the feature
 ///    diff (`update_features`), then call `forward` to get the evaluation.
 ///
-/// This avoids redundant L1 recomputation across candidates — only the
+/// This avoids redundant L1 recomputation across candidates -- only the
 /// 2-4 changed features need to be patched instead of all ~24.
 pub struct L1Accumulator {
     /// Raw L1 values (bias + weighted sum of active features), before ReLU.

@@ -322,18 +322,18 @@ impl GameEvaluator for CombinedWeights {
 ///
 /// Returns `(control, duke_mob)` where:
 ///
-/// `control` — 9 values:
+/// `control` -- 9 values:
 ///   [0] my_approx_moves
 ///   [1] opp_approx_moves
 ///   [2] my_reachable_squares
 ///   [3] opp_reachable_squares
 ///   [4] contested_squares
-///   [5] my_defended   — how many of my tiles sit on squares I can reach
-///   [6] my_threatened — how many enemy tiles sit on squares I can reach
-///   [7] opp_defended  — how many of opponent's tiles sit on squares opponent can reach
-///   [8] opp_threatened — how many of my tiles sit on squares opponent can reach
+///   [5] my_defended   -- how many of my tiles sit on squares I can reach
+///   [6] my_threatened -- how many enemy tiles sit on squares I can reach
+///   [7] opp_defended  -- how many of opponent's tiles sit on squares opponent can reach
+///   [8] opp_threatened -- how many of my tiles sit on squares opponent can reach
 ///
-/// `duke_mob` — 2 values:
+/// `duke_mob` -- 2 values:
 ///   [0] my_duke_mobility   (move count for owner's duke, ignoring guard)
 ///   [1] opp_duke_mobility  (move count for opponent's duke, ignoring guard)
 ///
@@ -351,7 +351,7 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
     let mut opp_reach = [false; 36];
 
     // Only count tile-movement moves (not placements) so that approx_moves
-    // is consistent with reachable_squares — both measure on-board tile actions.
+    // is consistent with reachable_squares -- both measure on-board tile actions.
     let mut my_approx_moves = 0u32;
     let mut my_duke_moves = 0u32;
     for pm in gs.all_valid_game_moves_for_ignoring_guard(owner) {

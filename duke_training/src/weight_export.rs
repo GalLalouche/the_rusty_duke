@@ -5,7 +5,7 @@ use crate::nnue::NnueWeights;
 /// Extract weights from a trained burn FcValueNetwork into NnueWeights.
 ///
 /// Burn `Linear` stores weights as `[d_input, d_output]` row-major (O = I * W).
-/// L1: burn [INPUT_SIZE, l1_size] — NNUE reads column-major, same flat layout (no transpose).
+/// L1: burn [INPUT_SIZE, l1_size] -- NNUE reads column-major, same flat layout (no transpose).
 /// L2/L3: burn [in, out] row-major → NNUE [out, in] row-major (transpose).
 pub fn export_weights<B: Backend>(model: &FcValueNetwork<B>, l1_size: usize, l2_size: usize) -> NnueWeights {
     let l1_weight: Vec<f32> = model.fc1.weight.val().into_data().to_vec().expect("fc1 weight");

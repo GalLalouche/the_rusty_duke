@@ -34,7 +34,7 @@ pub struct GameTrajectoryData {
     pub result: GameResult,
 }
 
-/// Streaming writer — writes games incrementally, patches count on finish.
+/// Streaming writer -- writes games incrementally, patches count on finish.
 pub struct TrajectoryWriter {
     writer: BufWriter<std::fs::File>,
     num_games: u32,

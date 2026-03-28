@@ -37,7 +37,7 @@ pub struct FeatureCacheHeader {
     pub num_games: usize,
 }
 
-/// Streaming feature cache writer — crash-safe with periodic sync.
+/// Streaming feature cache writer -- crash-safe with periodic sync.
 pub struct FeatureCacheWriter {
     writer: BufWriter<std::fs::File>,
     num_features: usize,

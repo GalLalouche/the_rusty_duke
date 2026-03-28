@@ -1,8 +1,8 @@
 //! Train LR on combined features and benchmark vs heuristic.
 //!
 //! Modes:
-//!   --mode combined41  (default) — train on 41 combined features from a single cache
-//!   --mode all65                 — merge features.bin (24) + features_combined41.bin (41) = 65 features
+//!   --mode combined41  (default) -- train on 41 combined features from a single cache
+//!   --mode all65                 -- merge features.bin (24) + features_combined41.bin (41) = 65 features
 
 use std::io::BufReader;
 use std::time::Instant;

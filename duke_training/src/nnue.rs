@@ -2,7 +2,7 @@ use duke_rust::game::state::GameState;
 use crate::encoding::{active_feature_indices, TOTAL_FEATURES, BOARD_FEATURES, bag_features};
 
 pub const NUM_FEATURES: usize = TOTAL_FEATURES;
-/// Default sizes — can be overridden at load time or by `export_weights`.
+/// Default sizes -- can be overridden at load time or by `export_weights`.
 pub const DEFAULT_L1: usize = 256;
 pub const DEFAULT_L2: usize = 32;
 

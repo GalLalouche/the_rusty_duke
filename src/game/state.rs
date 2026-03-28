@@ -121,7 +121,7 @@ impl GameState {
         for (coords, placed) in snap.tiles {
             board.place(coords, placed);
         }
-        // Validate that both dukes exist on the board — downstream methods
+        // Validate that both dukes exist on the board -- downstream methods
         // (duke_coordinate, guard checking) will panic if a duke is missing.
         assert!(
             board.get_board().find(|t: &PlacedTile| t.owner == Owner::TopPlayer && t.tile_type.is_duke()).is_some(),

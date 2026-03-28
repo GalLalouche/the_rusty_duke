@@ -10,17 +10,17 @@
 //! 5. Update: w += lr / (N * sigma) * sum((reward_plus_i - reward_minus_i) * epsilon_i)
 //!
 //! Usage: es_train [--resume <nnue_path>] [--l1 256] [--l2 32]
-//!                 [--layers 64,64,32]  — configurable hidden layer sizes
+//!                 [--layers 64,64,32]  -- configurable hidden layer sizes
 //!                 [--pop 50] [--games 10] [--sigma 0.01] [--lr 0.01]
 //!                 [--iterations 200] [--eval-interval 20] [--eval-games 500]
 //!                 [--checkpoint-dir <dir>] [--time-limit 3600]
-//!                 [--opponent <spec>]  — training opponent (model ID, file, "base", "random")
-//!                 [--benchmark <spec>] — eval benchmark opponent (same specs; default "base")
-//!                 [--append-combined]  — use 1147-input network (1106 NNUE + 41 combined)
-//!                 [--append-all]       — use 1171-input network (1106 NNUE + 41 combined + 24 expensive)
-//!                 [--input-features combined]  — use 41 combined features only
-//!                 [--input-features guard]  — use 65 features (24 expensive + 41 combined)
-//!                 [--profile]              — print per-phase timing breakdown every 50 iters
+//!                 [--opponent <spec>]  -- training opponent (model ID, file, "base", "random")
+//!                 [--benchmark <spec>] -- eval benchmark opponent (same specs; default "base")
+//!                 [--append-combined]  -- use 1147-input network (1106 NNUE + 41 combined)
+//!                 [--append-all]       -- use 1171-input network (1106 NNUE + 41 combined + 24 expensive)
+//!                 [--input-features combined]  -- use 41 combined features only
+//!                 [--input-features guard]  -- use 65 features (24 expensive + 41 combined)
+//!                 [--profile]              -- print per-phase timing breakdown every 50 iters
 
 use std::time::{Duration, Instant};
 
@@ -578,7 +578,7 @@ fn run_es_training_loop(
                 }
             }
 
-            // Adaptive opponent epsilon — based on TRAINING win rate, not eval
+            // Adaptive opponent epsilon -- based on TRAINING win rate, not eval
             let train_wr_pct = avg_plus * 100.0;
             let old_opp_eps = opponent_epsilon;
             if train_wr_pct > 60.0 {

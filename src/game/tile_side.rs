@@ -195,7 +195,7 @@ impl TileSide {
             None
         }
     }
-    // TODO: Handle jump slides (partially implemented — Assassin excluded from training bag)
+    // TODO: Handle jump slides (partially implemented -- Assassin excluded from training bag)
     /// Returns ```None``` if `dst` is out of bounds, unless a [TileAction::Slide] can be applied.
     pub fn get_action_from_coordinates(
         &self, src: Coordinates, dst: Coordinates

@@ -442,7 +442,7 @@ fn encode_state_flat_uses_active_feature_indices() {
 fn fc_trainer_load_model_changes_output() {
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
 
-    // Create two trainers — they get different random weights
+    // Create two trainers -- they get different random weights
     let trainer1 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, DEFAULT_L1, DEFAULT_L2);
     let mut trainer2 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, DEFAULT_L1, DEFAULT_L2);
 
@@ -576,7 +576,7 @@ fn play_match_terminates() {
     let mut rng = StdRng::seed_from_u64(42);
     let result = play_match(&gs, &random, &random, &mut rng, max_turns);
 
-    // The match must have finished — it should not be Ongoing.
+    // The match must have finished -- it should not be Ongoing.
     assert_ne!(
         result,
         GameResult::Ongoing,
@@ -1608,12 +1608,12 @@ mod board_control_tests {
 
         // Duke (Initial) at (2,0) slides left/right: x=0,1 (left 2) + x=3,4,5 (right 3) = 5 duke moves.
         // Bowman (Flipped/B) at (3,3):
-        //   Top Move => (3,2) — valid (empty square)
-        //   FarTop Strike => (3,1) — valid (enemy footman there)
-        //   NearLeft+Top Strike => (2,2) — valid (enemy footman there)
-        //   NearRight+Top Strike => (4,2) — valid (enemy footman there)
-        //   NearLeft+Bottom Move => (2,4) — valid (empty)
-        //   NearRight+Bottom Move => (4,4) — valid (empty)
+        //   Top Move => (3,2) -- valid (empty square)
+        //   FarTop Strike => (3,1) -- valid (enemy footman there)
+        //   NearLeft+Top Strike => (2,2) -- valid (enemy footman there)
+        //   NearRight+Top Strike => (4,2) -- valid (enemy footman there)
+        //   NearLeft+Bottom Move => (2,4) -- valid (empty)
+        //   NearRight+Bottom Move => (4,4) -- valid (empty)
         // Total bowman moves: 6
         // Total my_moves: 5 (duke) + 6 (bowman) = 11
         // Strike destinations (3,1), (2,2), (4,2) are included in reachable_squares.
@@ -1631,7 +1631,7 @@ mod board_control_tests {
     fn threatened_enemy_tile() {
         // TopPlayer: duke at (3,3). BottomPlayer: duke at (0,5), footman at (5,3).
         // TopPlayer duke (Initial) slides horizontally from (3,3):
-        //   right: (4,3), (5,3) — the enemy footman at (5,3) is capturable,
+        //   right: (4,3), (5,3) -- the enemy footman at (5,3) is capturable,
         //   so (5,3) IS in my_reach → my_threatened >= 1.
         // BottomPlayer duke at (0,5) slides right: (1,5)..(5,5).
         //   None of those squares hold a TopPlayer tile → opp_threatened == 0.
@@ -1662,16 +1662,16 @@ mod board_control_tests {
         // Bowman side B has strikes at NearLeft+Top, NearRight+Top, FarTop.
         // Place bowman (flipped) at (3,3), friendly footman at (2,2).
         // NearLeft+Top Strike from (3,3) → (2,2). Strike requires an enemy tile on
-        // the target — so (2,2) won't actually produce a strike move for a friendly tile.
+        // the target -- so (2,2) won't actually produce a strike move for a friendly tile.
         //
         // Instead, test that an enemy tile is BOTH threatened by us and defended
         // by the opponent. Place:
-        //   TopPlayer: duke at (3,0) — slides horizontally, reaches (0,0)..(2,0) and (4,0)..(5,0)
+        //   TopPlayer: duke at (3,0) -- slides horizontally, reaches (0,0)..(2,0) and (4,0)..(5,0)
         //   BottomPlayer: duke at (0,5), footman at (1,0)
         //   BottomPlayer duke (flipped) at (0,5) slides vertically to (0,0)..(0,4)
-        //     — doesn't reach (1,0)
+        //     -- doesn't reach (1,0)
         //   But if we flip bottom duke and place at (1,5), it slides up column 1:
-        //     reaches (1,0) where its own footman sits? No — slide stops before friendly.
+        //     reaches (1,0) where its own footman sits? No -- slide stops before friendly.
         //
         // Better approach: just verify a position where my_threatened > 0 and
         // opp_defended > 0 for the same enemy tile (enemy tile capturable by us
@@ -1687,7 +1687,7 @@ mod board_control_tests {
         // Does bottom duke reach (5,3)? No, it only slides along row 5.
         //
         // Use a flipped bottom duke at (5,5) which slides vertically:
-        // (5,4), (5,3) [stops at the friendly footman — can't land on it].
+        // (5,4), (5,3) [stops at the friendly footman -- can't land on it].
         // Slides stop before friendly tiles. So (5,3) is NOT in opp_reach.
         //
         // Use a knight-type unit for bottom player: Longbowman flipped at (4,4)
@@ -1698,13 +1698,13 @@ mod board_control_tests {
         // TopPlayer: duke at (3,3), footman at (0,5)
         // BottomPlayer: duke at (0,4), footman at (5,3)
         //
-        // TopPlayer duke slides right: (4,3), (5,3) — enemy footman → my_threatened >= 1
+        // TopPlayer duke slides right: (4,3), (5,3) -- enemy footman → my_threatened >= 1
         // BottomPlayer duke (Initial) slides horizontally from (0,4):
-        //   right: (1,4),(2,4),(3,4),(4,4),(5,4) — no TopPlayer tiles
-        //   But TopPlayer footman is at (0,5) — not on row 4.
+        //   right: (1,4),(2,4),(3,4),(4,4),(5,4) -- no TopPlayer tiles
+        //   But TopPlayer footman is at (0,5) -- not on row 4.
         //
         // Let's put TopPlayer footman at (3,4) instead:
-        // BottomPlayer duke at (0,4) slides right: (1,4),(2,4),(3,4) — captures footman.
+        // BottomPlayer duke at (0,4) slides right: (1,4),(2,4),(3,4) -- captures footman.
         // So TopPlayer footman at (3,4) is in opp_reach → opp_threatened >= 1.
         let gs = make_state(vec![
             (coord(3, 3), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
@@ -2397,7 +2397,7 @@ fn greedy_move_incremental_is_deterministic() {
 
 /// Verify that quantization of a single hidden layer network produces output
 /// close to the f32 version (output layer stays f32, only L1 stays f32, so
-/// with 1 hidden layer there's nothing to quantize — output should be exact).
+/// with 1 hidden layer there's nothing to quantize -- output should be exact).
 #[test]
 fn quantized_single_hidden_is_exact() {
     let mut rng = StdRng::seed_from_u64(42);
