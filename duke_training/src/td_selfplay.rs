@@ -24,28 +24,12 @@ use duke_training::encoding::{encode_state_flat, TOTAL_FEATURES};
 use duke_training::fc_model::FcValueNetwork;
 use duke_training::fc_td_training::{FcTdTrainer, GameTrajectory};
 use duke_training::game_setup::{
-    create_bag, create_initial_state, play_selfplay_game, GameEvaluator,
-    StaticHeuristicEvaluator,
+    create_bag, create_initial_state, play_selfplay_game, StaticHeuristicEvaluator,
 };
-use duke_training::generic_mlp::GenericMlp;
+use duke_training::generic_mlp::{GenericMlp, GenericNnueEvaluator};
 use duke_training::match_runner::{run_matches, Player};
 
 type MyBackend = Autodiff<NdArray>;
-
-/// Thin wrapper that adapts a burn FcValueNetwork to the GameEvaluator trait.
-struct BurnEvaluator<'a, B: Backend> {
-    model: &'a FcValueNetwork<B>,
-    device: &'a B::Device,
-}
-
-impl<B: Backend> GameEvaluator for BurnEvaluator<'_, B> {
-    fn evaluate(&self, gs: &GameState) -> f32 {
-        let input = encode_state_flat::<B>(gs, self.device);
-        let batch = input.unsqueeze::<2>(); // [1, 1106]
-        let output = self.model.forward(batch); // [1, 1]
-        output.into_data().to_vec::<f32>().expect("scalar")[0]
-    }
-}
 
 /// Extract weights from a burn FcValueNetwork and build a GenericMlp.
 ///
@@ -254,20 +238,15 @@ fn main() {
     let mut last_log_at: u64 = 0;
 
     while games_played < total_games {
-        // Use the inner (non-autodiff) backend for self-play evaluation
-        let inner_model = trainer.model.valid();
+        // Extract burn weights -> GenericMlp once per batch for fast inference
+        let gmlp = to_generic_mlp(&trainer.model.valid(), &hidden_sizes);
+        let evaluator = GenericNnueEvaluator { net: gmlp };
 
-        // Play a batch of games with the current model
+        // Play a batch of games using fast GenericMlp sparse inference
         let games_this_batch = batch_size.min(total_games - games_played);
         for i in 0..games_this_batch {
             let seed = games_played + i;
             let mut rng = StdRng::seed_from_u64(seed);
-
-            let inner_device = burn::backend::ndarray::NdArrayDevice::Cpu;
-            let evaluator = BurnEvaluator {
-                model: &inner_model,
-                device: &inner_device,
-            };
 
             let (states, result) = play_selfplay_game(&gs, &evaluator, &mut rng, epsilon);
             if result != GameResult::Ongoing {
