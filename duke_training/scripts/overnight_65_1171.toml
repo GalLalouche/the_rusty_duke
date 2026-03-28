@@ -1,0 +1,29 @@
+[common]
+pop = 200
+games = 10
+sigma = 0.02
+lr = 0.02
+eval_interval = 25
+eval_games = 500
+iterations = 100000
+time_limit = 14400  # 4 hours each
+
+[[experiments]]
+name = "guard_nn_65_32x8"
+args = ["--input-features", "guard", "--layers", "32,8"]
+dir = "guard_nn_65_32x8"
+
+[[experiments]]
+name = "guard_nn_65_64x32"
+args = ["--input-features", "guard", "--layers", "64,32"]
+dir = "guard_nn_65_64x32"
+
+[[experiments]]
+name = "all_appended_1171_128x32"
+args = ["--append-all", "--layers", "128,32"]
+dir = "all_appended_1171_128x32"
+
+[[experiments]]
+name = "all_appended_1171_64x32"
+args = ["--append-all", "--layers", "64,32"]
+dir = "all_appended_1171_64x32"

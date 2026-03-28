@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "duke_training"]
+
 [package]
 name = "duke_rust"
 version = "0.1.0"
@@ -5,4 +8,21 @@ edition = "2018"
 
 [dependencies]
 fstrings = "*"
-rand = "*"
+rand = "0.8"
+paste = "*"
+strum = "0.24"
+strum_macros = "0.24"
+
+log = "*"
+backtrace = "*"
+
+minimax-alpha-beta = "0.1.7"
+minimax = "*"
+
+crossterm = "*"
+tui = { version = "*", default-features = false, features = ['crossterm'] }
+
+
+
+[profile.release]
+debug = false

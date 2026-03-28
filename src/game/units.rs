@@ -1,80 +1,372 @@
-use std::collections::HashMap;
+use std::convert::TryFrom;
+use std::sync::OnceLock;
+use strum::EnumCount;
 
-use crate::game::offset::{Centerable, Offsets, HorizontalOffset, VerticalOffset};
-use crate::game::token::{GameToken, OwnedToken, Owner, TokenAction, TokenSide};
+use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalOffset};
+use crate::game::tile::{Owner, PlacedTile, Tile, TileType};
+use crate::game::tile_side::{TileAction, TileSide};
 
-macro_rules! hashmap {
-    ($( $key: expr => $val: expr ),*) => {{
-         let mut map = ::std::collections::HashMap::new();
-         $( map.insert($key, $val); )*
-         map
-    }}
+pub fn duke() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&HorizontalSymmetricOffset::Near, TileAction::Slide)
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Slide),
+            (&VerticalOffset::Bottom, TileAction::Slide),
+        ]),
+        TileType::Duke,
+    )
 }
 
-pub fn duke(owner: Owner) -> OwnedToken {
-    fn sliders<A: Centerable>(o: A) -> TokenSide {
-        let c = Offsets::centered(o);
-        TokenSide::new(
-            hashmap![c => TokenAction::Slide, c.flipped() => TokenAction::Slide])
-    }
-    OwnedToken {
-        token: GameToken::new(
-            sliders(HorizontalOffset::Left),
-            sliders(VerticalOffset::Top),
-            "Duke".to_owned(),
-        ),
-        owner,
-    }
+pub fn bowman() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Move),
+            (&VerticalOffset::FarBottom, TileAction::Jump),
+            (&HorizontalSymmetricOffset::Near, TileAction::Move),
+            (&HorizontalSymmetricOffset::Far, TileAction::Jump),
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Move),
+            (&VerticalOffset::FarTop, TileAction::Strike),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Strike),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+        ]),
+        TileType::Bowman,
+    )
 }
 
-pub fn footman(owner: Owner) -> OwnedToken {
-    fn moves(cs: Vec<Offsets>) -> HashMap<Offsets, TokenAction> {
-        cs.iter().cloned().map(|e| (e, TokenAction::Move)).collect()
-    }
-    OwnedToken {
-        token: GameToken::new(
-            TokenSide::new(moves(vec![
-                Offsets::centered(VerticalOffset::Top),
-                Offsets::centered(VerticalOffset::Bottom),
-                Offsets::centered(HorizontalOffset::Left),
-                Offsets::centered(HorizontalOffset::Right),
-            ])),
-            TokenSide::new(moves(vec![
-                Offsets {
-                    x: HorizontalOffset::Left,
-                    y: VerticalOffset::Top,
-                },
-                Offsets { x: HorizontalOffset::Right, y: VerticalOffset::Top },
-                Offsets { x: HorizontalOffset::Left, y: VerticalOffset::Bottom },
-                Offsets { x: HorizontalOffset::Right, y: VerticalOffset::Bottom },
-                Offsets::centered(VerticalOffset::FarTop),
-            ])),
-            "Footman".to_owned(),
-        ),
-        owner,
-    }
+pub fn footman() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&FourWaySymmetric::NearStraight, TileAction::Move)
+        ]),
+        TileSide::new(vec![
+            (&FourWaySymmetric::NearDiagonal, TileAction::Move),
+            (&VerticalOffset::FarTop, TileAction::Move),
+        ]),
+        TileType::Footman,
+    )
 }
 
+pub fn dragoon() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&HorizontalSymmetricOffset::Near, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::Strike),
+            (&VerticalOffset::FarTop, TileAction::Strike),
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Move),
+            (&VerticalOffset::FarTop, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Slide),
+        ]),
+        TileType::Dragoon,
+    )
+}
+
+pub fn assassin() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarBottom), TileAction::JumpSlide),
+            (&VerticalOffset::FarTop, TileAction::JumpSlide),
+        ]),
+        TileSide::new(vec![
+            (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::JumpSlide),
+            (&VerticalOffset::FarBottom, TileAction::JumpSlide),
+        ]),
+        TileType::Assassin,
+    )
+}
+
+pub fn champion() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&FourWaySymmetric::NearStraight, TileAction::Move),
+            (&FourWaySymmetric::FarStraight, TileAction::Jump),
+        ]),
+        TileSide::new(vec![
+            (&FourWaySymmetric::NearStraight, TileAction::Strike),
+            (&FourWaySymmetric::FarStraight, TileAction::Jump),
+        ]),
+        TileType::Champion,
+    )
+}
+
+pub fn general() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Move),
+            (&VerticalOffset::Bottom, TileAction::Move),
+            (&HorizontalSymmetricOffset::Far, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Move),
+            (&HorizontalSymmetricOffset::Near, TileAction::Move),
+            (&HorizontalSymmetricOffset::Far, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+            (&HorizontalSymmetricOffset::Near, TileAction::Command),
+            (&VerticalOffset::Bottom, TileAction::Command),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Command),
+        ]),
+        TileType::General,
+    )
+}
+
+pub fn marshall() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::Jump),
+            (&HorizontalSymmetricOffset::Near, TileAction::Slide),
+            (&VerticalOffset::FarBottom, TileAction::Jump),
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Move),
+            (&HorizontalSymmetricOffset::Near, TileAction::Move),
+            (&HorizontalSymmetricOffset::Far, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Move),
+            (&VerticalOffset::Top, TileAction::Command),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Command),
+        ]),
+        TileType::Marshall,
+    )
+}
+
+pub fn priest() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&FourWaySymmetric::NearDiagonal, TileAction::Slide),
+        ]),
+        TileSide::new(vec![
+            (&FourWaySymmetric::NearDiagonal, TileAction::Move),
+            (&FourWaySymmetric::FarDiagonal, TileAction::Jump),
+        ]),
+        TileType::Priest,
+    )
+}
+
+pub fn longbowman() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&VerticalOffset::Bottom, TileAction::Unit),
+            (&VerticalOffset::Center, TileAction::Move),
+            (&VerticalOffset::FarBottom, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Bottom, TileAction::Unit),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarBottom), TileAction::Move),
+            (&VerticalOffset::Top, TileAction::Strike),
+            (&VerticalOffset::FarTop, TileAction::Strike),
+        ]),
+        TileType::Longbowman,
+    )
+}
+
+pub fn knight() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&HorizontalSymmetricOffset::Near, TileAction::Move),
+            (&VerticalOffset::Bottom, TileAction::Move),
+            (&VerticalOffset::FarBottom, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Jump),
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Slide),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Bottom), TileAction::Move),
+            (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarBottom), TileAction::Move),
+        ]),
+        TileType::Knight,
+    )
+}
+
+pub fn pikeman() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::Top), TileAction::Move),
+            (&(HorizontalSymmetricOffset::Far, VerticalOffset::FarTop), TileAction::Move),
+        ]),
+        TileSide::new(vec![
+            (&VerticalOffset::Top, TileAction::Move),
+            (&VerticalOffset::Bottom, TileAction::Move),
+            (&VerticalOffset::FarBottom, TileAction::Move),
+            (&(HorizontalSymmetricOffset::Near, VerticalOffset::FarTop), TileAction::Strike),
+        ]),
+        TileType::Pikeman,
+    )
+}
+
+pub fn wizard() -> Tile {
+    Tile::new(
+        TileSide::new(vec![
+            (&FourWaySymmetric::NearStraight, TileAction::Move),
+            (&FourWaySymmetric::NearDiagonal, TileAction::Move),
+        ]),
+        TileSide::new(vec![
+            (&FourWaySymmetric::FarStraight, TileAction::Jump),
+            (&FourWaySymmetric::FarDiagonal, TileAction::Jump),
+        ]),
+        TileType::Wizard,
+    )
+}
+
+#[cfg(test)]
 mod test {
+    use paste::paste;
+
     use super::*;
 
+    macro_rules! no_panics {
+        ($($ctor: ident),+ $(,)?) => {
+            $(paste! {
+                #[test]
+                fn [<$ctor _side_a_active_does_not_panic>]() {
+                    $ctor().get_side_a().actions();
+                }
+                #[test]
+                fn [<$ctor _side_b_active_does_not_panic>]() {
+                    $ctor().get_side_b().actions();
+                }
+            })+
+        }
+    }
+
+    no_panics!(
+        duke,
+        bowman,
+        dragoon,
+        assassin,
+        champion,
+        footman,
+
+        general,
+        marshall,
+        priest,
+        longbowman,
+        knight,
+        pikeman,
+        wizard,
+
+        //TODO add box units, like Light Horse.
+    );
+
     #[test]
-    fn duke_side_1_active_does_not_panic() {
-        duke(Owner::Player1).token.side_a.actions();
+    fn tile_from_type_does_not_panic_for_any_variant() {
+        use std::convert::TryFrom;
+        use strum::EnumCount;
+        for i in 0..TileType::COUNT {
+            let tt = TileType::try_from(i as u8).unwrap();
+            let tile = tile_from_type(tt);
+            assert_eq!(
+                tile.tile_type(),
+                tt,
+                "tile_from_type({:?}) returned tile with wrong type {:?}",
+                tt,
+                tile.tile_type(),
+            );
+        }
     }
 
     #[test]
-    fn duke_side_2_active_does_not_panic() {
-        duke(Owner::Player1).token.side_b.actions();
+    fn tile_from_type_returns_correct_name_for_each_variant() {
+        let expected: Vec<(&str, TileType)> = vec![
+            ("Duke", TileType::Duke),
+            ("Footman", TileType::Footman),
+            ("Pikeman", TileType::Pikeman),
+            ("Knight", TileType::Knight),
+            ("Champion", TileType::Champion),
+            ("Dragoon", TileType::Dragoon),
+            ("Wizard", TileType::Wizard),
+            ("General", TileType::General),
+            ("Marshall", TileType::Marshall),
+            ("Assassin", TileType::Assassin),
+            ("Priest", TileType::Priest),
+            ("Bowman", TileType::Bowman),
+            ("Longbowman", TileType::Longbowman),
+        ];
+        for (name, tt) in expected {
+            let tile = tile_from_type(tt);
+            assert_eq!(
+                tile.get_name(),
+                name,
+                "tile_from_type({:?}) has wrong name",
+                tt,
+            );
+        }
     }
+}
 
-    #[test]
-    fn footman_side_1_active_does_not_panic() {
-        footman(Owner::Player1).token.side_a.actions();
+/// Construct a Tile from its TileType.
+pub fn tile_from_type(tt: TileType) -> Tile {
+    match tt {
+        TileType::Duke => duke(),
+        TileType::Footman => footman(),
+        TileType::Pikeman => pikeman(),
+        TileType::Knight => knight(),
+        TileType::Champion => champion(),
+        TileType::Dragoon => dragoon(),
+        TileType::Wizard => wizard(),
+        TileType::General => general(),
+        TileType::Marshall => marshall(),
+        TileType::Assassin => assassin(),
+        TileType::Priest => priest(),
+        TileType::Bowman => bowman(),
+        TileType::Longbowman => longbowman(),
     }
+}
 
-    #[test]
-    fn footman_side_2_active_does_not_panic() {
-        footman(Owner::Player1).token.side_b.actions();
+/// Static tile table: [TileType::COUNT] entries for BottomPlayer (normal orientation),
+/// [TileType::COUNT] entries for TopPlayer (vertically flipped).
+/// Layout: [bottom_0, bottom_1, ..., bottom_12, top_0, top_1, ..., top_12]
+struct TileTable {
+    tiles: Vec<Tile>,
+}
+
+impl TileTable {
+    fn new() -> Self {
+        let mut tiles = Vec::with_capacity(TileType::COUNT * 2);
+        // First half: BottomPlayer tiles (normal orientation)
+        for i in 0..TileType::COUNT {
+            let tt = TileType::try_from(i as u8).unwrap();
+            tiles.push(tile_from_type(tt));
+        }
+        // Second half: TopPlayer tiles (vertically flipped)
+        for i in 0..TileType::COUNT {
+            let tt = TileType::try_from(i as u8).unwrap();
+            tiles.push(tile_from_type(tt).flip_vertical());
+        }
+        TileTable { tiles }
     }
+}
+
+static TILE_TABLE: OnceLock<TileTable> = OnceLock::new();
+
+fn tile_table() -> &'static TileTable {
+    TILE_TABLE.get_or_init(TileTable::new)
+}
+
+/// Look up the static Tile for a given TileType and Owner.
+/// TopPlayer tiles are pre-flipped vertically; BottomPlayer tiles are in normal orientation.
+#[inline]
+pub fn tile_table_lookup(tt: TileType, owner: Owner) -> &'static Tile {
+    let table = tile_table();
+    let idx = match owner {
+        Owner::BottomPlayer => tt.index(),
+        Owner::TopPlayer => TileType::COUNT + tt.index(),
+    };
+    &table.tiles[idx]
+}
+
+pub fn place_tile<U>(o: Owner, ctor: U) -> PlacedTile where U: Fn() -> Tile {
+    PlacedTile::new(o, ctor().tile_type())
+}
+
+pub fn place_tile_flipped<U>(o: Owner, ctor: U) -> PlacedTile where U: Fn() -> Tile {
+    let mut result = PlacedTile::new(o, ctor().tile_type());
+    result.flip();
+    result
 }
