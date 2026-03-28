@@ -276,4 +276,109 @@ mod test {
             board.flip_vertical().board,
         )
     }
+
+    // ── remove tests ──────────────────────────────────────────────────
+    #[test]
+    fn remove_returns_the_removed_element() {
+        let mut board = make_board();
+        board.put(Coordinates { x: 1, y: 0 }, 42);
+        let removed = board.remove(Coordinates { x: 1, y: 0 });
+        assert_some!(42, removed);
+        assert_none!(board.get(Coordinates { x: 1, y: 0 }));
+    }
+
+    #[test]
+    fn remove_returns_none_for_empty_cell() {
+        let mut board = make_board();
+        let removed = board.remove(Coordinates { x: 0, y: 0 });
+        assert_none!(removed);
+    }
+
+    // ── is_occupied / is_empty tests ──────────────────────────────────
+    #[test]
+    fn is_occupied_returns_true_for_occupied_cell() {
+        let mut board = make_board();
+        board.put(Coordinates { x: 0, y: 0 }, 5);
+        assert!(board.is_occupied(Coordinates { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn is_occupied_returns_false_for_empty_cell() {
+        let board = make_board();
+        assert!(!board.is_occupied(Coordinates { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn is_empty_returns_true_for_empty_cell() {
+        let board = make_board();
+        assert!(board.is_empty(Coordinates { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn is_empty_returns_false_for_occupied_cell() {
+        let mut board = make_board();
+        board.put(Coordinates { x: 0, y: 0 }, 5);
+        assert!(!board.is_empty(Coordinates { x: 0, y: 0 }));
+    }
+
+    // ── active_coordinates tests ──────────────────────────────────────
+    #[test]
+    fn active_coordinates_returns_only_non_empty_positions() {
+        let mut board = make_board();
+        board.put(Coordinates { x: 0, y: 0 }, 10);
+        board.put(Coordinates { x: 2, y: 1 }, 20);
+        let active: Vec<_> = board.active_coordinates().collect();
+        assert_eq!(active.len(), 2);
+        assert!(active.contains(&(Coordinates { x: 0, y: 0 }, &10)));
+        assert!(active.contains(&(Coordinates { x: 2, y: 1 }, &20)));
+    }
+
+    #[test]
+    fn active_coordinates_empty_board_returns_nothing() {
+        let board = make_board();
+        let active: Vec<_> = board.active_coordinates().collect();
+        assert!(active.is_empty());
+    }
+
+    // ── put returns previous value ────────────────────────────────────
+    #[test]
+    fn put_on_occupied_returns_previous_value() {
+        let mut board = make_board();
+        board.put(Coordinates { x: 1, y: 0 }, 10);
+        let prev = board.put(Coordinates { x: 1, y: 0 }, 20);
+        assert_some!(10, prev);
+        assert_some!(20, board.get(Coordinates { x: 1, y: 0 }).cloned());
+    }
+
+    #[test]
+    fn put_on_empty_returns_none() {
+        let mut board = make_board();
+        let prev = board.put(Coordinates { x: 1, y: 0 }, 10);
+        assert_none!(prev);
+    }
+
+    // ── flip_vertical on square board ─────────────────────────────────
+    #[test]
+    fn flip_vertical_on_square_board() {
+        let mut board: Board<i32> = Board::square(3);
+        board.put(Coordinates { x: 0, y: 0 }, 1);
+        board.put(Coordinates { x: 1, y: 1 }, 5);
+        board.put(Coordinates { x: 2, y: 2 }, 9);
+
+        let flipped = board.flip_vertical();
+        // y=0 -> y=2, y=1 -> y=1, y=2 -> y=0
+        assert_some!(1, flipped.get(Coordinates { x: 0, y: 2 }).cloned());
+        assert_some!(5, flipped.get(Coordinates { x: 1, y: 1 }).cloned());
+        assert_some!(9, flipped.get(Coordinates { x: 2, y: 0 }).cloned());
+        assert_none!(flipped.get(Coordinates { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn flip_vertical_twice_is_identity() {
+        let mut board = make_board();
+        board.put(Coordinates { x: 0, y: 0 }, 1);
+        board.put(Coordinates { x: 2, y: 1 }, 7);
+        let double_flipped = board.flip_vertical().flip_vertical();
+        assert_eq!(board.board, double_flipped.board);
+    }
 }

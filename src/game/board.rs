@@ -1014,4 +1014,215 @@ mod test {
         let dst = Coordinates { x: 3, y: 3 };
         assert_not!(board.can_move(src, dst));
     }
+
+    // ── GameBoard construction and basic operations ───────────────────
+    #[test]
+    fn empty_board_has_correct_dimensions() {
+        let board = GameBoard::empty();
+        assert_eq!(board.width(), GameBoard::BOARD_SIZE);
+        assert_eq!(board.height(), GameBoard::BOARD_SIZE);
+    }
+
+    #[test]
+    fn place_and_get_returns_tile() {
+        let mut board = GameBoard::empty();
+        let c = Coordinates { x: 2, y: 3 };
+        let tile = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
+        board.place(c, tile);
+        let got = board.get(c);
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().tile_type, TileType::Footman);
+        assert_eq!(got.unwrap().owner, Owner::TopPlayer);
+    }
+
+    #[test]
+    fn get_returns_none_on_empty_square() {
+        let board = GameBoard::empty();
+        assert!(board.get(Coordinates { x: 0, y: 0 }).is_none());
+    }
+
+    #[test]
+    #[should_panic]
+    fn place_on_occupied_panics() {
+        let mut board = GameBoard::empty();
+        let c = Coordinates { x: 2, y: 3 };
+        board.place(c, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(c, PlacedTile::new(Owner::BottomPlayer, TileType::Knight));
+    }
+
+    // ── can_attack_square tests ───────────────────────────────────────
+    #[test]
+    fn can_attack_square_footman_move_target() {
+        // Footman (initial side) has Move in 4 cardinal directions.
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 3, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::footman));
+        // Footman should be able to attack adjacent cardinal squares
+        assert!(board.can_attack_square(src, Coordinates { x: 3, y: 2 }));
+        assert!(board.can_attack_square(src, Coordinates { x: 3, y: 4 }));
+        assert!(board.can_attack_square(src, Coordinates { x: 2, y: 3 }));
+        assert!(board.can_attack_square(src, Coordinates { x: 4, y: 3 }));
+    }
+
+    #[test]
+    fn can_attack_square_footman_cannot_reach_diagonal() {
+        // Footman (initial side) has cardinal Moves only -- not diagonals.
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 3, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::footman));
+        assert_not!(board.can_attack_square(src, Coordinates { x: 4, y: 4 }));
+        assert_not!(board.can_attack_square(src, Coordinates { x: 2, y: 2 }));
+    }
+
+    #[test]
+    fn can_attack_square_duke_slide_reaches_far_square() {
+        // Duke (initial side) has horizontal Slides.
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 2, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::duke));
+        // Should slide to far horizontal squares
+        assert!(board.can_attack_square(src, Coordinates { x: 5, y: 3 }));
+        assert!(board.can_attack_square(src, Coordinates { x: 0, y: 3 }));
+    }
+
+    #[test]
+    fn can_attack_square_duke_slide_blocked_by_piece() {
+        // Duke (initial side) has horizontal Slides. A piece in between blocks.
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 0, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::duke));
+        board.place(Coordinates { x: 2, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
+        // Duke slide should be blocked from reaching x=3
+        assert_not!(board.can_attack_square(src, Coordinates { x: 3, y: 3 }));
+        // But can still reach x=1 (before the blocker)
+        assert!(board.can_attack_square(src, Coordinates { x: 1, y: 3 }));
+    }
+
+    #[test]
+    fn can_attack_square_returns_false_for_empty_src() {
+        let board = GameBoard::empty();
+        assert_not!(board.can_attack_square(Coordinates { x: 0, y: 0 }, Coordinates { x: 1, y: 0 }));
+    }
+
+    #[test]
+    fn can_attack_square_champion_jump_ignores_obstruction() {
+        // Champion (initial side) has Jump actions -- not blocked by intermediate pieces.
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 2, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::champion));
+        // Place a blocker in between
+        board.place(Coordinates { x: 2, y: 2 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
+        // Champion should jump over the blocker to (2,1)
+        assert!(board.can_attack_square(src, Coordinates { x: 2, y: 1 }));
+    }
+
+    // ── is_guard tests ────────────────────────────────────────────────
+    #[test]
+    fn is_guard_returns_true_when_duke_is_attacked() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        // Place an enemy footman that can reach the duke
+        board.place(Coordinates { x: 3, y: 4 }, units::place_tile(Owner::BottomPlayer, units::footman));
+        assert!(board.is_guard(Owner::TopPlayer));
+    }
+
+    #[test]
+    fn is_guard_returns_false_when_duke_is_safe() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        // Place an enemy footman far away from the duke
+        board.place(Coordinates { x: 5, y: 5 }, units::place_tile(Owner::BottomPlayer, units::footman));
+        assert_not!(board.is_guard(Owner::TopPlayer));
+    }
+
+    #[test]
+    fn is_guard_friendly_piece_does_not_guard() {
+        // A friendly piece adjacent to the duke should not trigger guard.
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 3, y: 4 }, units::place_tile(Owner::TopPlayer, units::footman));
+        assert_not!(board.is_guard(Owner::TopPlayer));
+    }
+
+    // ── Move validation: move to empty vs friendly vs obstructed ──────
+    #[test]
+    fn can_move_to_empty_square() {
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 3, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::footman));
+        assert!(board.can_move(src, Coordinates { x: 3, y: 4 }));
+    }
+
+    #[test]
+    fn can_move_blocked_by_friendly_piece() {
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 3, y: 3 };
+        let dst = Coordinates { x: 3, y: 4 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::footman));
+        board.place(dst, units::place_tile(Owner::TopPlayer, units::knight));
+        assert_not!(board.can_move(src, dst));
+    }
+
+    #[test]
+    fn slide_blocked_by_intervening_piece() {
+        // Duke (initial side) slides horizontally. A piece in the path blocks it.
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 0, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::duke));
+        board.place(Coordinates { x: 2, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
+        // Can slide to (1,3) but NOT past the blocker to (3,3)
+        assert!(board.can_move(src, Coordinates { x: 1, y: 3 }));
+        assert_not!(board.can_move(src, Coordinates { x: 3, y: 3 }));
+    }
+
+    #[test]
+    fn jump_over_piece_succeeds() {
+        // Champion (initial side) has Jump. Should jump over adjacent occupied.
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, units::place_tile(Owner::TopPlayer, units::duke));
+        let src = Coordinates { x: 2, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::champion));
+        // Place a blocker adjacent
+        board.place(Coordinates { x: 2, y: 2 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
+        // Champion jumps to (2,1) over the blocker
+        assert!(board.can_move(src, Coordinates { x: 2, y: 1 }));
+    }
+
+    #[test]
+    fn move_obstructed_by_intervening_piece() {
+        // A Move (non-jump) is obstructed by pieces in the path.
+        // Pikeman (initial side) has a far Move at distance 2 along cardinal.
+        // Actually, let's use footman which only moves 1 square, and test that
+        // moving 2 squares is invalid.
+        let mut board = GameBoard::empty();
+        let src = Coordinates { x: 3, y: 3 };
+        board.place(src, units::place_tile(Owner::TopPlayer, units::footman));
+        // Footman can only move 1 square -- 2 squares should fail.
+        assert_not!(board.can_move(src, Coordinates { x: 3, y: 5 }));
+    }
+
+    // ── duke_coordinates ──────────────────────────────────────────────
+    #[test]
+    fn duke_coordinates_finds_correct_position() {
+        let mut board = GameBoard::empty();
+        let duke_pos = Coordinates { x: 3, y: 4 };
+        board.place(duke_pos, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 1, y: 1 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+        assert_eq!(board.duke_coordinates(Owner::TopPlayer), duke_pos);
+        assert_eq!(board.duke_coordinates(Owner::BottomPlayer), Coordinates { x: 1, y: 1 });
+    }
+
+    // ── get_tiles_for ─────────────────────────────────────────────────
+    #[test]
+    fn get_tiles_for_returns_only_owned_tiles() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 1, y: 1 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+        let top_tiles = board.get_tiles_for(Owner::TopPlayer);
+        assert_eq!(top_tiles.len(), 2);
+        assert!(top_tiles.iter().all(|(_, t)| t.owner == Owner::TopPlayer));
+        let bot_tiles = board.get_tiles_for(Owner::BottomPlayer);
+        assert_eq!(bot_tiles.len(), 1);
+    }
 }

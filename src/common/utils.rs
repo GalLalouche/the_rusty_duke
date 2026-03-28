@@ -359,3 +359,128 @@ mod iterator_tests {
 
 pub fn test_rng() -> StdRng { StdRng::seed_from_u64(42) }
 pub fn split_rng<R: Rng>(rng: &mut R) -> StdRng { StdRng::seed_from_u64(rng.gen()) }
+
+#[cfg(test)]
+mod distance_tests {
+    use super::*;
+
+    // ── u8 Distance ───────────────────────────────────────────────────
+    #[test]
+    fn u8_distance_to_self_is_zero() {
+        assert_eq!(5u8.distance_to(5), 0);
+    }
+
+    #[test]
+    fn u8_distance_is_symmetric() {
+        assert_eq!(3u8.distance_to(10), 10u8.distance_to(3));
+    }
+
+    #[test]
+    fn u8_distance_basic() {
+        assert_eq!(0u8.distance_to(5), 5);
+        assert_eq!(5u8.distance_to(0), 5);
+    }
+
+    #[test]
+    fn u8_distance_adjacent() {
+        assert_eq!(4u8.distance_to(5), 1);
+        assert_eq!(5u8.distance_to(4), 1);
+    }
+
+    #[test]
+    fn u8_distance_max_range() {
+        assert_eq!(0u8.distance_to(255), 255);
+        assert_eq!(255u8.distance_to(0), 255);
+    }
+
+    // ── usize Distance ───────────────────────────────────────────────
+    #[test]
+    fn usize_distance_to_self_is_zero() {
+        assert_eq!(42usize.distance_to(42), 0);
+    }
+
+    #[test]
+    fn usize_distance_is_symmetric() {
+        assert_eq!(10usize.distance_to(100), 100usize.distance_to(10));
+    }
+
+    #[test]
+    fn usize_distance_basic() {
+        assert_eq!(3usize.distance_to(7), 4);
+    }
+
+    // ── u16 Distance ─────────────────────────────────────────────────
+    #[test]
+    fn u16_distance_to_self_is_zero() {
+        assert_eq!(100u16.distance_to(100), 0);
+    }
+
+    #[test]
+    fn u16_distance_is_symmetric() {
+        assert_eq!(50u16.distance_to(200), 200u16.distance_to(50));
+    }
+
+    #[test]
+    fn u16_distance_basic() {
+        assert_eq!(10u16.distance_to(20), 10);
+    }
+}
+
+#[cfg(test)]
+mod assert_not_tests {
+    #[test]
+    fn assert_not_passes_on_false() {
+        assert_not!(false);
+    }
+
+    #[test]
+    fn assert_not_passes_on_false_expression() {
+        assert_not!(1 == 2);
+    }
+
+    #[test]
+    fn assert_not_with_message_passes_on_false() {
+        assert_not!(false, "this should not trigger");
+    }
+
+    #[test]
+    #[should_panic]
+    fn assert_not_panics_on_true() {
+        assert_not!(true);
+    }
+
+    #[test]
+    #[should_panic]
+    fn assert_not_panics_on_true_expression() {
+        assert_not!(1 == 1);
+    }
+}
+
+#[cfg(test)]
+mod mk_string_tests {
+    use super::*;
+
+    #[test]
+    fn mk_string_with_separator() {
+        let v = vec![1, 2, 3];
+        assert_eq!(v.mk_string(", "), "1, 2, 3");
+    }
+
+    #[test]
+    fn mk_string_full_with_wrapping() {
+        let v = vec![1, 2, 3];
+        assert_eq!(v.mk_string_full("[", ", ", "]"), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn mk_string_empty_vector() {
+        let v: Vec<i32> = vec![];
+        assert_eq!(v.mk_string(", "), "");
+    }
+
+    #[test]
+    fn mk_string_single_element() {
+        let v = vec![42];
+        assert_eq!(v.mk_string(", "), "42");
+    }
+}

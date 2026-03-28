@@ -253,4 +253,128 @@ mod tests {
             );
         }
     }
+
+    // ── TileType::is_duke ─────────────────────────────────────────────
+    #[test]
+    fn is_duke_returns_true_for_duke() {
+        assert!(TileType::Duke.is_duke());
+    }
+
+    #[test]
+    fn is_duke_returns_false_for_non_duke() {
+        assert!(!TileType::Footman.is_duke());
+        assert!(!TileType::Knight.is_duke());
+        assert!(!TileType::Champion.is_duke());
+    }
+
+    // ── PlacedTile construction and fields ────────────────────────────
+    #[test]
+    fn placed_tile_new_sets_initial_side() {
+        let pt = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
+        assert_eq!(pt.tile_type, TileType::Footman);
+        assert_eq!(pt.owner, Owner::TopPlayer);
+        assert_eq!(pt.current_side, CurrentSide::Initial);
+    }
+
+    #[test]
+    fn placed_tile_new_bottom_player() {
+        let pt = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
+        assert_eq!(pt.owner, Owner::BottomPlayer);
+        assert_eq!(pt.tile_type, TileType::Duke);
+        assert_eq!(pt.current_side, CurrentSide::Initial);
+    }
+
+    // ── PlacedTile flip ───────────────────────────────────────────────
+    #[test]
+    fn placed_tile_flip_changes_to_flipped() {
+        let mut pt = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
+        assert_eq!(pt.current_side, CurrentSide::Initial);
+        pt.flip();
+        assert_eq!(pt.current_side, CurrentSide::Flipped);
+    }
+
+    #[test]
+    fn placed_tile_flip_twice_returns_to_initial() {
+        let mut pt = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
+        pt.flip();
+        pt.flip();
+        assert_eq!(pt.current_side, CurrentSide::Initial);
+    }
+
+    // ── CurrentSide flip ──────────────────────────────────────────────
+    #[test]
+    fn current_side_flip_initial_to_flipped() {
+        assert_eq!(CurrentSide::Initial.flip(), CurrentSide::Flipped);
+    }
+
+    #[test]
+    fn current_side_flip_flipped_to_initial() {
+        assert_eq!(CurrentSide::Flipped.flip(), CurrentSide::Initial);
+    }
+
+    // ── Owner ─────────────────────────────────────────────────────────
+    #[test]
+    fn owner_next_player_top_to_bottom() {
+        assert_eq!(Owner::TopPlayer.next_player(), Owner::BottomPlayer);
+    }
+
+    #[test]
+    fn owner_next_player_bottom_to_top() {
+        assert_eq!(Owner::BottomPlayer.next_player(), Owner::TopPlayer);
+    }
+
+    #[test]
+    fn owner_next_player_twice_returns_same() {
+        assert_eq!(Owner::TopPlayer.next_player().next_player(), Owner::TopPlayer);
+    }
+
+    // ── Ownership trait ───────────────────────────────────────────────
+    #[test]
+    fn same_team_for_same_owner() {
+        assert!(Owner::TopPlayer.same_team(&Owner::TopPlayer));
+        assert!(Owner::BottomPlayer.same_team(&Owner::BottomPlayer));
+    }
+
+    #[test]
+    fn different_team_for_different_owners() {
+        assert!(Owner::TopPlayer.different_team(&Owner::BottomPlayer));
+        assert!(Owner::BottomPlayer.different_team(&Owner::TopPlayer));
+    }
+
+    #[test]
+    fn placed_tile_same_team_checks_owner() {
+        let top1 = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
+        let top2 = PlacedTile::new(Owner::TopPlayer, TileType::Knight);
+        let bot1 = PlacedTile::new(Owner::BottomPlayer, TileType::Footman);
+        assert!((&top1).same_team(&&top2));
+        assert!((&top1).different_team(&&bot1));
+    }
+
+    // ── PlacedTile::get_current_side ──────────────────────────────────
+    #[test]
+    fn get_current_side_returns_side_a_for_initial() {
+        let pt = PlacedTile::new(Owner::BottomPlayer, TileType::Footman);
+        let side = pt.get_current_side();
+        // The tile should have a Unit action on initial side
+        let has_unit = side.actions().iter().any(|(_, a)| *a == crate::game::tile_side::TileAction::Unit);
+        assert!(has_unit);
+    }
+
+    #[test]
+    fn get_current_side_changes_after_flip() {
+        let mut pt = PlacedTile::new(Owner::BottomPlayer, TileType::Footman);
+        let side_a_actions: Vec<_> = pt.get_current_side().actions().clone();
+        pt.flip();
+        let side_b_actions: Vec<_> = pt.get_current_side().actions().clone();
+        // side_a and side_b should be different for Footman
+        assert_ne!(side_a_actions, side_b_actions);
+    }
+
+    // ── TileType::get_name ────────────────────────────────────────────
+    #[test]
+    fn get_name_returns_display_name() {
+        assert_eq!(TileType::Duke.get_name(), "Duke");
+        assert_eq!(TileType::Footman.get_name(), "Footman");
+        assert_eq!(TileType::Longbowman.get_name(), "Longbowman");
+    }
 }
