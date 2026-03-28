@@ -22,7 +22,7 @@ use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
 use duke_training::encoding::{BOARD_FEATURES, BAG_FEATURES, TOTAL_FEATURES};
-use duke_training::game_setup::{create_bag, create_initial_state, TERMINAL_WIN_SCORE};
+use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
 use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, win_rate, Player};
@@ -42,7 +42,8 @@ struct LabeledPosition {
 }
 
 /// Load labeled positions from an LPOS binary file.
-fn load_lpos(path: &str) -> Vec<LabeledPosition> {
+/// Returns (positions, min_label, max_label).
+fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
     let t0 = Instant::now();
     eprintln!("Loading labeled positions from {} ...", path);
 
@@ -128,7 +129,7 @@ fn load_lpos(path: &str) -> Vec<LabeledPosition> {
         min, max, mean, total_count
     );
 
-    positions
+    (positions, min, max)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -138,12 +139,10 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Map label linearly from [-TERMINAL_WIN_SCORE, +TERMINAL_WIN_SCORE] to [0, 1].
-/// -TERMINAL_WIN_SCORE -> 0.0, 0 -> 0.5, +TERMINAL_WIN_SCORE -> 1.0
+/// Map label linearly from [min_label, max_label] to [0, 1].
 #[inline]
-fn label_to_target(label: f32) -> f32 {
-    let range = TERMINAL_WIN_SCORE as f32;
-    (label + range) / (2.0 * range)
+fn label_to_target(label: f32, min_label: f32, max_label: f32) -> f32 {
+    (label - min_label) / (max_label - min_label)
 }
 
 // ── Forward pass with intermediates ────────────────────────────────────────
@@ -503,6 +502,9 @@ fn main() {
 
     // Print configuration
     eprintln!("=== Supervised Training ===");
+    // Load data first so we know label range
+    let (positions, label_min, label_max) = load_lpos(&input_path);
+
     eprintln!("  Input:          {}", input_path);
     let arch_str = std::iter::once(TOTAL_FEATURES.to_string())
         .chain(hidden_layers.iter().map(|h| h.to_string()))
@@ -513,7 +515,7 @@ fn main() {
     eprintln!("  Learning rate:  {}", lr);
     eprintln!("  Epochs:         {}", epochs);
     eprintln!("  Batch size:     {}", batch_size);
-    eprintln!("  Label mapping:  linear (-1000..+1000) -> (0..1)");
+    eprintln!("  Label mapping:  linear ({:.1}..{:.1}) -> (0..1)", label_min, label_max);
     eprintln!("  Eval interval:  {} positions", eval_interval);
     eprintln!("  Eval games:     {}", eval_games);
     eprintln!("  Benchmark:      {:?}", benchmark_specs);
@@ -523,9 +525,6 @@ fn main() {
 
     // Create checkpoint directory
     std::fs::create_dir_all(&checkpoint_dir).expect("Failed to create checkpoint directory");
-
-    // Load data
-    let positions = load_lpos(&input_path);
     let num_positions = positions.len();
 
     // Build expanded index array weighted by count.
@@ -621,7 +620,7 @@ fn main() {
             for si in batch_start..batch_end {
                 let pos_idx = shuffled_indices[si] as usize;
                 let pos = &positions[pos_idx];
-                let target = label_to_target(pos.label);
+                let target = label_to_target(pos.label, label_min, label_max);
 
                 let fwd = forward_with_intermediates(
                     &net.weights,
