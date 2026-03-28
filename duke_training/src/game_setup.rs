@@ -10,7 +10,7 @@ use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
-use duke_rust::game::tile::TileType;
+use duke_rust::game::tile::{Owner, TileType};
 
 use duke_rust::game::ai::heuristics::Heuristic;
 
@@ -22,6 +22,19 @@ use crate::nnue::NnueEvaluator;
 /// Safety limit: if a game exceeds this many turns, force a draw.
 /// In practice the built-in idle-move draw rule should trigger well before this.
 const MAX_TURNS: u32 = 500;
+
+/// Convert a game result to a training target from the perspective of `current_player`.
+///
+/// Returns `Some(1.0)` for a win, `Some(-1.0)` for a loss, `Some(0.0)` for a tie,
+/// and `None` for an ongoing game (caller decides whether to skip or use 0.0).
+pub fn game_result_target(result: GameResult, current_player: Owner) -> Option<f64> {
+    match result {
+        GameResult::Won(w) if w == current_player => Some(1.0),
+        GameResult::Won(_) => Some(-1.0),
+        GameResult::Tie => Some(0.0),
+        GameResult::Ongoing => None,
+    }
+}
 
 /// Common trait for anything that can evaluate a game state.
 /// Higher values = better for the current player.

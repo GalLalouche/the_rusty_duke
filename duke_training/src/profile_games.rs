@@ -58,8 +58,8 @@ fn main() {
     }
     println!();
 
-    let model = LoadedModel::from_spec(&model_spec);
-    let opponent = LoadedModel::from_spec(&opponent_spec);
+    let model = LoadedModel::from_spec(&model_spec, false);
+    let opponent = LoadedModel::from_spec(&opponent_spec, false);
 
     let bag = create_bag();
     let init_state = create_initial_state(&bag);

@@ -14,6 +14,7 @@ use std::io::{self, Read, Write, BufWriter};
 use duke_rust::game::state::GameResult;
 use duke_rust::game::tile::Owner;
 
+use crate::game_setup::game_result_target;
 use crate::serialization;
 
 const MAGIC: &[u8; 4] = b"FEAT";
@@ -237,12 +238,7 @@ pub fn accumulate_from_cache(games: &[CachedGame], num_features: usize) -> crate
                 continue;
             }
             let current = state.current_player;
-            let target = match game.result {
-                GameResult::Won(winner) => {
-                    if winner == current { 1.0 } else { -1.0 }
-                }
-                GameResult::Tie | GameResult::Ongoing => 0.0,
-            };
+            let target = game_result_target(game.result, current).unwrap_or(0.0);
             // Copy features into fixed-size array for accumulator
             let mut feats = [0.0f64; NUM_FEATURES];
             feats.copy_from_slice(&state.features);

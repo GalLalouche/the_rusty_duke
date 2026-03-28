@@ -8,14 +8,13 @@ use std::io::BufReader;
 use std::time::Instant;
 
 use duke_training::feature_cache::{stream_feature_cache, FeatureCacheHeader, parse_header, read_one_game};
-use duke_training::game_setup::{create_bag, create_initial_state, StaticHeuristicEvaluator};
+use duke_training::game_setup::{create_bag, create_initial_state, game_result_target, StaticHeuristicEvaluator};
 use duke_training::learned_heuristic::{
     AllFeaturesWeights, CombinedWeights,
     NUM_ALL_FEATURES, NUM_COMBINED_FEATURES, NUM_FEATURES,
 };
 use duke_training::match_runner::{run_matches, Player};
 
-use duke_rust::game::state::GameResult;
 
 /// Dynamic ridge regression accumulator for arbitrary K.
 struct RidgeAccumulator {
@@ -198,12 +197,9 @@ fn run_combined41(args: &[String], bench_games: u32) {
         assert_eq!(hdr.num_features, k, "Expected {} features, got {}", k, hdr.num_features);
         for game in chunk {
             for state in &game.states {
-                let target = match game.result {
-                    GameResult::Won(winner) => {
-                        if winner == state.current_player { 1.0 } else { -1.0 }
-                    }
-                    GameResult::Tie => 0.0,
-                    GameResult::Ongoing => continue,
+                let target = match game_result_target(game.result, state.current_player) {
+                    Some(t) => t,
+                    None => continue,
                 };
                 acc.add(&state.features, target);
             }
@@ -316,12 +312,9 @@ fn run_all65(args: &[String], bench_games: u32) {
                     "Player mismatch at game {}: 24-cache={:?}, 41-cache={:?}",
                     games_read + 1, s24.current_player, s41.current_player);
 
-                let target = match game24.result {
-                    GameResult::Won(winner) => {
-                        if winner == s24.current_player { 1.0 } else { -1.0 }
-                    }
-                    GameResult::Tie => 0.0,
-                    GameResult::Ongoing => continue,
+                let target = match game_result_target(game24.result, s24.current_player) {
+                    Some(t) => t,
+                    None => continue,
                 };
 
                 // Concatenate: [24 features] ++ [41 features] = 65 features

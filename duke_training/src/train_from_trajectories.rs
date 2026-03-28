@@ -10,7 +10,7 @@ use burn::backend::wgpu::WgpuDevice;
 use burn::backend::{Autodiff, Wgpu};
 
 use duke_training::cli::parse_flag;
-use duke_training::fc_td_training::{FcTdTrainer, GameTrajectory};
+use duke_training::fc_td_training::FcTdTrainer;
 use duke_training::trajectory_io::load_trajectories;
 use duke_training::weight_export::export_weights;
 
@@ -33,14 +33,9 @@ fn main() {
 
     println!("Loading trajectories from: {}", traj_path);
     let t = Instant::now();
-    let raw_games = load_trajectories(&traj_path).expect("Failed to load trajectories");
-    let total_states: usize = raw_games.iter().map(|g| g.states.len()).sum();
-    println!("  {} games, {} states in {:.1?}", raw_games.len(), total_states, t.elapsed());
-
-    // Convert to GameTrajectory format
-    let games: Vec<GameTrajectory> = raw_games.into_iter()
-        .map(|g| GameTrajectory { states: g.states, result: g.result })
-        .collect();
+    let games = load_trajectories(&traj_path).expect("Failed to load trajectories");
+    let total_states: usize = games.iter().map(|g| g.states.len()).sum();
+    println!("  {} games, {} states in {:.1?}", games.len(), total_states, t.elapsed());
 
     println!("Training NNUE: {}→{}→{}→1", duke_training::encoding::TOTAL_FEATURES, l1_size, l2_size);
     println!("  lr={}->{}, epochs={}, batch_size={}", lr_start, lr_end, epochs, batch_size);

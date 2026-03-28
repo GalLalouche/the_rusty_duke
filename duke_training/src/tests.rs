@@ -2351,12 +2351,12 @@ fn l1_accumulator_incremental_matches_full_1147() {
     }
 }
 
-/// Verify that `greedy_move` with a GenericNnueEvaluator (which triggers the
+/// Verify that `greedy_move` with a GenericEvaluator (which triggers the
 /// accumulator path) picks the same move as when called through `forward_sparse`
 /// directly.
 #[test]
 fn greedy_move_accumulator_matches_non_accumulator() {
-    use crate::generic_mlp::GenericNnueEvaluator;
+    use crate::generic_mlp::GenericEvaluator;
     use crate::game_setup::greedy_move_incremental;
 
     let mut rng = StdRng::seed_from_u64(42);
@@ -2369,7 +2369,7 @@ fn greedy_move_accumulator_matches_non_accumulator() {
     let mv1 = greedy_move_incremental(&gs, &net, false, &mut rng1);
 
     // Via the evaluator wrapping, which triggers as_generic_mlp -> incremental path
-    let evaluator = GenericNnueEvaluator { net: GenericMlp::random(1106, vec![64, 32], &mut StdRng::seed_from_u64(42)) };
+    let evaluator = GenericEvaluator { net: GenericMlp::random(1106, vec![64, 32], &mut StdRng::seed_from_u64(42)) };
     let mut rng2 = StdRng::seed_from_u64(100);
     let mv2 = crate::game_setup::greedy_move(&gs, &evaluator, &mut rng2);
 

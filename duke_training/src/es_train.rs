@@ -123,9 +123,7 @@ const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES; // 11
 // Old AppendedNnueEvaluator code removed; appended mode now uses GenericMlp via run_generic_sparse_training.
 
 use duke_training::generic_mlp::{
-    GenericMlp, CombinedNetEvaluator, GuardFeatureEvaluator,
-    GenericNnueEvaluator, GenericAppendedEvaluator,
-    AllAppendedEvaluator, ALL_APPENDED_INPUT_SIZE,
+    GenericMlp, GenericEvaluator, ALL_APPENDED_INPUT_SIZE,
 };
 use duke_training::loaded_model::{LoadedModel, NUM_GUARD_ALL_FEATURES};
 use duke_training::model_registry::{ModelRegistry, TrainingInfo, BenchmarkRecord};
@@ -876,7 +874,7 @@ fn main() {
     let opponent_spec = parse_flag::<String>(&args, "--opponent")
         .unwrap_or_else(|| "base".to_string());
 
-    let opponent_model = LoadedModel::from_spec(&opponent_spec);
+    let opponent_model = LoadedModel::from_spec(&opponent_spec, false);
     let training_opponent: TrainingOpponent = match &opponent_model.evaluator {
         Some(eval) => TrainingOpponent::Eval(eval.as_ref()),
         None => TrainingOpponent::Random,
@@ -888,7 +886,7 @@ fn main() {
     let benchmark_spec = parse_flag::<String>(&args, "--benchmark")
         .unwrap_or_else(|| "base".to_string());
 
-    let benchmark_model = LoadedModel::from_spec(&benchmark_spec);
+    let benchmark_model = LoadedModel::from_spec(&benchmark_spec, false);
     let benchmark_opponent: TrainingOpponent = match &benchmark_model.evaluator {
         Some(eval) => TrainingOpponent::Eval(eval.as_ref()),
         None => TrainingOpponent::Random,
@@ -944,7 +942,7 @@ fn main() {
             &config, input_size, &hidden_layers,
             move |weights: &[f32]| {
                 let net = GenericMlp::from_flat(weights.to_vec(), input_size, hl.clone());
-                Box::new(CombinedNetEvaluator::new(net))
+                Box::new(GenericEvaluator { net })
             },
             DenseFeatureMode::Combined.label(),
             resume_path.as_deref(),
@@ -968,7 +966,7 @@ fn main() {
             &config, input_size, &hidden_layers,
             move |weights: &[f32]| {
                 let net = GenericMlp::from_flat(weights.to_vec(), input_size, hl.clone());
-                Box::new(GuardFeatureEvaluator::new(net))
+                Box::new(GenericEvaluator { net })
             },
             DenseFeatureMode::Guard.label(),
             resume_path.as_deref(),
@@ -991,7 +989,7 @@ fn main() {
             &config, APPENDED_INPUT_SIZE, &hidden_layers,
             move |weights: &[f32]| {
                 let net = GenericMlp::from_flat(weights.to_vec(), APPENDED_INPUT_SIZE, hl.clone());
-                Box::new(GenericAppendedEvaluator { net })
+                Box::new(GenericEvaluator { net })
             },
             "Appended",
             resume_path.as_deref(),
@@ -1014,7 +1012,7 @@ fn main() {
             &config, ALL_APPENDED_INPUT_SIZE, &hidden_layers,
             move |weights: &[f32]| {
                 let net = GenericMlp::from_flat(weights.to_vec(), ALL_APPENDED_INPUT_SIZE, hl.clone());
-                Box::new(AllAppendedEvaluator { net })
+                Box::new(GenericEvaluator { net })
             },
             "AllAppended",
             resume_path.as_deref(),
@@ -1037,7 +1035,7 @@ fn main() {
             &config, NUM_FEATURES, &hidden_layers,
             move |weights: &[f32]| {
                 let net = GenericMlp::from_flat(weights.to_vec(), NUM_FEATURES, hl.clone());
-                Box::new(GenericNnueEvaluator { net })
+                Box::new(GenericEvaluator { net })
             },
             "NNUE",
             resume_path.as_deref(),

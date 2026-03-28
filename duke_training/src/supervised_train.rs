@@ -21,7 +21,7 @@ use rand::SeedableRng;
 use duke_training::cli::parse_flag;
 use duke_training::encoding::{BOARD_FEATURES, BAG_FEATURES, TOTAL_FEATURES};
 use duke_training::game_setup::{create_bag, create_initial_state, StaticHeuristicEvaluator};
-use duke_training::generic_mlp::{GenericMlp, GenericNnueEvaluator, MAX_HIDDEN};
+use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
 use duke_training::match_runner::{run_matches, win_rate, Player};
 
 // ── Labeled position data ──────────────────────────────────────────────────
@@ -326,7 +326,7 @@ fn evaluate_model(
     let bag = create_bag();
     let gs = create_initial_state(&bag);
 
-    let model_eval = GenericNnueEvaluator { net: GenericMlp::from_flat(
+    let model_eval = GenericEvaluator { net: GenericMlp::from_flat(
         net.weights.clone(),
         net.input_size,
         net.hidden_layers.clone(),

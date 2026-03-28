@@ -143,19 +143,12 @@ fn load_players(models: &[String], registry: &ModelRegistry, quantize: bool) -> 
     let mut players = Vec::with_capacity(models.len());
     for (idx, entry) in models.iter().enumerate() {
         let model = if entry == "base" || entry == "random" {
-            LoadedModel::from_spec(entry)
+            LoadedModel::from_spec(entry, false)
         } else if let Ok(model_id) = entry.parse::<i64>() {
-            if quantize {
-                LoadedModel::from_db_id_quantized(registry, model_id).unwrap_or_else(|e| {
-                    eprintln!("Error loading model ID {}: {}", model_id, e);
-                    std::process::exit(1);
-                })
-            } else {
-                LoadedModel::from_db_id(registry, model_id).unwrap_or_else(|e| {
-                    eprintln!("Error loading model ID {}: {}", model_id, e);
-                    std::process::exit(1);
-                })
-            }
+            LoadedModel::from_db_id(registry, model_id, quantize).unwrap_or_else(|e| {
+                eprintln!("Error loading model ID {}: {}", model_id, e);
+                std::process::exit(1);
+            })
         } else {
             eprintln!(
                 "Error: unrecognized model entry '{}'. Expected a number (DB model ID), \"base\", or \"random\".",

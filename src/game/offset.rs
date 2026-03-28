@@ -1,4 +1,3 @@
-use std::convert::TryFrom;
 use std::hash::Hash;
 
 use crate::common::coordinates::Coordinates;
@@ -26,6 +25,26 @@ impl HorizontalOffset {
             HorizontalOffset::Center => HorizontalOffset::Center,
             HorizontalOffset::Right => Left,
             HorizontalOffset::FarRight => FarLeft,
+        }
+    }
+
+    /// Map a far offset to its near equivalent (FarLeft->Left, FarRight->Right).
+    /// Near and Center offsets pass through unchanged.
+    pub fn to_near(&self) -> HorizontalOffset {
+        match self {
+            HorizontalOffset::FarLeft => Left,
+            HorizontalOffset::FarRight => Right,
+            other => *other,
+        }
+    }
+
+    /// Map a near offset to its far equivalent (Left->FarLeft, Right->FarRight).
+    /// Far and Center offsets pass through unchanged.
+    pub fn to_far(&self) -> HorizontalOffset {
+        match self {
+            HorizontalOffset::Left => FarLeft,
+            HorizontalOffset::Right => FarRight,
+            other => *other,
         }
     }
 }
@@ -115,6 +134,26 @@ impl VerticalOffset {
             VerticalOffset::Center => VerticalOffset::Center,
             VerticalOffset::Bottom => Top,
             VerticalOffset::FarBottom => FarTop,
+        }
+    }
+
+    /// Map a far offset to its near equivalent (FarTop->Top, FarBottom->Bottom).
+    /// Near and Center offsets pass through unchanged.
+    pub fn to_near(&self) -> VerticalOffset {
+        match self {
+            VerticalOffset::FarTop => Top,
+            VerticalOffset::FarBottom => Bottom,
+            other => *other,
+        }
+    }
+
+    /// Map a near offset to its far equivalent (Top->FarTop, Bottom->FarBottom).
+    /// Far and Center offsets pass through unchanged.
+    pub fn to_far(&self) -> VerticalOffset {
+        match self {
+            VerticalOffset::Top => FarTop,
+            VerticalOffset::Bottom => FarBottom,
+            other => *other,
         }
     }
 }

@@ -8,12 +8,8 @@ use duke_rust::game::state::{GameResult, GameState};
 
 use crate::encoding::encode_state_flat;
 use crate::fc_model::FcValueNetwork;
-
-/// A completed game trajectory: the sequence of states and the final result.
-pub struct GameTrajectory {
-    pub states: Vec<GameState>,
-    pub result: GameResult,
-}
+// Re-export GameTrajectory from trajectory_io for backward compatibility.
+pub use crate::trajectory_io::GameTrajectory;
 
 /// TD trainer that plays games and trains the FC value network using temporal
 /// difference learning. Same approach as TdTrainer but using the flat FC model.

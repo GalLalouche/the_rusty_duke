@@ -4,9 +4,7 @@
 //! to keep that module focused on the network implementation and evaluator wrappers.
 
 use crate::generic_mlp::{
-    GenericMlp, CombinedNetEvaluator, GuardFeatureEvaluator,
-    GenericNnueEvaluator, GenericAppendedEvaluator, AllAppendedEvaluator,
-    QuantizedNnueEvaluator, QuantizedAppendedEvaluator,
+    GenericMlp, GenericEvaluator, QuantizedEvaluator,
 };
 use crate::game_setup::{GameEvaluator, StaticHeuristicEvaluator};
 use crate::learned_heuristic::{
@@ -33,17 +31,20 @@ pub struct LoadedModel {
 
 impl LoadedModel {
     /// Load from a spec string: "base", "random", or a file path (.gmlp/.nnue).
-    pub fn from_spec(spec: &str) -> Self {
-        let (eval, desc) = load_opponent(spec);
+    /// When `quantize` is true, 1106/1147 .gmlp models use int8-quantized hidden layers.
+    pub fn from_spec(spec: &str, quantize: bool) -> Self {
+        let (eval, desc) = if quantize {
+            load_opponent_quantized(spec)
+        } else {
+            load_opponent(spec)
+        };
         let label = if spec == "base" || spec == "random" {
             spec.to_string()
         } else {
-            // Use filename stem + arch from description
             let stem = std::path::Path::new(spec)
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| spec.to_string());
-            // Extract parenthesized part from desc if present
             if let Some(start) = desc.find('(') {
                 format!("{} {}", stem, &desc[start..])
             } else {
@@ -55,63 +56,20 @@ impl LoadedModel {
 
     /// Load from a database model ID. Opens the registry, looks up the model,
     /// loads the file, and populates the struct.
-    pub fn from_db_id(registry: &ModelRegistry, model_id: i64) -> Result<Self, String> {
+    /// When `quantize` is true, 1106/1147 .gmlp models use int8-quantized hidden layers.
+    pub fn from_db_id(registry: &ModelRegistry, model_id: i64, quantize: bool) -> Result<Self, String> {
         let record = registry
             .get_model(model_id)
             .map_err(|e| format!("DB error looking up model #{}: {}", model_id, e))?
             .ok_or_else(|| format!("Model #{} not found in registry", model_id))?;
 
-        let (eval, _desc) = load_opponent(&record.file_path);
-        let label = if let Some(ref desc) = record.description {
-            desc.clone()
+        let (eval, _desc) = if quantize {
+            load_opponent_quantized(&record.file_path)
         } else {
-            format!("{} ({})",
-                std::path::Path::new(&record.file_path)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| record.file_path.clone()),
-                record.architecture)
+            load_opponent(&record.file_path)
         };
-
-        Ok(LoadedModel {
-            id: Some(model_id),
-            label,
-            evaluator: eval,
-        })
-    }
-
-    /// Load from a spec string with quantization for .gmlp models.
-    /// Same as [`from_spec`] but wraps 1106/1147 .gmlp models in quantized evaluators.
-    pub fn from_spec_quantized(spec: &str) -> Self {
-        let (eval, desc) = load_opponent_quantized(spec);
-        let label = if spec == "base" || spec == "random" {
-            spec.to_string()
-        } else {
-            let stem = std::path::Path::new(spec)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| spec.to_string());
-            if let Some(start) = desc.find('(') {
-                format!("{} {}", stem, &desc[start..])
-            } else {
-                stem
-            }
-        };
-        LoadedModel { id: None, label, evaluator: eval }
-    }
-
-    /// Load from a database model ID with quantization for .gmlp models.
-    /// Same as [`from_db_id`] but wraps 1106/1147 .gmlp models in quantized evaluators.
-    pub fn from_db_id_quantized(registry: &ModelRegistry, model_id: i64) -> Result<Self, String> {
-        let record = registry
-            .get_model(model_id)
-            .map_err(|e| format!("DB error looking up model #{}: {}", model_id, e))?
-            .ok_or_else(|| format!("Model #{} not found in registry", model_id))?;
-
-        let (eval, _desc) = load_opponent_quantized(&record.file_path);
         let label = if let Some(ref desc) = record.description {
-            // Append " (Q)" to mark quantized
-            if record.file_path.ends_with(".gmlp") {
+            if quantize && record.file_path.ends_with(".gmlp") {
                 format!("{} (Q)", desc)
             } else {
                 desc.clone()
@@ -121,7 +79,7 @@ impl LoadedModel {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| record.file_path.clone());
-            if record.file_path.ends_with(".gmlp") {
+            if quantize && record.file_path.ends_with(".gmlp") {
                 format!("{} ({}) (Q)", stem, record.architecture)
             } else {
                 format!("{} ({})", stem, record.architecture)
@@ -169,23 +127,25 @@ pub fn load_opponent_quantized(spec: &str) -> (Option<Box<dyn GameEvaluator + Sy
     match spec {
         path if path.ends_with(".gmlp") => {
             let net = GenericMlp::load(path).expect("Failed to load .gmlp opponent");
-            let qnet = net.quantize();
-            let desc = format!("GMLP-Q ({})", qnet.arch_string());
-            let eval: Box<dyn GameEvaluator + Sync + Send> = match qnet.input_size {
-                1106 => Box::new(QuantizedNnueEvaluator { qnet }),
-                1147 => Box::new(QuantizedAppendedEvaluator { qnet }),
-                other => {
-                    // Quantization not yet supported for other input sizes (e.g. 1171).
-                    // Fall through to non-quantized loading.
+            match net.input_size {
+                1106 | 1147 => {
+                    let qnet = net.quantize();
+                    let desc = format!("GMLP-Q ({})", qnet.arch_string());
+                    let eval: Box<dyn GameEvaluator + Sync + Send> = Box::new(QuantizedEvaluator { qnet });
+                    (Some(eval), desc)
+                }
+                _ => {
+                    // Quantization not supported for this input size; fall back to non-quantized.
                     eprintln!(
                         "WARNING: quantization not supported for input_size {} in '{}'. \
-                         Loading as NON-QUANTIZED f32 model. Performance will differ from quantized models.",
-                        other, path
+                         Loading as NON-QUANTIZED f32 model.",
+                        net.input_size, path
                     );
-                    return load_opponent(path);
+                    let desc = format!("GMLP ({})", net.arch_string());
+                    let eval: Box<dyn GameEvaluator + Sync + Send> = Box::new(GenericEvaluator { net });
+                    (Some(eval), desc)
                 }
-            };
-            (Some(eval), desc)
+            }
         }
         _ => load_opponent(spec), // non-gmlp: fall through to normal
     }
@@ -213,17 +173,7 @@ pub fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>
         path if path.ends_with(".gmlp") => {
             let net = GenericMlp::load(path).expect("Failed to load .gmlp opponent");
             let desc = format!("GMLP ({})", net.arch_string());
-            let eval: Box<dyn GameEvaluator + Sync + Send> = match net.input_size {
-                41 => Box::new(CombinedNetEvaluator::new(net)),
-                65 => Box::new(GuardFeatureEvaluator::new(net)),
-                1106 => Box::new(GenericNnueEvaluator { net }),
-                1147 => Box::new(GenericAppendedEvaluator { net }),
-                1171 => Box::new(AllAppendedEvaluator { net }),
-                other => panic!(
-                    "Unknown input_size {} in .gmlp file '{}'. Expected 41, 65, 1106, 1147, or 1171.",
-                    other, path
-                ),
-            };
+            let eval: Box<dyn GameEvaluator + Sync + Send> = Box::new(GenericEvaluator { net });
             (Some(eval), desc)
         }
         path if path.ends_with(".nnue") => {

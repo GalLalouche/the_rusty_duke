@@ -29,7 +29,7 @@ const MAGIC: &[u8; 4] = b"DTRJ";
 const VERSION: u32 = 2;
 
 /// A loaded game trajectory with full GameStates.
-pub struct GameTrajectoryData {
+pub struct GameTrajectory {
     pub states: Vec<GameState>,
     pub result: GameResult,
 }
@@ -91,7 +91,7 @@ impl Drop for TrajectoryWriter {
 ///
 /// Reads the entire file into memory first, then parses from a byte slice
 /// to avoid millions of tiny syscalls via BufReader.
-pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
+pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectory>> {
     let data = std::fs::read(path)?;
     let mut cursor = &data[..];
 
@@ -125,7 +125,7 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
         for _ in 0..num_states {
             states.push(read_game_state(&mut cursor)?);
         }
-        games.push(GameTrajectoryData { states, result });
+        games.push(GameTrajectory { states, result });
     }
 
     Ok(games)

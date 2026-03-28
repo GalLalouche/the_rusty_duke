@@ -27,7 +27,7 @@ use duke_training::encoding::{encode_state_flat, TOTAL_FEATURES};
 use duke_training::fc_model::FcValueNetwork;
 use duke_training::fc_td_training::{FcTdTrainer, GameTrajectory};
 use duke_training::game_setup::{create_bag, create_initial_state, play_selfplay_game};
-use duke_training::generic_mlp::{GenericMlp, GenericNnueEvaluator};
+use duke_training::generic_mlp::{GenericMlp, GenericEvaluator};
 use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, Player};
 
@@ -233,7 +233,7 @@ fn main() {
     // Load benchmark opponents once at startup
     let benchmark_opponents: Vec<LoadedModel> = benchmark_specs
         .iter()
-        .map(|spec| LoadedModel::from_spec(spec))
+        .map(|spec| LoadedModel::from_spec(spec, false))
         .collect();
     println!("Loaded {} benchmark opponent(s): {}",
         benchmark_opponents.len(),
@@ -257,7 +257,7 @@ fn main() {
     while games_played < total_games {
         // Extract burn weights -> GenericMlp once per batch for fast inference
         let gmlp = to_generic_mlp(&trainer.model.valid(), &hidden_sizes);
-        let evaluator = GenericNnueEvaluator { net: gmlp };
+        let evaluator = GenericEvaluator { net: gmlp };
 
         // Play a batch of games using fast GenericMlp sparse inference
         let games_this_batch = batch_size.min(total_games - games_played);
@@ -307,7 +307,7 @@ fn main() {
             gmlp.save(&ckpt_path).expect("Failed to save checkpoint");
 
             // Benchmark against all opponents
-            let gmlp_eval = GenericNnueEvaluator { net: gmlp };
+            let gmlp_eval = GenericEvaluator { net: gmlp };
             let trained_player = Player::Evaluator(&gmlp_eval);
 
             println!("EVAL ({} games):", games_played);

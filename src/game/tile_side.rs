@@ -205,18 +205,7 @@ impl TileSide {
                 return Some(TileAction::Slide);
             }
             // Check for JumpSlide at the corresponding far position
-            let far_offset = Offsets::new(
-                match near_offset.x {
-                    HorizontalOffset::Left => HorizontalOffset::FarLeft,
-                    HorizontalOffset::Right => HorizontalOffset::FarRight,
-                    other => other,
-                },
-                match near_offset.y {
-                    VerticalOffset::Top => VerticalOffset::FarTop,
-                    VerticalOffset::Bottom => VerticalOffset::FarBottom,
-                    other => other,
-                },
-            );
+            let far_offset = Offsets::new(near_offset.x.to_far(), near_offset.y.to_far());
             if self.board.get(far_offset.into()).has(&&TileAction::JumpSlide) {
                 return Some(TileAction::JumpSlide);
             }

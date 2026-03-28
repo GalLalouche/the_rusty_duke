@@ -135,16 +135,17 @@ impl ModelRegistry {
         Ok(Self { conn })
     }
 
-    /// Register a GenericMlp model. Returns the new model ID.
-    pub fn register_gmlp(
+    /// Private helper: insert a model record into the registry. Returns the new model ID.
+    fn register_model(
         &self,
         path: &str,
-        net: &GenericMlp,
+        file_format: &str,
+        architecture: &str,
+        input_size: usize,
+        param_count: usize,
         description: Option<&str>,
         training: Option<&TrainingInfo>,
     ) -> Result<i64, rusqlite::Error> {
-        let arch = net.arch_string();
-        let param_count = net.weights.len();
         let now = now_iso8601();
 
         let (iterations, sigma, lr, opponent, parent) = match training {
@@ -166,9 +167,9 @@ impl ModelRegistry {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 path,
-                "gmlp",
-                arch,
-                net.input_size as i64,
+                file_format,
+                architecture,
+                input_size as i64,
                 param_count as i64,
                 description,
                 now,
@@ -181,6 +182,21 @@ impl ModelRegistry {
         )?;
 
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Register a GenericMlp model. Returns the new model ID.
+    pub fn register_gmlp(
+        &self,
+        path: &str,
+        net: &GenericMlp,
+        description: Option<&str>,
+        training: Option<&TrainingInfo>,
+    ) -> Result<i64, rusqlite::Error> {
+        self.register_model(
+            path, "gmlp", &net.arch_string(),
+            net.input_size, net.weights.len(),
+            description, training,
+        )
     }
 
     /// Register an NNUE model. Returns the new model ID.
@@ -198,42 +214,11 @@ impl ModelRegistry {
             + weights.l2_bias.len()
             + weights.l3_weight.len()
             + weights.l3_bias.len();
-        let now = now_iso8601();
-
-        let (iterations, sigma, lr, opponent, parent) = match training {
-            Some(t) => (
-                t.iterations.map(|v| v as i64),
-                t.sigma.map(|v| v as f64),
-                t.lr.map(|v| v as f64),
-                t.opponent.as_deref(),
-                t.parent_model_id,
-            ),
-            None => (None, None, None, None, None),
-        };
-
-        self.conn.execute(
-            "INSERT INTO models (file_path, file_format, architecture, input_size,
-                param_count, description, created_at,
-                training_iterations, training_sigma, training_lr,
-                training_opponent, parent_model_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                path,
-                "nnue",
-                arch,
-                NUM_FEATURES as i64,
-                param_count as i64,
-                description,
-                now,
-                iterations,
-                sigma,
-                lr,
-                opponent,
-                parent,
-            ],
-        )?;
-
-        Ok(self.conn.last_insert_rowid())
+        self.register_model(
+            path, "nnue", &arch,
+            NUM_FEATURES, param_count,
+            description, training,
+        )
     }
 
     /// Register a Linear Regression weight file (.json). Returns the new model ID.
@@ -249,42 +234,11 @@ impl ModelRegistry {
         training: Option<&TrainingInfo>,
     ) -> Result<i64, rusqlite::Error> {
         let architecture = format!("LR-{}", num_weights);
-        let now = now_iso8601();
-
-        let (iterations, sigma, lr, opponent, parent) = match training {
-            Some(t) => (
-                t.iterations.map(|v| v as i64),
-                t.sigma.map(|v| v as f64),
-                t.lr.map(|v| v as f64),
-                t.opponent.as_deref(),
-                t.parent_model_id,
-            ),
-            None => (None, None, None, None, None),
-        };
-
-        self.conn.execute(
-            "INSERT INTO models (file_path, file_format, architecture, input_size,
-                param_count, description, created_at,
-                training_iterations, training_sigma, training_lr,
-                training_opponent, parent_model_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                path,
-                "json",
-                architecture,
-                num_weights as i64,
-                num_weights as i64,
-                description,
-                now,
-                iterations,
-                sigma,
-                lr,
-                opponent,
-                parent,
-            ],
-        )?;
-
-        Ok(self.conn.last_insert_rowid())
+        self.register_model(
+            path, "json", &architecture,
+            num_weights, num_weights,
+            description, training,
+        )
     }
 
     /// Record a benchmark result for a model. Returns the new benchmark ID.

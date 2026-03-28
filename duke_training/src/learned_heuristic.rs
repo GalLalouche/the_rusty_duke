@@ -264,45 +264,16 @@ impl CombinedWeights {
 
     /// Save weights to a JSON file (same format as LearnedHeuristicWeights).
     pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let json = format!(
-            "{{\"weights\":[{}]}}",
-            self.weights
-                .iter()
-                .map(|w| format!("{:.15e}", w))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        fs::write(path, json)
+        save_weights_json(path, &self.weights)
     }
 
     /// Load weights from a JSON file.
     pub fn load(path: &str) -> std::io::Result<Self> {
-        let data = fs::read_to_string(path)?;
-        let start = data.find('[').ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "No '[' found in JSON")
-        })?;
-        let end = data.find(']').ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "No ']' found in JSON")
-        })?;
-        let array_str = &data[start + 1..end];
-        let values: Vec<f64> = array_str
-            .split(',')
-            .map(|s| s.trim().parse::<f64>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to parse weight: {}", e),
-                )
-            })?;
+        let values = load_weights_json(path)?;
         if values.len() != NUM_COMBINED_FEATURES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "Expected {} weights, found {}",
-                    NUM_COMBINED_FEATURES,
-                    values.len()
-                ),
+                format!("Expected {} weights, found {}", NUM_COMBINED_FEATURES, values.len()),
             ));
         }
         let mut weights = [0.0f64; NUM_COMBINED_FEATURES];
@@ -452,46 +423,16 @@ impl LearnedHeuristicWeights {
 
     /// Save weights to a JSON file.
     pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let json = format!(
-            "{{\"weights\":[{}]}}",
-            self.weights
-                .iter()
-                .map(|w| format!("{:.15e}", w))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        fs::write(path, json)
+        save_weights_json(path, &self.weights)
     }
 
     /// Load weights from a JSON file.
     pub fn load(path: &str) -> std::io::Result<Self> {
-        let data = fs::read_to_string(path)?;
-        // Minimal JSON parser: find the array between [ and ]
-        let start = data.find('[').ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "No '[' found in JSON")
-        })?;
-        let end = data.find(']').ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "No ']' found in JSON")
-        })?;
-        let array_str = &data[start + 1..end];
-        let values: Vec<f64> = array_str
-            .split(',')
-            .map(|s| s.trim().parse::<f64>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to parse weight: {}", e),
-                )
-            })?;
+        let values = load_weights_json(path)?;
         if values.len() != NUM_FEATURES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "Expected {} weights, found {}",
-                    NUM_FEATURES,
-                    values.len()
-                ),
+                format!("Expected {} weights, found {}", NUM_FEATURES, values.len()),
             ));
         }
         let mut weights = [0.0f64; NUM_FEATURES];
@@ -537,45 +478,16 @@ impl AllFeaturesWeights {
 
     /// Save weights to a JSON file (same format as other weight structs).
     pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let json = format!(
-            "{{\"weights\":[{}]}}",
-            self.weights
-                .iter()
-                .map(|w| format!("{:.15e}", w))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        fs::write(path, json)
+        save_weights_json(path, &self.weights)
     }
 
     /// Load weights from a JSON file.
     pub fn load(path: &str) -> std::io::Result<Self> {
-        let data = fs::read_to_string(path)?;
-        let start = data.find('[').ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "No '[' found in JSON")
-        })?;
-        let end = data.find(']').ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "No ']' found in JSON")
-        })?;
-        let array_str = &data[start + 1..end];
-        let values: Vec<f64> = array_str
-            .split(',')
-            .map(|s| s.trim().parse::<f64>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to parse weight: {}", e),
-                )
-            })?;
+        let values = load_weights_json(path)?;
         if values.len() != NUM_ALL_FEATURES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "Expected {} weights, found {}",
-                    NUM_ALL_FEATURES,
-                    values.len()
-                ),
+                format!("Expected {} weights, found {}", NUM_ALL_FEATURES, values.len()),
             ));
         }
         let mut weights = [0.0f64; NUM_ALL_FEATURES];
@@ -590,12 +502,29 @@ impl GameEvaluator for AllFeaturesWeights {
     }
 }
 
+/// Save a weight vector to a JSON file as `{"weights": [...]}`.
+///
+/// All weight structs share the same on-disk format; this is the single
+/// implementation they all delegate to.
+pub fn save_weights_json(path: &str, weights: &[f64]) -> std::io::Result<()> {
+    let json = format!(
+        "{{\"weights\":[{}]}}",
+        weights
+            .iter()
+            .map(|w| format!("{:.15e}", w))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    fs::write(path, json)
+}
+
 /// Load a JSON weight file and return the raw weight vector.
 ///
-/// Both `LearnedHeuristicWeights` (24) and `CombinedWeights` (41) use the same
-/// `{"weights": [...]}` format. This function parses the file and returns the
-/// raw `Vec<f64>` so the caller can dispatch by length.
-pub fn load_lr_weights_raw(path: &str) -> std::io::Result<Vec<f64>> {
+/// All weight structs (`LearnedHeuristicWeights`, `CombinedWeights`,
+/// `AllFeaturesWeights`) use the same `{"weights": [...]}` format. This
+/// function parses the file and returns the raw `Vec<f64>` so the caller
+/// can dispatch by length or copy into a fixed-size array.
+pub fn load_weights_json(path: &str) -> std::io::Result<Vec<f64>> {
     let data = fs::read_to_string(path)?;
     let start = data.find('[').ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "No '[' found in JSON")
@@ -614,5 +543,10 @@ pub fn load_lr_weights_raw(path: &str) -> std::io::Result<Vec<f64>> {
                 format!("Failed to parse weight: {}", e),
             )
         })
+}
+
+/// Backward-compatible alias for `load_weights_json`.
+pub fn load_lr_weights_raw(path: &str) -> std::io::Result<Vec<f64>> {
+    load_weights_json(path)
 }
 

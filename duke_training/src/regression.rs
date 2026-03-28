@@ -6,6 +6,7 @@
 
 use duke_rust::game::state::{GameResult, GameState};
 
+use crate::game_setup::game_result_target;
 use crate::learned_heuristic::{
     extract_features, LearnedHeuristicWeights, NUM_FEATURES,
 };
@@ -49,12 +50,7 @@ impl RegressionAccumulator {
             }
             let features = extract_features(state);
             let current = state.current_player_turn();
-            let target = match result {
-                GameResult::Won(winner) => {
-                    if *winner == current { 1.0 } else { -1.0 }
-                }
-                GameResult::Tie | GameResult::Ongoing => 0.0,
-            };
+            let target = game_result_target(*result, current).unwrap_or(0.0);
             self.add_sample(&features, target);
         }
     }

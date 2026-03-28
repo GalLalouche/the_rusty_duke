@@ -703,30 +703,25 @@ impl QuantizedGenericMlp {
     }
 }
 
-/// Evaluator that wraps a QuantizedGenericMlp for sparse NNUE features (1106 inputs).
-pub struct QuantizedNnueEvaluator {
+/// Evaluator that wraps a QuantizedGenericMlp, dispatching by input_size.
+pub struct QuantizedEvaluator {
     pub qnet: QuantizedGenericMlp,
 }
 
-impl GameEvaluator for QuantizedNnueEvaluator {
+impl GameEvaluator for QuantizedEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
-        self.qnet.forward_sparse(gs, false)
+        match self.qnet.input_size {
+            1106 => self.qnet.forward_sparse(gs, false),
+            1147 => self.qnet.forward_sparse(gs, true),
+            other => panic!(
+                "QuantizedEvaluator: unsupported input_size {}. Expected 1106 or 1147.",
+                other
+            ),
+        }
     }
     // as_generic_mlp returns None: the incremental L1 accumulator path
     // calls forward_inner on the f32 GenericMlp, which would bypass
     // quantization. Instead we fall back to the evaluate() path above.
-}
-
-/// Evaluator that wraps a QuantizedGenericMlp for appended features (1147 inputs).
-pub struct QuantizedAppendedEvaluator {
-    pub qnet: QuantizedGenericMlp,
-}
-
-impl GameEvaluator for QuantizedAppendedEvaluator {
-    fn evaluate(&self, gs: &GameState) -> f32 {
-        self.qnet.forward_sparse(gs, true)
-    }
-    // as_generic_mlp returns None: same reasoning as QuantizedNnueEvaluator.
 }
 
 // ── L1 Accumulator for incremental updates ──────────────────────────────
@@ -926,94 +921,50 @@ impl L1Accumulator {
     }
 }
 
-/// Evaluator that wraps a GenericMlp: extracts combined features then forward-passes.
-pub struct CombinedNetEvaluator {
-    pub net: GenericMlp,
-}
-
-impl CombinedNetEvaluator {
-    pub fn new(net: GenericMlp) -> Self {
-        Self { net }
-    }
-}
-
-impl GameEvaluator for CombinedNetEvaluator {
-    fn evaluate(&self, gs: &GameState) -> f32 {
-        let features = extract_combined_features(gs);
-        self.net.forward_f64(&features)
-    }
-}
-
-/// Evaluator that wraps a GenericMlp: extracts all 65 features (24 expensive + 41 combined)
-/// then forward-passes. This is the richest feature set with the most signal.
-pub struct GuardFeatureEvaluator {
-    pub net: GenericMlp,
-}
-
-impl GuardFeatureEvaluator {
-    pub fn new(net: GenericMlp) -> Self {
-        Self { net }
-    }
-}
-
-impl GameEvaluator for GuardFeatureEvaluator {
-    fn evaluate(&self, gs: &GameState) -> f32 {
-        let expensive = extract_features(gs);       // 24 values
-        let combined = extract_combined_features(gs); // 41 values
-        let mut features = [0.0f64; NUM_GUARD_ALL_FEATURES];
-        features[..24].copy_from_slice(&expensive);
-        features[24..].copy_from_slice(&combined);
-        self.net.forward_f64(&features)
-    }
-}
-
-/// Evaluator that wraps a GenericMlp for sparse NNUE features (1106 inputs).
-pub struct GenericNnueEvaluator {
-    pub net: GenericMlp,
-}
-
-impl GameEvaluator for GenericNnueEvaluator {
-    fn evaluate(&self, gs: &GameState) -> f32 {
-        self.net.forward_sparse(gs, false)
-    }
-    fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> {
-        Some((&self.net, false))
-    }
-}
-
-/// Evaluator that wraps a GenericMlp for appended features (1147 inputs).
-pub struct GenericAppendedEvaluator {
-    pub net: GenericMlp,
-}
-
-impl GameEvaluator for GenericAppendedEvaluator {
-    fn evaluate(&self, gs: &GameState) -> f32 {
-        self.net.forward_sparse(gs, true)
-    }
-    fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> {
-        Some((&self.net, true))
-    }
-}
-
 /// Total input size for the "all appended" mode:
 /// 1106 NNUE features + 41 combined + 24 expensive = 1171.
 pub const ALL_APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES + LH_NUM_FEATURES;
 
-/// Evaluator that wraps a GenericMlp for all-appended features (1171 inputs).
+/// Unified evaluator that wraps a GenericMlp, dispatching by input_size.
 ///
-/// Uses sparse board encoding (1106) plus all 65 heuristic features (41 cheap + 24 expensive).
-/// The expensive features include guard checking, so this is slower per evaluation than
-/// `GenericAppendedEvaluator` (1147) but has richer signal.
-pub struct AllAppendedEvaluator {
+/// Replaces the former CombinedNetEvaluator (41), GuardFeatureEvaluator (65),
+/// GenericNnueEvaluator (1106), GenericAppendedEvaluator (1147), and
+/// AllAppendedEvaluator (1171) with a single struct.
+pub struct GenericEvaluator {
     pub net: GenericMlp,
 }
 
-impl GameEvaluator for AllAppendedEvaluator {
+impl GameEvaluator for GenericEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
-        self.net.forward_sparse_all(gs)
+        match self.net.input_size {
+            41 => {
+                let features = extract_combined_features(gs);
+                self.net.forward_f64(&features)
+            }
+            65 => {
+                let expensive = extract_features(gs);       // 24 values
+                let combined = extract_combined_features(gs); // 41 values
+                let mut features = [0.0f64; NUM_GUARD_ALL_FEATURES];
+                features[..24].copy_from_slice(&expensive);
+                features[24..].copy_from_slice(&combined);
+                self.net.forward_f64(&features)
+            }
+            1106 => self.net.forward_sparse(gs, false),
+            1147 => self.net.forward_sparse(gs, true),
+            1171 => self.net.forward_sparse_all(gs),
+            other => panic!(
+                "GenericEvaluator: unknown input_size {}. Expected 41, 65, 1106, 1147, or 1171.",
+                other
+            ),
+        }
     }
-    // Return None from as_generic_mlp: the incremental L1 accumulator path
-    // doesn't support the extra 24 expensive features yet. Fall back to the
-    // full evaluate() path above.
+
+    fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> {
+        match self.net.input_size {
+            1106 => Some((&self.net, false)),
+            1147 => Some((&self.net, true)),
+            _ => None, // dense (41, 65) and 1171 don't support incremental
+        }
+    }
 }
 

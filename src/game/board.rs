@@ -264,17 +264,7 @@ impl GameBoard {
                     && matches!(offset.y, VerticalOffset::FarTop | VerticalOffset::FarBottom | VerticalOffset::Center),
                     "JumpSlide offset should use far offsets, got ({:?}, {:?})", offset.x, offset.y
                 );
-                let near_x = match offset.x {
-                    HorizontalOffset::FarLeft => HorizontalOffset::Left,
-                    HorizontalOffset::FarRight => HorizontalOffset::Right,
-                    other => other,
-                };
-                let near_y = match offset.y {
-                    VerticalOffset::FarTop => VerticalOffset::Top,
-                    VerticalOffset::FarBottom => VerticalOffset::Bottom,
-                    other => other,
-                };
-                let near_offset = Offsets::new(near_x, near_y);
+                let near_offset = Offsets::new(offset.x.to_near(), offset.y.to_near());
                 self.target_coordinates(src, near_offset, TileAction::Slide, center)
             }
             TileAction::Unit => panic!("ASSERTION ERROR"),
@@ -526,17 +516,7 @@ impl GameBoard {
                 }
                 TileAction::JumpSlide => {
                     // JumpSlide uses "far" offsets; map to "near" to get the direction.
-                    let near_x = match offset.x {
-                        HorizontalOffset::FarLeft => HorizontalOffset::Left,
-                        HorizontalOffset::FarRight => HorizontalOffset::Right,
-                        other => other,
-                    };
-                    let near_y = match offset.y {
-                        VerticalOffset::FarTop => VerticalOffset::Top,
-                        VerticalOffset::FarBottom => VerticalOffset::Bottom,
-                        other => other,
-                    };
-                    let near_offset = Offsets::new(near_x, near_y);
+                    let near_offset = Offsets::new(offset.x.to_near(), offset.y.to_near());
                     if self.is_target_on_slide(src, near_offset, target)
                         && self.can_apply_action(src, target, TileAction::JumpSlide)
                     {
