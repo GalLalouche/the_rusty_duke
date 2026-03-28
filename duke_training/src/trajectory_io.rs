@@ -133,7 +133,7 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
 
 // --- Serialization helpers ---
 
-fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
+pub fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
     // Current player
     let player_byte: u8 = match gs.current_player_turn() {
         Owner::TopPlayer => 0,

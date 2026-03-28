@@ -4,7 +4,12 @@
 //!   label_positions --trajectories D:/temp/ckpt_heuristic_1m/trajectories.dtrj \
 //!                   --evaluator D:/temp/combined_lr_41.json \
 //!                   --depth 2 \
-//!                   --output D:/temp/labeled_positions.bin
+//!                   --output D:/temp/labeled_positions.bin \
+//!                   [--dedup-output D:/temp/labeled_positions_dedup.bin]
+//!
+//! The --dedup-output flag saves deduplicated positions (full GameStates + counts) BEFORE
+//! labeling, so they can be re-labeled later with different evaluators/depths without
+//! re-deduplicating. Default: same directory as --output with `_dedup.bin` suffix.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -23,9 +28,9 @@ use duke_training::cli::parse_flag;
 use duke_training::encoding::{active_board_features, bag_features};
 use duke_training::game_setup::negamax;
 use duke_training::learned_heuristic::CombinedWeights;
-use duke_training::trajectory_io::load_trajectories;
+use duke_training::trajectory_io::{load_trajectories, write_game_state};
 
-// --- Output format ---
+// --- Labeled output format ---
 // Magic: "LPOS" (4 bytes)
 // Version: 1 (u32 LE)
 // num_positions: u32 LE
@@ -38,6 +43,17 @@ use duke_training::trajectory_io::load_trajectories;
 
 const OUTPUT_MAGIC: &[u8; 4] = b"LPOS";
 const OUTPUT_VERSION: u32 = 1;
+
+// --- Dedup output format ---
+// Magic: "DPOS" (4 bytes)
+// Version: 1 (u32 LE)
+// num_positions: u32 LE
+// Per position:
+//   GameState serialized via trajectory_io::write_game_state
+//   count: u32 LE
+
+const DEDUP_MAGIC: &[u8; 4] = b"DPOS";
+const DEDUP_VERSION: u32 = 1;
 
 /// Compute a 64-bit hash of the board state for deduplication.
 ///
@@ -117,6 +133,14 @@ fn main() {
             eprintln!("Missing --output flag");
             std::process::exit(1);
         });
+    let dedup_output_path: String = parse_flag(&args, "--dedup-output")
+        .unwrap_or_else(|| {
+            // Default: same directory as --output, with _dedup.bin suffix
+            let p = std::path::Path::new(&output_path);
+            let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+            let parent = p.parent().unwrap_or(std::path::Path::new("."));
+            parent.join(format!("{}_dedup.bin", stem)).to_string_lossy().into_owned()
+        });
 
     // --- Step 1: Load trajectories ---
     eprintln!("Loading trajectories from {} ...", trajectories_path);
@@ -158,6 +182,31 @@ fn main() {
 
     // Free trajectory memory -- we only need the dedup map from here
     drop(games);
+
+    // --- Step 2b: Save deduplicated positions (before labeling) ---
+    eprintln!("Saving {} deduped positions to {} ...", unique, dedup_output_path);
+    let t_dedup = Instant::now();
+    {
+        let f = std::fs::File::create(&dedup_output_path)
+            .expect("Failed to create dedup output file");
+        let mut w = BufWriter::new(f);
+
+        // Header
+        w.write_all(DEDUP_MAGIC).unwrap();
+        w.write_all(&DEDUP_VERSION.to_le_bytes()).unwrap();
+        w.write_all(&(unique as u32).to_le_bytes()).unwrap();
+
+        for (gs, count) in dedup.values() {
+            write_game_state(&mut w, gs).unwrap();
+            w.write_all(&count.to_le_bytes()).unwrap();
+        }
+        w.flush().unwrap();
+    }
+    let dedup_size = std::fs::metadata(&dedup_output_path).unwrap().len();
+    eprintln!("Saved {} deduped positions to {} ({:.1}MB) in {:.1}s",
+        unique, dedup_output_path,
+        dedup_size as f64 / (1024.0 * 1024.0),
+        t_dedup.elapsed().as_secs_f64());
 
     // --- Step 3: Load evaluator ---
     eprintln!("Loading LR-Cheap evaluator from {} ...", evaluator_path);
