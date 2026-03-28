@@ -8,28 +8,44 @@ pub const INPUT_SIZE: usize = TOTAL_FEATURES;
 
 #[derive(Module, Debug)]
 pub struct FcValueNetwork<B: Backend> {
-    pub fc1: Linear<B>,
-    pub fc2: Linear<B>,
-    pub fc3: Linear<B>,
+    pub layers: Vec<Linear<B>>,
 }
 
 impl<B: Backend> FcValueNetwork<B> {
-    pub fn new(device: &B::Device, l1_size: usize, l2_size: usize) -> Self {
-        assert!(l1_size > 0, "l1_size must be > 0");
-        assert!(l2_size > 0, "l2_size must be > 0");
-        Self {
-            fc1: LinearConfig::new(INPUT_SIZE, l1_size).init(device),
-            fc2: LinearConfig::new(l1_size, l2_size).init(device),
-            fc3: LinearConfig::new(l2_size, 1).init(device),
+    /// Create a new fully-connected value network.
+    ///
+    /// `hidden_sizes` specifies the size of each hidden layer. For example:
+    /// - `&[256, 32]` creates INPUT_SIZE -> 256 -> 32 -> 1
+    /// - `&[128]` creates INPUT_SIZE -> 128 -> 1
+    pub fn new(device: &B::Device, hidden_sizes: &[usize]) -> Self {
+        assert!(!hidden_sizes.is_empty(), "Need at least one hidden layer");
+        let mut layers = Vec::new();
+        let mut prev = INPUT_SIZE;
+        for &h in hidden_sizes {
+            assert!(h > 0, "Hidden layer size must be > 0");
+            layers.push(LinearConfig::new(prev, h).init(device));
+            prev = h;
         }
+        // Output layer
+        layers.push(LinearConfig::new(prev, 1).init(device));
+        Self { layers }
     }
 
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = self.fc1.forward(x);
-        let x = burn::tensor::activation::relu(x);
-        let x = self.fc2.forward(x);
-        let x = burn::tensor::activation::relu(x);
-        let x = self.fc3.forward(x);
+        let mut x = x;
+        for (i, layer) in self.layers.iter().enumerate() {
+            x = layer.forward(x);
+            if i < self.layers.len() - 1 {
+                // Hidden layers: ReLU
+                x = burn::tensor::activation::relu(x);
+            }
+        }
+        // Output: sigmoid
         sigmoid(x)
+    }
+
+    /// Returns the number of layers (hidden + output).
+    pub fn num_layers(&self) -> usize {
+        self.layers.len()
     }
 }

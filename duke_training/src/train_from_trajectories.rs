@@ -46,7 +46,7 @@ fn main() {
     println!("  lr={}->{}, epochs={}, batch_size={}", lr_start, lr_end, epochs, batch_size);
 
     let device = WgpuDevice::default();
-    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, lr_start, l1_size, l2_size);
+    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, lr_start, &[l1_size, l2_size]);
 
     std::fs::create_dir_all(&checkpoint_dir).expect("Failed to create checkpoint dir");
 

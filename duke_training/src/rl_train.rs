@@ -56,7 +56,7 @@ fn main() {
     let heuristic = StaticHeuristicEvaluator::new();
 
     let device = WgpuDevice::default();
-    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device.clone(), lr_start, l1_size, l2_size);
+    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device.clone(), lr_start, &[l1_size, l2_size]);
 
     if let Some(ref path) = resume_path {
         println!("Loading pre-trained model from: {}", path);

@@ -119,7 +119,7 @@ fn main() {
     let gs = create_initial_state(&bag);
 
     let device = WgpuDevice::default();
-    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, config.lr_start, config.l1_size, config.l2_size);
+    let mut trainer: FcTdTrainer<MyBackend> = FcTdTrainer::new(device, config.lr_start, &[config.l1_size, config.l2_size]);
     println!("  network: {}→{}→{}→1", duke_training::encoding::TOTAL_FEATURES, config.l1_size, config.l2_size);
 
     // Load checkpoint if resuming

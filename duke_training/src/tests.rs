@@ -114,7 +114,7 @@ fn encode_state_is_relative_to_current_player() {
 #[test]
 fn train_on_batch_single_game_returns_loss() {
     let device = Default::default();
-    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001, DEFAULT_L1, DEFAULT_L2);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001, &[DEFAULT_L1, DEFAULT_L2]);
 
     let gs = create_test_state();
     let mut rng = StdRng::seed_from_u64(0);
@@ -129,7 +129,7 @@ fn train_on_batch_single_game_returns_loss() {
 fn train_reduces_loss_on_repeated_game() {
     // Use a small bag (empty) so the game is short and training is fast in debug mode.
     let device = Default::default();
-    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.01, DEFAULT_L1, DEFAULT_L2);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.01, &[DEFAULT_L1, DEFAULT_L2]);
 
     let gs = create_small_state();
     let mut rng = StdRng::seed_from_u64(7);
@@ -190,7 +190,7 @@ fn terminal_state_target_is_correct() {
 
     // Train a few times (kept low for debug builds)
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
-    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device.clone(), 0.01, DEFAULT_L1, DEFAULT_L2);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device.clone(), 0.01, &[DEFAULT_L1, DEFAULT_L2]);
     let traj = GameTrajectory { states: states.clone(), result: game_result };
     for _ in 0..5 {
         trainer.train_on_batch(std::slice::from_ref(&traj));
@@ -219,7 +219,7 @@ fn terminal_state_target_is_correct() {
 #[test]
 fn fc_model_forward_produces_valid_output() {
     let device = Default::default();
-    let model = FcValueNetwork::<TestBackend>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let model = FcValueNetwork::<TestBackend>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
 
     let input = Tensor::<TestBackend, 2>::random(
         [1, crate::encoding::TOTAL_FEATURES],
@@ -242,7 +242,7 @@ fn nnue_matches_burn_fc_model() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
     let nnue_weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
     let evaluator = NnueEvaluator::new(nnue_weights);
 
@@ -275,7 +275,7 @@ fn nnue_weights_save_load_roundtrip() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
     let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
 
     let path = format!("test_nnue_roundtrip_{}.nnue", std::process::id());
@@ -300,7 +300,7 @@ fn accumulator_incremental_matches_full() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
     let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
 
     // Full computation with features [0, 5, 100]
@@ -329,7 +329,7 @@ fn accumulator_remove_feature_matches_full() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
     let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
 
     // Target: features [0, 100]
@@ -358,7 +358,7 @@ fn nnue_matches_burn_across_multiple_states() {
     use burn::backend::NdArray;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
     let nnue_weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
     let evaluator = NnueEvaluator::new(nnue_weights);
 
@@ -443,8 +443,8 @@ fn fc_trainer_load_model_changes_output() {
     let device: <TestBackend as burn::tensor::backend::Backend>::Device = Default::default();
 
     // Create two trainers -- they get different random weights
-    let trainer1 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, DEFAULT_L1, DEFAULT_L2);
-    let mut trainer2 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, DEFAULT_L1, DEFAULT_L2);
+    let trainer1 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, &[DEFAULT_L1, DEFAULT_L2]);
+    let mut trainer2 = FcTdTrainer::<TestBackend>::new(device.clone(), 0.001, &[DEFAULT_L1, DEFAULT_L2]);
 
     let gs = create_test_state();
     let flat = encode_state_flat::<TestBackend>(&gs, &device);
@@ -473,7 +473,7 @@ fn greedy_move_is_deterministic() {
     use crate::game_setup::greedy_move;
 
     let device = Default::default();
-    let model = FcValueNetwork::<NdArray>::new(&device, DEFAULT_L1, DEFAULT_L2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
     let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
     let evaluator = NnueEvaluator::new(weights);
 
@@ -498,7 +498,7 @@ fn greedy_move_is_deterministic() {
 #[test]
 fn train_on_batch_produces_finite_loss() {
     let device = Default::default();
-    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001, DEFAULT_L1, DEFAULT_L2);
+    let mut trainer: FcTdTrainer<TestBackend> = FcTdTrainer::new(device, 0.001, &[DEFAULT_L1, DEFAULT_L2]);
 
     let gs = create_test_state();
 
@@ -3165,7 +3165,7 @@ fn transpose_helper_known_matrix() {
     let device = Default::default();
     let l1 = 32;
     let l2 = 16;
-    let model = FcValueNetwork::<NdArray>::new(&device, l1, l2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[l1, l2]);
     let weights = export_weights(&model, l1, l2);
 
     // L1 weight: [INPUT_SIZE * l1] (no transpose for L1)
@@ -3188,7 +3188,7 @@ fn transpose_helper_known_matrix() {
 
     // Verify transpose property: L2 burn [l1, l2] row-major should become [l2, l1] row-major.
     // For L2: weight[c * l1 + r] should equal burn_weight[r * l2 + c]
-    let fc2_burn: Vec<f32> = model.fc2.weight.val().into_data().to_vec().expect("fc2");
+    let fc2_burn: Vec<f32> = model.layers[1].weight.val().into_data().to_vec().expect("fc2");
     for r in 0..l1 {
         for c in 0..l2 {
             let burn_val = fc2_burn[r * l2 + c];
@@ -3207,7 +3207,7 @@ fn export_weights_non_default_layer_sizes() {
     // Use non-default sizes (different from DEFAULT_L1=256, DEFAULT_L2=32)
     let l1 = 64;
     let l2 = 8;
-    let model = FcValueNetwork::<NdArray>::new(&device, l1, l2);
+    let model = FcValueNetwork::<NdArray>::new(&device, &[l1, l2]);
     let weights = export_weights(&model, l1, l2);
 
     assert_eq!(weights.l1_size, l1);

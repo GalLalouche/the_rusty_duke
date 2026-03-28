@@ -26,8 +26,12 @@ pub struct FcTdTrainer<B: AutodiffBackend> {
 
 impl<B: AutodiffBackend> FcTdTrainer<B> {
     /// Create a new trainer with a fresh model and SGD optimizer.
-    pub fn new(device: B::Device, lr: f64, l1_size: usize, l2_size: usize) -> Self {
-        let model = FcValueNetwork::new(&device, l1_size, l2_size);
+    ///
+    /// `hidden_sizes` specifies the size of each hidden layer. For example:
+    /// - `&[256, 32]` creates INPUT_SIZE -> 256 -> 32 -> 1
+    /// - `&[128]` creates INPUT_SIZE -> 128 -> 1
+    pub fn new(device: B::Device, lr: f64, hidden_sizes: &[usize]) -> Self {
+        let model = FcValueNetwork::new(&device, hidden_sizes);
         let optimizer = SgdConfig::new().init::<B, FcValueNetwork<B>>();
         Self {
             model,
