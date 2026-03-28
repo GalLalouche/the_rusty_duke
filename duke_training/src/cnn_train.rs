@@ -1,8 +1,8 @@
 //! CNN supervised training binary for The Duke.
 //!
 //! Trains a CNN value network on labeled positions (LPOS format), using
-//! burn's autodiff for backpropagation. Supports box (3x3) and diamond
-//! (manhattan-2 masked 5x5) kernels.
+//! burn's autodiff for backpropagation. Supports box (3x3), diamond
+//! (manhattan-2 masked 5x5), and cross (3x3+5x1+1x5) kernels.
 //!
 //! Usage:
 //!   cnn_train --input D:/temp/labeled_positions_v2.bin \
@@ -30,7 +30,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
-use duke_training::cnn_model::{apply_diamond_mask, CnnValueNetwork};
+use duke_training::cnn_model::{apply_diamond_mask, CnnValueNetwork, KernelType};
 use duke_training::encoding::{
     active_board_features, bag_features as compute_bag_features, BAG_FEATURES, BOARD_FEATURES,
     BOARD_SIZE, NUM_BOARD_PLANES,
@@ -352,14 +352,16 @@ fn main() {
         .collect();
 
     let kernel_str: String = parse_flag(&args, "--kernel").unwrap_or_else(|| "box".to_string());
-    let (kernel_size, use_diamond) = match kernel_str.as_str() {
-        "box" => (3, false),
-        "diamond" => (5, true),
+    let kernel_type = match kernel_str.as_str() {
+        "box" => KernelType::Box,
+        "diamond" => KernelType::Diamond,
+        "cross" => KernelType::Cross,
         other => panic!(
-            "Unknown kernel type '{}'. Use 'box' (3x3) or 'diamond' (manhattan-2 5x5).",
+            "Unknown kernel type '{}'. Use 'box' (3x3), 'diamond' (manhattan-2 5x5), or 'cross' (3x3+5x1+1x5).",
             other
         ),
     };
+    let use_diamond = kernel_type == KernelType::Diamond;
 
     let lr: f64 = parse_flag(&args, "--lr").unwrap_or(0.001);
     let epochs: usize = parse_flag(&args, "--epochs").unwrap_or(20);
@@ -383,12 +385,15 @@ fn main() {
     let (positions, _label_min, _label_max) = load_lpos(&input_path);
 
     eprintln!("  Input:            {}", input_path);
+    let kernel_label = match kernel_type {
+        KernelType::Box => "box (3x3)",
+        KernelType::Diamond => "diamond (5x5 masked)",
+        KernelType::Cross => "cross (3x3+5x1+1x5)",
+    };
     eprintln!(
-        "  Conv channels:    {:?} (kernel={}x{} {})",
+        "  Conv channels:    {:?} (kernel={})",
         conv_channels,
-        kernel_size,
-        kernel_size,
-        if use_diamond { "diamond" } else { "box" }
+        kernel_label,
     );
     eprintln!("  FC sizes:         {:?}", fc_sizes);
     eprintln!("  Learning rate:    {}", lr);
@@ -451,7 +456,7 @@ fn main() {
         &device,
         &conv_channels,
         &fc_sizes,
-        kernel_size,
+        kernel_type,
     );
 
     // Apply diamond mask to initial weights if needed
@@ -466,11 +471,10 @@ fn main() {
     let last_conv_ch = *conv_channels.last().unwrap();
     let fc_input = last_conv_ch * BOARD_SIZE * BOARD_SIZE + BAG_FEATURES;
     eprintln!(
-        "  Conv: {} -> {:?} ({}x{}) -> flatten {}",
+        "  Conv: {} -> {:?} ({}) -> flatten {}",
         NUM_BOARD_PLANES,
         conv_channels,
-        kernel_size,
-        kernel_size,
+        kernel_label,
         last_conv_ch * BOARD_SIZE * BOARD_SIZE
     );
     eprintln!(

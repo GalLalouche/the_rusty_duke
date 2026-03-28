@@ -2,7 +2,8 @@
 //!
 //! Input: 30 board planes (6x6) + 26 bag features.
 //! Conv layers maintain 6x6 spatial dimensions via padding, with optional
-//! diamond (manhattan-2) kernel masking for 5x5 convolutions.
+//! diamond (manhattan-2) kernel masking for 5x5 convolutions or cross kernel
+//! (3x3 + 5x1 + 1x5 parallel convolutions).
 
 use burn::nn::conv::{Conv2d, Conv2dConfig};
 use burn::nn::{Linear, LinearConfig, PaddingConfig2d};
@@ -11,11 +12,48 @@ use burn::tensor::activation::sigmoid;
 
 use crate::encoding::{BAG_FEATURES, BOARD_SIZE, NUM_BOARD_PLANES};
 
+/// Kernel type for CNN conv layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelType {
+    /// Standard 3x3 convolution.
+    Box,
+    /// 5x5 convolution with diamond (manhattan-2) mask zeroing corners.
+    Diamond,
+    /// Three parallel convolutions summed: 3x3 + 5x1 + 1x5.
+    /// Captures local patterns (3x3) and long-range slide/strike patterns
+    /// along rows (1x5) and columns (5x1).
+    Cross,
+}
+
+/// Three parallel convolutions for the cross kernel: 3x3 + 5x1 + 1x5.
+///
+/// Forward output = box_conv(x) + h_conv(x) + v_conv(x).
+#[derive(Module, Debug)]
+pub struct CrossConv<B: Backend> {
+    /// 3x3 convolution for local patterns.
+    box_conv: Conv2d<B>,
+    /// 1x5 convolution for horizontal (row) patterns.
+    h_conv: Conv2d<B>,
+    /// 5x1 convolution for vertical (column) patterns.
+    v_conv: Conv2d<B>,
+}
+
+/// A single convolutional block in the network.
+///
+/// Each variant maintains 6x6 spatial dimensions via appropriate padding.
+#[derive(Module, Debug)]
+pub enum ConvBlock<B: Backend> {
+    /// Single convolution (3x3 box or 5x5 diamond).
+    Single(Conv2d<B>),
+    /// Cross kernel: three parallel convolutions summed.
+    Cross(CrossConv<B>),
+}
+
 /// CNN value network: conv layers over board planes, concatenated with bag
 /// features, then FC layers to a scalar sigmoid output.
 #[derive(Module, Debug)]
 pub struct CnnValueNetwork<B: Backend> {
-    conv_layers: Vec<Conv2d<B>>,
+    conv_layers: Vec<ConvBlock<B>>,
     fc_layers: Vec<Linear<B>>,
     /// Flattened conv output size (last_channels * 6 * 6) + bag features (26).
     fc_input_size: usize,
@@ -27,25 +65,52 @@ impl<B: Backend> CnnValueNetwork<B> {
     /// - `conv_channels`: channel count for each conv layer, e.g. `[64, 64, 32]`.
     ///   The first conv layer takes `NUM_BOARD_PLANES` (30) input channels.
     /// - `fc_sizes`: hidden FC layer sizes, e.g. `[128]`.
-    /// - `kernel_size`: spatial kernel size (3 for box, 5 for diamond).
+    /// - `kernel`: kernel type (Box, Diamond, or Cross).
     pub fn new(
         device: &B::Device,
         conv_channels: &[usize],
         fc_sizes: &[usize],
-        kernel_size: usize,
+        kernel: KernelType,
     ) -> Self {
         assert!(!conv_channels.is_empty(), "Need at least one conv layer");
-        assert!(kernel_size == 3 || kernel_size == 5,
-            "kernel_size must be 3 (box) or 5 (diamond), got {}", kernel_size);
-
-        let padding = (kernel_size - 1) / 2;
 
         let mut conv_layers = Vec::new();
         let mut in_channels = NUM_BOARD_PLANES;
         for &out_channels in conv_channels {
-            let config = Conv2dConfig::new([in_channels, out_channels], [kernel_size, kernel_size])
-                .with_padding(PaddingConfig2d::Explicit(padding, padding));
-            conv_layers.push(config.init(device));
+            let block = match kernel {
+                KernelType::Box => {
+                    // 3x3 with pad=1 maintains 6x6
+                    let config = Conv2dConfig::new([in_channels, out_channels], [3, 3])
+                        .with_padding(PaddingConfig2d::Explicit(1, 1));
+                    ConvBlock::Single(config.init(device))
+                }
+                KernelType::Diamond => {
+                    // 5x5 with pad=2 maintains 6x6 (corners masked after init)
+                    let config = Conv2dConfig::new([in_channels, out_channels], [5, 5])
+                        .with_padding(PaddingConfig2d::Explicit(2, 2));
+                    ConvBlock::Single(config.init(device))
+                }
+                KernelType::Cross => {
+                    // 3x3 with pad=(1,1): maintains 6x6
+                    let box_config = Conv2dConfig::new([in_channels, out_channels], [3, 3])
+                        .with_padding(PaddingConfig2d::Explicit(1, 1))
+                        .with_bias(false);
+                    // 1x5 with pad=(0,2): output_h = 6+0-1+1=6, output_w = 6+4-5+1=6
+                    let h_config = Conv2dConfig::new([in_channels, out_channels], [1, 5])
+                        .with_padding(PaddingConfig2d::Explicit(0, 2))
+                        .with_bias(false);
+                    // 5x1 with pad=(2,0): output_h = 6+4-5+1=6, output_w = 6+0-1+1=6
+                    let v_config = Conv2dConfig::new([in_channels, out_channels], [5, 1])
+                        .with_padding(PaddingConfig2d::Explicit(2, 0))
+                        .with_bias(false);
+                    ConvBlock::Cross(CrossConv {
+                        box_conv: box_config.init(device),
+                        h_conv: h_config.init(device),
+                        v_conv: v_config.init(device),
+                    })
+                }
+            };
+            conv_layers.push(block);
             in_channels = out_channels;
         }
 
@@ -76,11 +141,17 @@ impl<B: Backend> CnnValueNetwork<B> {
     /// Returns: `[batch, 1]` sigmoid output.
     pub fn forward(&self, board: Tensor<B, 4>, bag: Tensor<B, 2>) -> Tensor<B, 2> {
         let mut x = board;
-        for (i, conv) in self.conv_layers.iter().enumerate() {
-            x = conv.forward(x);
-            // ReLU between conv layers (and after the last conv, before flatten)
+        for block in self.conv_layers.iter() {
+            x = match block {
+                ConvBlock::Single(conv) => conv.forward(x),
+                ConvBlock::Cross(cross) => {
+                    let out_box = cross.box_conv.forward(x.clone());
+                    let out_h = cross.h_conv.forward(x.clone());
+                    let out_v = cross.v_conv.forward(x);
+                    out_box + out_h + out_v
+                }
+            };
             x = burn::tensor::activation::relu(x);
-            let _ = i; // suppress unused warning
         }
 
         // Flatten conv output: [batch, channels, 6, 6] -> [batch, channels * 36]
@@ -143,19 +214,21 @@ pub fn diamond_mask_5x5() -> [f32; 25] {
 /// Call this after each optimizer step when using `--kernel diamond`.
 pub fn apply_diamond_mask<B: Backend>(model: &mut CnnValueNetwork<B>, device: &B::Device) {
     let mask_flat = diamond_mask_5x5();
-    for conv in model.conv_layers.iter_mut() {
-        let w = conv.weight.val();
-        let [out_c, in_c, kh, kw] = w.dims();
-        if kh == 5 && kw == 5 {
-            // Build mask tensor [1, 1, 5, 5] and broadcast
-            let mask_tensor = Tensor::<B, 4>::from_floats(
-                burn::tensor::TensorData::new(mask_flat.to_vec(), [1, 1, 5, 5]),
-                device,
-            );
-            // Expand to [out_c, in_c, 5, 5]
-            let mask_expanded = mask_tensor.expand([out_c, in_c, 5, 5]);
-            let masked_w = w.mul(mask_expanded);
-            conv.weight = burn::module::Param::from_tensor(masked_w);
+    for block in model.conv_layers.iter_mut() {
+        if let ConvBlock::Single(conv) = block {
+            let w = conv.weight.val();
+            let [out_c, in_c, kh, kw] = w.dims();
+            if kh == 5 && kw == 5 {
+                // Build mask tensor [1, 1, 5, 5] and broadcast
+                let mask_tensor = Tensor::<B, 4>::from_floats(
+                    burn::tensor::TensorData::new(mask_flat.to_vec(), [1, 1, 5, 5]),
+                    device,
+                );
+                // Expand to [out_c, in_c, 5, 5]
+                let mask_expanded = mask_tensor.expand([out_c, in_c, 5, 5]);
+                let masked_w = w.mul(mask_expanded);
+                conv.weight = burn::module::Param::from_tensor(masked_w);
+            }
         }
     }
 }
