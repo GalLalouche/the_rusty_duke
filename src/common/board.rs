@@ -4,25 +4,41 @@ use std::mem;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::{Rectangular, Square};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Board<A> {
+/// Maximum number of cells a Board can hold (6×6 game board).
+const BOARD_MAX_CELLS: usize = 36;
+
+#[derive(Debug, Clone)]
+pub struct Board<A: Copy> {
     // Row-first, i.e.,
     // [1 2 3
     //  4 5 6]
     // Is represented as [1 2 3 4 5 6]
-    board: Vec<Option<A>>,
+    board: [Option<A>; BOARD_MAX_CELLS],
     width: u8,
     height: u8,
 }
 
-impl<A> Board<A> {
+impl<A: Copy + PartialEq> PartialEq for Board<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.board == other.board
+    }
+}
+
+impl<A: Copy + Eq> Eq for Board<A> {}
+
+impl<A: Copy> Board<A> {
     pub fn rect(r: impl Rectangular) -> Board<A> {
-        let mut board = Vec::with_capacity(r.area() as usize);
-        board.resize_with(r.area() as usize, || None);
+        assert!(
+            (r.width() as usize) * (r.height() as usize) <= BOARD_MAX_CELLS,
+            "Board dimensions {}x{} exceed BOARD_MAX_CELLS ({})",
+            r.width(), r.height(), BOARD_MAX_CELLS,
+        );
         Board {
             width: r.width(),
             height: r.height(),
-            board,
+            board: [None; BOARD_MAX_CELLS],
         }
     }
     pub fn square(side: u8) -> Board<A> { Board::rect(Square::new(side)) }
@@ -83,23 +99,18 @@ impl<A> Board<A> {
     pub fn find<P>(&self, predicate: P) -> Option<Coordinates> where P: Fn(&A) -> bool {
         self.active_coordinates().find(|(_, a)| predicate(a)).map(|(c, _)| c)
     }
-}
 
-impl <A: Hash> Hash for Board<A> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.board.hash(state)
-    }
-}
-
-impl<A: Clone> Board<A> {
     pub fn flip_vertical(&self) -> Board<A> {
-        let mut res = Vec::with_capacity(self.area() as usize);
-        for y in (0..self.height).rev() {
+        let mut new_board = [None; BOARD_MAX_CELLS];
+        for y in 0..self.height {
+            let src_y = self.height - 1 - y;
             for x in 0..self.width {
-                res.push(self.get(Coordinates { x, y }).cloned())
+                let src = (self.width as usize) * (src_y as usize) + (x as usize);
+                let dst = (self.width as usize) * (y as usize) + (x as usize);
+                new_board[dst] = self.board[src];
             }
         }
-        Board { board: res, width: self.width, height: self.height }
+        Board { board: new_board, width: self.width, height: self.height }
     }
 
     pub fn rows(&self) -> Vec<Vec<Option<A>>> {
@@ -108,7 +119,7 @@ impl<A: Clone> Board<A> {
             let mut row = Vec::with_capacity(self.width as usize);
             for x in 0..self.width {
                 let c = Coordinates { x, y };
-                row.push(self.get(c).cloned())
+                row.push(self.get(c).copied())
             }
             result.push(row);
         }
@@ -116,7 +127,13 @@ impl<A: Clone> Board<A> {
     }
 }
 
-impl<A> Rectangular for Board<A> {
+impl<A: Copy + Hash> Hash for Board<A> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.board.hash(state)
+    }
+}
+
+impl<A: Copy> Rectangular for Board<A> {
     fn width(&self) -> u8 { self.width }
     fn height(&self) -> u8 { self.height }
 }
