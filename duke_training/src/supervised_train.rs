@@ -131,17 +131,18 @@ fn load_lpos(path: &str) -> Vec<LabeledPosition> {
     positions
 }
 
-// ── Sigmoid / target mapping ───────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 #[inline]
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Map a raw label to a [0, 1] training target via sigmoid(label / scale).
+/// Map label linearly from [-1000, +1000] to [0, 1].
+/// -1000 -> 0.0, 0 -> 0.5, +1000 -> 1.0
 #[inline]
-fn label_to_target(label: f32, scale: f32) -> f32 {
-    sigmoid(label / scale)
+fn label_to_target(label: f32) -> f32 {
+    (label + 1000.0) / 2000.0
 }
 
 // ── Forward pass with intermediates ────────────────────────────────────────
@@ -153,7 +154,7 @@ struct ForwardResult {
     pre_relu: Vec<Vec<f32>>,
     /// Post-ReLU activations per hidden layer: post_relu[layer_idx][neuron_idx].
     post_relu: Vec<Vec<f32>>,
-    /// Sigmoid output.
+    /// Linear output (no sigmoid).
     output: f32,
 }
 
@@ -470,7 +471,7 @@ fn main() {
         .unwrap_or_else(|| {
             eprintln!(
                 "Usage: supervised_train --input <path> [--hidden 256,128,64] [--lr 0.001] \
-                 [--epochs 10] [--batch-size 256] [--label-scale 100] \
+                 [--epochs 10] [--batch-size 256] \
                  [--eval-interval 50000] [--eval-games 500] [--benchmark base,random] \
                  [--checkpoint-dir D:/temp/supervised_nn] [--seed 42]"
             );
@@ -489,7 +490,6 @@ fn main() {
     let lr: f32 = parse_flag(&args, "--lr").unwrap_or(0.001);
     let epochs: usize = parse_flag(&args, "--epochs").unwrap_or(10);
     let batch_size: usize = parse_flag(&args, "--batch-size").unwrap_or(256);
-    let label_scale: f32 = parse_flag(&args, "--label-scale").unwrap_or(100.0);
     let eval_interval: usize = parse_flag(&args, "--eval-interval").unwrap_or(50000);
     let eval_games: u32 = parse_flag(&args, "--eval-games").unwrap_or(500);
     let checkpoint_dir: String = parse_flag(&args, "--checkpoint-dir")
@@ -512,7 +512,7 @@ fn main() {
     eprintln!("  Learning rate:  {}", lr);
     eprintln!("  Epochs:         {}", epochs);
     eprintln!("  Batch size:     {}", batch_size);
-    eprintln!("  Label scale:    {} (target = sigmoid(label / scale))", label_scale);
+    eprintln!("  Label mapping:  linear (-1000..+1000) -> (0..1)");
     eprintln!("  Eval interval:  {} positions", eval_interval);
     eprintln!("  Eval games:     {}", eval_games);
     eprintln!("  Benchmark:      {:?}", benchmark_specs);
@@ -585,6 +585,16 @@ fn main() {
     let mut total_samples = 0usize;
     let mut shuffled_indices = indices.clone();
 
+    // Adaptive learning rate state
+    let mut best_loss: f64 = f64::INFINITY;
+    let mut batches_since_improvement: usize = 0;
+    let mut recent_loss_sum: f64 = 0.0;
+    let mut recent_loss_count: usize = 0;
+    let lr_check_interval: usize = 1000;
+    let lr_stall_threshold: usize = 5000;
+    let lr_min: f32 = 1e-6;
+    let lr_max: f32 = 0.1;
+
     for epoch in 0..epochs {
         let epoch_start = Instant::now();
         eprintln!("\n=== Epoch {}/{} ===", epoch + 1, epochs);
@@ -610,7 +620,7 @@ fn main() {
             for si in batch_start..batch_end {
                 let pos_idx = shuffled_indices[si] as usize;
                 let pos = &positions[pos_idx];
-                let target = label_to_target(pos.label, label_scale);
+                let target = label_to_target(pos.label);
 
                 let fwd = forward_with_intermediates(
                     &net.weights,
@@ -642,6 +652,48 @@ fn main() {
             epoch_loss += batch_loss;
             epoch_samples += actual_batch_size;
             total_samples += actual_batch_size;
+
+            // Adaptive learning rate
+            let avg_batch_loss = batch_loss / actual_batch_size as f64;
+            recent_loss_sum += avg_batch_loss;
+            recent_loss_count += 1;
+
+            if recent_loss_count >= lr_check_interval {
+                let recent_avg = recent_loss_sum / recent_loss_count as f64;
+                if recent_avg < best_loss {
+                    // Improved
+                    best_loss = recent_avg;
+                    batches_since_improvement = 0;
+                } else {
+                    batches_since_improvement += recent_loss_count;
+
+                    if recent_avg > best_loss * 1.05 {
+                        // Loss increased significantly: slow down
+                        let old_lr = adam.lr;
+                        adam.lr = (adam.lr * 0.5).max(lr_min);
+                        if adam.lr != old_lr {
+                            eprintln!(
+                                "  LR adjusted: {} -> {} (loss increased)",
+                                old_lr, adam.lr
+                            );
+                        }
+                        batches_since_improvement = 0;
+                    } else if batches_since_improvement >= lr_stall_threshold {
+                        // Loss stalled: speed up
+                        let old_lr = adam.lr;
+                        adam.lr = (adam.lr * 1.5).min(lr_max);
+                        if adam.lr != old_lr {
+                            eprintln!(
+                                "  LR adjusted: {} -> {} (loss stalled)",
+                                old_lr, adam.lr
+                            );
+                        }
+                        batches_since_improvement = 0;
+                    }
+                }
+                recent_loss_sum = 0.0;
+                recent_loss_count = 0;
+            }
 
             // Progress logging
             if (batch_idx + 1) % 1000 == 0 || batch_idx + 1 == num_batches {
