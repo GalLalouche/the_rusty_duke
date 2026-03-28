@@ -485,16 +485,108 @@ impl GameBoard {
 
     pub fn is_guard(&self, owner: Owner) -> bool {
         time_it_macro!("is_guard", {
-            let c = self.duke_coordinates(owner);
+            let duke_pos = self.duke_coordinates(owner);
             self.get_board()
                 .active_coordinates()
                 .filter(|e| e.1.owner.different_team(&owner))
-                .any(|other_tile|
-                    self
-                        .get_legal_moves_aux(other_tile.0, CheckForGuard(false))
-                        .any(|other_move| other_move.0 == c)
-                )
+                .any(|(_attacker_pos, _)| self.can_attack_square(_attacker_pos, duke_pos))
         })
+    }
+
+    /// Check if the tile at `src` can attack/reach `target` in a single action
+    /// (ignoring guard constraints). This is equivalent to checking whether
+    /// `target` appears in `get_legal_moves_aux(src, CheckForGuard(false))`,
+    /// but avoids generating all moves — we only probe one target square.
+    fn can_attack_square(&self, src: Coordinates, target: Coordinates) -> bool {
+        let tile = match self.get(src) {
+            Some(t) => t,
+            None => return false,
+        };
+        let tile_side = tile.get_current_side();
+        let center_offset = tile_side.center_offset();
+
+        for (offset, action) in tile_side.actions().iter() {
+            match *action {
+                TileAction::Unit | TileAction::Command => continue,
+                TileAction::Move | TileAction::Jump | TileAction::Strike => {
+                    if let Some(dst) = self.to_absolute_coordinate(src, *offset, center_offset) {
+                        if dst == target && self.can_apply_action(src, dst, *action) {
+                            return true;
+                        }
+                    }
+                }
+                TileAction::Slide => {
+                    // Check if target is on the slide line from src in this direction,
+                    // within bounds, and the path is unobstructed.
+                    if self.is_target_on_slide(src, *offset, target)
+                        && self.can_apply_action(src, target, TileAction::Slide)
+                    {
+                        return true;
+                    }
+                }
+                TileAction::JumpSlide => {
+                    // JumpSlide uses "far" offsets; map to "near" to get the direction.
+                    let near_x = match offset.x {
+                        HorizontalOffset::FarLeft => HorizontalOffset::Left,
+                        HorizontalOffset::FarRight => HorizontalOffset::Right,
+                        other => other,
+                    };
+                    let near_y = match offset.y {
+                        VerticalOffset::FarTop => VerticalOffset::Top,
+                        VerticalOffset::FarBottom => VerticalOffset::Bottom,
+                        other => other,
+                    };
+                    let near_offset = Offsets::new(near_x, near_y);
+                    if self.is_target_on_slide(src, near_offset, target)
+                        && self.can_apply_action(src, target, TileAction::JumpSlide)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if `target` lies on the slide line defined by `src` + direction `offset`.
+    /// Does NOT check obstruction — that is handled by `can_apply_action`.
+    fn is_target_on_slide(&self, src: Coordinates, offset: Offsets, target: Coordinates) -> bool {
+        if target == src || !self.board.is_in_bounds(target) {
+            return false;
+        }
+        // The offset encodes the direction of the slide relative to center.
+        // We need to check that target lies in the correct direction from src.
+        let dx = target.x as i32 - src.x as i32;
+        let dy = target.y as i32 - src.y as i32;
+
+        // Determine the expected direction from the offset.
+        // Slide offsets are always "near" offsets: Left/Right/Top/Bottom or
+        // near-diagonal combinations (Left+Top, Right+Bottom, etc.)
+        let (expect_dx, expect_dy) = match (offset.x, offset.y) {
+            // Straight directions (note: target_coordinates reverses Left/Right)
+            (HorizontalOffset::Right, VerticalOffset::Center) => (-1i32, 0i32), // slide left
+            (HorizontalOffset::Left, VerticalOffset::Center) => (1, 0),         // slide right
+            (HorizontalOffset::Center, VerticalOffset::Top) => (0, -1),         // slide up
+            (HorizontalOffset::Center, VerticalOffset::Bottom) => (0, 1),       // slide down
+            // Diagonals (same reversal pattern as target_coordinates)
+            (HorizontalOffset::Right, VerticalOffset::Top) => (-1, -1),
+            (HorizontalOffset::Left, VerticalOffset::Top) => (1, -1),
+            (HorizontalOffset::Right, VerticalOffset::Bottom) => (-1, 1),
+            (HorizontalOffset::Left, VerticalOffset::Bottom) => (1, 1),
+            _ => return false,
+        };
+
+        // Check that target is in the correct direction and on the line.
+        if expect_dx == 0 {
+            // Vertical slide
+            dx == 0 && (dy.signum() == expect_dy)
+        } else if expect_dy == 0 {
+            // Horizontal slide
+            dy == 0 && (dx.signum() == expect_dx)
+        } else {
+            // Diagonal slide: |dx| == |dy| and correct direction
+            dx.abs() == dy.abs() && dx.signum() == expect_dx && dy.signum() == expect_dy
+        }
     }
 
     pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
