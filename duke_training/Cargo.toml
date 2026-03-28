@@ -59,3 +59,7 @@ path = "src/profile_games.rs"
 [[bin]]
 name = "td_selfplay"
 path = "src/td_selfplay.rs"
+
+[[bin]]
+name = "label_positions"
+path = "src/label_positions.rs"

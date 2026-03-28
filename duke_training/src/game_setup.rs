@@ -206,7 +206,7 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
 /// Returns a score from the perspective of the current player (higher = better).
 /// Terminal positions are scored as +1000 (win), -1000 (loss), or 0 (tie).
 /// At depth 0 or when no moves are available, returns the static evaluation.
-fn negamax<E: GameEvaluator + ?Sized>(
+pub fn negamax<E: GameEvaluator + ?Sized>(
     gs: &GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> f64 {
     // Terminal check

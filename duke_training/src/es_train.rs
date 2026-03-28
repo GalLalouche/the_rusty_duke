@@ -584,7 +584,7 @@ fn run_es_training_loop(
             if train_wr_pct > 60.0 {
                 opponent_epsilon = (opponent_epsilon - 0.05).max(0.0);
             } else if train_wr_pct < 30.0 {
-                opponent_epsilon = (opponent_epsilon + 0.05).min(0.5);
+                opponent_epsilon = (opponent_epsilon + 0.05).min(1.0);
             }
             if (old_opp_eps - opponent_epsilon).abs() > 0.001 {
                 println!(
