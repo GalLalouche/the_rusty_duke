@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
@@ -14,7 +13,6 @@ use crate::game::dumb_printer::{double_char_print_board, single_char_print_board
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
 use crate::game::tile::{Owner, Ownership, PlacedTile, TileType};
 use crate::game::tile_side::TileAction;
-use crate::game::units;
 use crate::time_it_macro;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumIter)]
@@ -602,6 +600,7 @@ impl Rectangular for GameBoard {
 #[cfg(test)]
 mod test {
     use crate::{assert_empty, assert_eq_set, assert_not};
+    use crate::game::units;
 
     use super::*;
 

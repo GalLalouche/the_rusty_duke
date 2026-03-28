@@ -8,7 +8,7 @@ use crate::common::board::Board;
 use crate::common::coordinates::Coordinates;
 use crate::common::geometry::Rectangular;
 use crate::common::percentage::Percentage;
-use crate::game::{board_setup, units};
+use crate::game::board_setup;
 use crate::game::bag::{DiscardBag, TileBag};
 use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNewTiles};
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};

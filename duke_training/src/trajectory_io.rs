@@ -22,7 +22,6 @@ use duke_rust::common::coordinates::Coordinates;
 use duke_rust::game::bag::{DiscardBag, TileBag};
 use duke_rust::game::state::{GameResult, GameSnapshot, GameState};
 use duke_rust::game::tile::{CurrentSide, Owner, PlacedTile, TileType};
-use strum::EnumCount;
 
 use crate::serialization;
 
