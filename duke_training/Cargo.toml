@@ -55,3 +55,7 @@ path = "src/model_registry_cli.rs"
 [[bin]]
 name = "profile_games"
 path = "src/profile_games.rs"
+
+[[bin]]
+name = "td_selfplay"
+path = "src/td_selfplay.rs"
