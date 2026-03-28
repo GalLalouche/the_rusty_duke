@@ -22,8 +22,9 @@ use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
 use duke_training::encoding::{BOARD_FEATURES, BAG_FEATURES, TOTAL_FEATURES};
-use duke_training::game_setup::{create_bag, create_initial_state, StaticHeuristicEvaluator};
+use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
+use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, win_rate, Player};
 
 // ── Labeled position data ──────────────────────────────────────────────────
@@ -438,47 +439,25 @@ fn evaluate_model(
     let model_player = Player::Evaluator(&model_eval);
 
     for spec in benchmark_specs {
-        match spec.as_str() {
-            "random" => {
-                let result = run_matches(
-                    &gs,
-                    &model_player,
-                    &Player::Random,
-                    eval_games,
-                    "vs Random",
-                );
-                let wr = win_rate(result.player_a_wins, result.ties, eval_games);
-                eprintln!(
-                    "  vs Random: {:.1}% win rate ({} W / {} L / {} T)",
-                    wr * 100.0,
-                    result.player_a_wins,
-                    result.player_b_wins,
-                    result.ties,
-                );
-            }
-            "base" => {
-                let base_eval = StaticHeuristicEvaluator::new();
-                let base_player = Player::Evaluator(&base_eval);
-                let result = run_matches(
-                    &gs,
-                    &model_player,
-                    &base_player,
-                    eval_games,
-                    "vs Base",
-                );
-                let wr = win_rate(result.player_a_wins, result.ties, eval_games);
-                eprintln!(
-                    "  vs Base: {:.1}% win rate ({} W / {} L / {} T)",
-                    wr * 100.0,
-                    result.player_a_wins,
-                    result.player_b_wins,
-                    result.ties,
-                );
-            }
-            _ => {
-                eprintln!("  Unknown benchmark spec '{}', skipping", spec);
-            }
-        }
+        let opponent = LoadedModel::from_spec(spec, false);
+        let opp_player = opponent.as_player();
+        let label = &opponent.label;
+        let result = run_matches(
+            &gs,
+            &model_player,
+            &opp_player,
+            eval_games,
+            &format!("vs {}", label),
+        );
+        let wr = win_rate(result.player_a_wins, result.ties, eval_games);
+        eprintln!(
+            "  vs {}: {:.1}% win rate ({} W / {} L / {} T)",
+            label,
+            wr * 100.0,
+            result.player_a_wins,
+            result.player_b_wins,
+            result.ties,
+        );
     }
 }
 
