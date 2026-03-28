@@ -6,7 +6,10 @@
 //! Usage:
 //!   td_selfplay --games 1500000 --lr 0.001 --lambda 0.7 --epsilon 0.1
 //!               --hidden 128 --batch-size 100 --eval-interval 10000
-//!               --eval-games 500 --benchmark base --checkpoint-dir D:/temp/td_selfplay
+//!               --eval-games 500 --benchmark base,random --checkpoint-dir D:/temp/td_selfplay
+//!
+//! The --benchmark flag accepts a comma-separated list of opponents (default: base,random).
+//! Each opponent can be "base", "random", or a file path (.gmlp/.nnue/.json).
 
 use std::time::Instant;
 
@@ -23,10 +26,9 @@ use duke_training::cli::parse_flag;
 use duke_training::encoding::{encode_state_flat, TOTAL_FEATURES};
 use duke_training::fc_model::FcValueNetwork;
 use duke_training::fc_td_training::{FcTdTrainer, GameTrajectory};
-use duke_training::game_setup::{
-    create_bag, create_initial_state, play_selfplay_game, StaticHeuristicEvaluator,
-};
+use duke_training::game_setup::{create_bag, create_initial_state, play_selfplay_game};
 use duke_training::generic_mlp::{GenericMlp, GenericNnueEvaluator};
+use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, Player};
 
 type MyBackend = Autodiff<NdArray>;
@@ -199,8 +201,13 @@ fn main() {
     let batch_size: u64 = parse_flag(&args, "--batch-size").unwrap_or(100);
     let eval_interval: u64 = parse_flag(&args, "--eval-interval").unwrap_or(10_000);
     let eval_games: u32 = parse_flag(&args, "--eval-games").unwrap_or(500);
-    let benchmark_opponent = parse_flag::<String>(&args, "--benchmark")
-        .unwrap_or_else(|| "base".to_string());
+    let benchmark_str = parse_flag::<String>(&args, "--benchmark")
+        .unwrap_or_else(|| "base,random".to_string());
+    let benchmark_specs: Vec<String> = benchmark_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     let checkpoint_dir = parse_flag::<String>(&args, "--checkpoint-dir")
         .unwrap_or_else(|| "D:/temp/td_selfplay".to_string());
 
@@ -213,7 +220,7 @@ fn main() {
     println!("  network: 1106->{}->1", arch_str.replace(",", "->"));
     println!("  games={}, lr={}, lambda={}, epsilon={}", total_games, lr, lambda, epsilon);
     println!("  batch_size={}, eval_interval={}, eval_games={}", batch_size, eval_interval, eval_games);
-    println!("  benchmark={}, checkpoint_dir={}", benchmark_opponent, checkpoint_dir);
+    println!("  benchmark={}, checkpoint_dir={}", benchmark_str, checkpoint_dir);
     println!();
 
     // Create checkpoint directory
@@ -222,6 +229,16 @@ fn main() {
     // Initialize game state
     let bag = create_bag();
     let gs = create_initial_state(&bag);
+
+    // Load benchmark opponents once at startup
+    let benchmark_opponents: Vec<LoadedModel> = benchmark_specs
+        .iter()
+        .map(|spec| LoadedModel::from_spec(spec))
+        .collect();
+    println!("Loaded {} benchmark opponent(s): {}",
+        benchmark_opponents.len(),
+        benchmark_opponents.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(", "));
+    println!();
 
     // Create trainer with NdArray backend (CPU)
     let device = burn::backend::ndarray::NdArrayDevice::Cpu;
@@ -289,37 +306,20 @@ fn main() {
             let ckpt_path = format!("{}/td_iter_{}.gmlp", checkpoint_dir, games_played);
             gmlp.save(&ckpt_path).expect("Failed to save checkpoint");
 
-            // Benchmark
-            let gmlp_eval = duke_training::generic_mlp::GenericNnueEvaluator { net: gmlp };
+            // Benchmark against all opponents
+            let gmlp_eval = GenericNnueEvaluator { net: gmlp };
             let trained_player = Player::Evaluator(&gmlp_eval);
 
-            match benchmark_opponent.as_str() {
-                "base" => {
-                    let base_eval = StaticHeuristicEvaluator::new();
-                    let base_player = Player::Evaluator(&base_eval);
-                    print!("EVAL ({} games): ", games_played);
-                    run_matches(
-                        &gs,
-                        &trained_player,
-                        &base_player,
-                        eval_games,
-                        &format!("vs base"),
-                    );
-                }
-                "random" => {
-                    let random_player = Player::Random;
-                    print!("EVAL ({} games): ", games_played);
-                    run_matches(
-                        &gs,
-                        &trained_player,
-                        &random_player,
-                        eval_games,
-                        &format!("vs random"),
-                    );
-                }
-                other => {
-                    eprintln!("Unknown benchmark opponent: {}", other);
-                }
+            println!("EVAL ({} games):", games_played);
+            for opponent in &benchmark_opponents {
+                let opp_player = opponent.as_player();
+                run_matches(
+                    &gs,
+                    &trained_player,
+                    &opp_player,
+                    eval_games,
+                    &format!("  vs {}", opponent.label),
+                );
             }
 
             println!("Saved checkpoint: {}", ckpt_path);
