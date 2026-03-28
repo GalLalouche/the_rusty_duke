@@ -13,8 +13,7 @@ use rand::{Rng, thread_rng};
 use crate::common::utils::test_rng;
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::state::{GameResult, GameState};
-use crate::game::tile::{Owner, TileRef};
-use crate::game::units;
+use crate::game::tile::{Owner, TileType};
 use crate::view::controller::{Controller, ControllerCommand};
 use crate::view::state::ViewState;
 
@@ -37,17 +36,17 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gs = GameState::new(
         &TileBag::new(vec!(
-            TileRef::new(units::footman()),
-            TileRef::new(units::footman()),
-            TileRef::new(units::pikeman()),
-            TileRef::new(units::pikeman()),
-            TileRef::new(units::knight()),
-            TileRef::new(units::champion()),
-            TileRef::new(units::bowman()),
-            TileRef::new(units::priest()),
-            TileRef::new(units::wizard()),
-            // TileRef::new(units::marshall()),
-            // TileRef::new(units::general()),
+            TileType::Footman,
+            TileType::Footman,
+            TileType::Pikeman,
+            TileType::Pikeman,
+            TileType::Knight,
+            TileType::Champion,
+            TileType::Bowman,
+            TileType::Priest,
+            TileType::Wizard,
+            // TileType::Marshall,
+            // TileType::General,
         )),
         (DukeInitialLocation::Left, FootmenSetup::Left),
         (DukeInitialLocation::Right, FootmenSetup::Right),

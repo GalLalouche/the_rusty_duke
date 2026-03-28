@@ -17,13 +17,11 @@
 //!       bottom_discard_len: u8, then tile_type bytes
 
 use std::io::{self, Read, Write, BufWriter};
-use std::sync::Arc;
 
 use duke_rust::common::coordinates::Coordinates;
 use duke_rust::game::bag::{DiscardBag, TileBag};
 use duke_rust::game::state::{GameResult, GameSnapshot, GameState};
 use duke_rust::game::tile::{CurrentSide, Owner, PlacedTile, TileType};
-use duke_rust::game::units::tile_from_type;
 use strum::EnumCount;
 
 use crate::serialization;
@@ -117,11 +115,6 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
     cursor.read_exact(&mut buf4)?;
     let num_games = u32::from_le_bytes(buf4) as usize;
 
-    // Pre-build one Arc<Tile> per TileType to avoid millions of redundant constructions
-    let tile_cache: Vec<Arc<duke_rust::game::tile::Tile>> = (0..TileType::COUNT as u8)
-        .map(|i| Arc::new(tile_from_type(tile_type_from_u8(i).unwrap())))
-        .collect();
-
     let mut games = Vec::with_capacity(num_games);
     for _ in 0..num_games {
         let result = serialization::read_result(&mut cursor)?;
@@ -131,7 +124,7 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectoryData>> {
 
         let mut states = Vec::with_capacity(num_states);
         for _ in 0..num_states {
-            states.push(read_game_state(&mut cursor, &tile_cache)?);
+            states.push(read_game_state(&mut cursor)?);
         }
         games.push(GameTrajectoryData { states, result });
     }
@@ -163,7 +156,7 @@ fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
     w.write_all(&[tiles.len() as u8])?;
     for (coords, placed) in &tiles {
         w.write_all(&[coords.x as u8, coords.y as u8])?;
-        w.write_all(&[placed.tile.tile_type() as u8])?;
+        w.write_all(&[placed.tile_type as u8])?;
         w.write_all(&[match placed.current_side {
             CurrentSide::Initial => 0u8,
             CurrentSide::Flipped => 1u8,
@@ -183,17 +176,17 @@ fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
     Ok(())
 }
 
-fn write_tile_list(w: &mut impl Write, tiles: &[Arc<duke_rust::game::tile::Tile>]) -> io::Result<()> {
+fn write_tile_list(w: &mut impl Write, tiles: &[TileType]) -> io::Result<()> {
     assert!(tiles.len() <= 255,
         "tile list has {} entries, exceeds u8::MAX for serialization", tiles.len());
     w.write_all(&[tiles.len() as u8])?;
-    for tile in tiles {
-        w.write_all(&[tile.tile_type() as u8])?;
+    for tile_type in tiles {
+        w.write_all(&[*tile_type as u8])?;
     }
     Ok(())
 }
 
-fn read_game_state(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::Tile>]) -> io::Result<GameState> {
+fn read_game_state(r: &mut impl Read) -> io::Result<GameState> {
     let mut buf1 = [0u8; 1];
 
     // Current player
@@ -215,7 +208,7 @@ fn read_game_state(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::T
     for _ in 0..num_tiles {
         let mut tile_buf = [0u8; 5]; // x, y, tile_type, side, owner
         r.read_exact(&mut tile_buf)?;
-        let coords = Coordinates { x: tile_buf[0] as u16, y: tile_buf[1] as u16 };
+        let coords = Coordinates { x: tile_buf[0], y: tile_buf[1] };
         let tile_type = tile_type_from_u8(tile_buf[2])?;
         let side = match tile_buf[3] {
             0 => CurrentSide::Initial,
@@ -227,7 +220,7 @@ fn read_game_state(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::T
             1 => Owner::BottomPlayer,
             b => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Invalid owner byte: {}", b))),
         };
-        let mut placed = PlacedTile::new_from_ref(owner, tile_cache[tile_type as usize].clone());
+        let mut placed = PlacedTile::new(owner, tile_type);
         if side == CurrentSide::Flipped {
             placed.flip();
         }
@@ -235,10 +228,10 @@ fn read_game_state(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::T
     }
 
     // Bags and discard piles
-    let top_bag = TileBag::new(read_tile_ref_list(r, tile_cache)?);
-    let bottom_bag = TileBag::new(read_tile_ref_list(r, tile_cache)?);
-    let top_discard = DiscardBag::from_tiles(read_tile_ref_list(r, tile_cache)?);
-    let bottom_discard = DiscardBag::from_tiles(read_tile_ref_list(r, tile_cache)?);
+    let top_bag = TileBag::new(read_tile_type_list(r)?);
+    let bottom_bag = TileBag::new(read_tile_type_list(r)?);
+    let top_discard = DiscardBag::from_tiles(read_tile_type_list(r)?);
+    let bottom_discard = DiscardBag::from_tiles(read_tile_type_list(r)?);
 
     Ok(GameState::from_snapshot(GameSnapshot {
         tiles,
@@ -251,7 +244,7 @@ fn read_game_state(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::T
     }))
 }
 
-fn read_tile_ref_list(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile::Tile>]) -> io::Result<Vec<Arc<duke_rust::game::tile::Tile>>> {
+fn read_tile_type_list(r: &mut impl Read) -> io::Result<Vec<TileType>> {
     let mut buf1 = [0u8; 1];
     r.read_exact(&mut buf1)?;
     let len = buf1[0] as usize;
@@ -259,7 +252,7 @@ fn read_tile_ref_list(r: &mut impl Read, tile_cache: &[Arc<duke_rust::game::tile
     for _ in 0..len {
         r.read_exact(&mut buf1)?;
         let tt = tile_type_from_u8(buf1[0])?;
-        tiles.push(tile_cache[tt as usize].clone());
+        tiles.push(tt);
     }
     Ok(tiles)
 }

@@ -12,9 +12,9 @@ use crate::game::tile::PlacedTile;
 use crate::game::tile_side::TileSide;
 use crate::view::tui::tile_renderer::{render_board_tile, RenderBoardTileConfig, RenderBoardTileHighlight, RenderTileConfig, TILE_HEIGHT, TILE_WIDTH};
 
-fn board_area(area: Rect, board_height: u16, board_width: u16) -> Rect {
-    let width = TileSide::SIDE + 2;
-    let height = TileSide::SIDE + 2;
+fn board_area(area: Rect, board_height: u8, board_width: u8) -> Rect {
+    let width = TileSide::SIDE as u16 + 2;
+    let height = TileSide::SIDE as u16 + 2;
     Rect {
         x: area.x,
         y: area.y,
@@ -79,7 +79,7 @@ pub fn render_board(
             height: TILE_HEIGHT + 2,
         };
         let b = Block::default()
-            .title(format!("{} info", tile.tile.get_name()))
+            .title(format!("{} info", tile.tile_type.get_name()))
             .border_type(BorderType::Double)
             .borders(Borders::ALL)
             ;

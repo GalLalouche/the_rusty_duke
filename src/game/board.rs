@@ -12,7 +12,7 @@ use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
 use crate::game::dumb_printer::{double_char_print_board, single_char_print_board};
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::tile::{Owner, Ownership, PlacedTile, TileRef};
+use crate::game::tile::{Owner, Ownership, PlacedTile, TileType};
 use crate::game::tile_side::TileAction;
 use crate::game::units;
 use crate::time_it_macro;
@@ -22,7 +22,7 @@ pub enum DukeOffset { Top, Bottom, Left, Right }
 
 #[derive(Debug, Clone)]
 pub(super) enum BoardMove {
-    PlaceNewTile(TileRef, DukeOffset, Owner),
+    PlaceNewTile(TileType, DukeOffset, Owner),
     ApplyNonCommandTileAction { src: Coordinates, dst: Coordinates },
     // CommandAnotherTile { commander_src: Coordinates, unit_src: Coordinates, unit_dst: Coordinates },
 }
@@ -43,7 +43,7 @@ impl Display for PossibleMove {
                        dst,
                        match &capturing {
                            None => "".to_owned(),
-                           Some(t) => format!("capturing: {}", t.tile.get_name()),
+                           Some(t) => format!("capturing: {}", t.tile_type.get_name()),
                        }
                 )
         }
@@ -149,7 +149,7 @@ impl Iterator for TargetCoordsIter {
 enum AppliedPubAction { Movement, Strike, Invalid }
 
 impl GameBoard {
-    pub const BOARD_SIZE: u16 = 6;
+    pub const BOARD_SIZE: u8 = 6;
 
     pub(super) fn new(board: Board<PlacedTile>) -> Self { GameBoard { board } }
     fn absolute_duke_offset(&self, offset: DukeOffset, c: Coordinates) -> Option<Coordinates> {
@@ -207,8 +207,8 @@ impl GameBoard {
             HorizontalOffset::FarRight => 2,
         };
         let y: i32 = src.y as i32 + vertical_offset(offset.y) + vertical_offset(center);
-        u16::try_from(x)
-            .and_then(|x| u16::try_from(y).map(|y| Coordinates { x, y }))
+        u8::try_from(x)
+            .and_then(|x| u8::try_from(y).map(|y| Coordinates { x, y }))
             .ok()
             .filter(|c| self.board.is_in_bounds(*c))
     }
@@ -221,14 +221,14 @@ impl GameBoard {
                 TargetCoords::from_option(self.to_absolute_coordinate(src, offset, center)),
             TileAction::Slide => {
                 let mut res = TargetCoords::empty();
-                let push_horizontal = |res: &mut TargetCoords, r: Range<u16>| {
+                let push_horizontal = |res: &mut TargetCoords, r: Range<u8>| {
                     for x in r { res.push(Coordinates { x, y: src.y }); }
                 };
-                let push_vertical = |res: &mut TargetCoords, r: Range<u16>| {
+                let push_vertical = |res: &mut TargetCoords, r: Range<u8>| {
                     for y in r { res.push(Coordinates { x: src.x, y }); }
                 };
                 fn push_diagonal<I1, I2>(res: &mut TargetCoords, x: I1, y: I2)
-                    where I1: Iterator<Item=u16>, I2: Iterator<Item=u16> {
+                    where I1: Iterator<Item=u8>, I2: Iterator<Item=u8> {
                     for (x, y) in x.zip(y) { res.push(Coordinates { x, y }); }
                 }
                 if offset == HorizontalOffset::Right.center() {
@@ -365,7 +365,7 @@ impl GameBoard {
 //
     pub fn duke_coordinates(&self, o: Owner) -> Coordinates {
         self.board
-            .find(|a| a.owner == o && a.tile.tile_type().is_duke())
+            .find(|a| a.owner == o && a.tile_type.is_duke())
             .expect(format!("Could not find the duke for {:?}", o).as_str())
     }
 
@@ -392,7 +392,7 @@ impl GameBoard {
                         // Cannot use does_not_put_in_guard as that will cause an infinite recursion.
                         // TODO cache this footman, stop cloning for guard checks.
                         let mut clone = self.clone();
-                        clone.place(c, PlacedTile::new(owner, units::footman()));
+                        clone.place(c, PlacedTile::new(owner, TileType::Footman));
                         !clone.is_guard(owner)
                     })
                 }
@@ -401,11 +401,11 @@ impl GameBoard {
 
     pub(super) fn make_a_move(&mut self, gm: BoardMove) -> () {
         match gm {
-            BoardMove::PlaceNewTile(tile, duke_offset, owner) => {
+            BoardMove::PlaceNewTile(tile_type, duke_offset, owner) => {
                 let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(owner))
                     .expect("Request duke location is out of bounds");
                 debug_assert!(self.is_valid_placement(owner, duke_offset));
-                self.place(c, PlacedTile::new_from_ref(owner, tile));
+                self.place(c, PlacedTile::new(owner, tile_type));
             }
             BoardMove::ApplyNonCommandTileAction { src, dst } => {
                 match self.can_apply(src, dst) {
@@ -590,11 +590,11 @@ impl GameBoard {
 }
 
 impl Rectangular for GameBoard {
-    fn width(&self) -> u16 {
+    fn width(&self) -> u8 {
         self.board.width()
     }
 
-    fn height(&self) -> u16 {
+    fn height(&self) -> u8 {
         self.board.height()
     }
 }
@@ -783,12 +783,12 @@ mod test {
     #[test]
     fn get_legal_moves_can_block_guard() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let mut footman = PlacedTile::new(Owner::TopPlayer, units::footman());
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let mut footman = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
         footman.flip();
         let footman_coordinates = Coordinates { x: 4, y: 5 };
         board.place(footman_coordinates, footman);
-        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
         op_duke.flip();
         board.place(Coordinates { x: 5, y: 0 }, op_duke);
 

@@ -5,12 +5,12 @@ use tui::widgets::{Block, Borders, BorderType, Widget};
 
 use crate::common::coordinates::Coordinates;
 use crate::game::offset::{HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::tile::{CurrentSide, Owner, PlacedTile, Tile};
+use crate::game::tile::{CurrentSide, Owner, PlacedTile};
 use crate::game::tile::Owner::TopPlayer;
 use crate::game::tile_side::{TileAction, TileSide};
 
-pub const TILE_WIDTH: u16 = TileSide::SIDE + 2;
-pub const TILE_HEIGHT: u16 = TileSide::SIDE + 2;
+pub const TILE_WIDTH: u16 = TileSide::SIDE as u16 + 2;
+pub const TILE_HEIGHT: u16 = TileSide::SIDE as u16 + 2;
 
 pub(super) enum RenderBoardTileHighlight {
     Moving,
@@ -35,19 +35,22 @@ pub(super) fn render_board_tile(
 ) -> () {
     match o {
         None => block(&config).render(area, buf),
-        Some(o) => render_tile(
-            &o.tile,
-            &o.owner,
-            o.current_side,
-            config,
-            area,
-            buf,
-        ),
+        Some(o) => {
+            let tile = o.tile();
+            render_tile(
+                tile,
+                &o.owner,
+                o.current_side,
+                config,
+                area,
+                buf,
+            )
+        },
     }
 }
 
 pub(super) fn render_tile(
-    tile: &Tile,
+    tile: &crate::game::tile::Tile,
     owner: &Owner,
     current_side: CurrentSide,
     config: RenderTileConfig,

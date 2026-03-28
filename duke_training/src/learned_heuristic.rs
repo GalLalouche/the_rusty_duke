@@ -20,7 +20,7 @@ use crate::game_setup::GameEvaluator;
 pub const NUM_FEATURES: usize = 24;
 
 /// Center squares on the 6x6 board: (2,2), (3,2), (2,3), (3,3).
-const CENTER_SQUARES: [(u16, u16); 4] = [(2, 2), (3, 2), (2, 3), (3, 3)];
+const CENTER_SQUARES: [(u8, u8); 4] = [(2, 2), (3, 2), (2, 3), (3, 3)];
 
 /// Learned weight vector for the polynomial heuristic.
 #[derive(Debug, Clone)]
@@ -169,7 +169,7 @@ pub fn manhattan_distance_features(gs: &GameState) -> [f64; 4] {
 
     for (coords, tile) in gs.board().active_coordinates() {
         let is_mine = tile.owner == me;
-        let is_duke_tile = tile.tile.tile_type().is_duke();
+        let is_duke_tile = tile.tile_type.is_duke();
 
         let dx_my = (coords.x as i32 - my_duke.x as i32).unsigned_abs();
         let dy_my = (coords.y as i32 - my_duke.y as i32).unsigned_abs();
@@ -209,10 +209,10 @@ pub fn discard_vector(gs: &GameState) -> [f64; 26] {
     let mut counts = [0.0f64; 26];
 
     for tile in gs.discard_bag_for(me).existing() {
-        counts[tile.tile_type().index()] += 1.0;
+        counts[tile.index()] += 1.0;
     }
     for tile in gs.discard_bag_for(opp).existing() {
-        counts[TileType::COUNT + tile.tile_type().index()] += 1.0;
+        counts[TileType::COUNT + tile.index()] += 1.0;
     }
 
     counts

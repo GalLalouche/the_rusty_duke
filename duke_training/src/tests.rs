@@ -844,15 +844,15 @@ fn trajectory_roundtrip_preserves_game_states() {
             // Verify board tiles match
             let orig_board = orig.board();
             let loaded_board = loaded_gs.board();
-            for y in 0..6u16 {
-                for x in 0..6u16 {
+            for y in 0..6u8 {
+                for x in 0..6u8 {
                     let c = duke_rust::common::coordinates::Coordinates { x, y };
                     let orig_tile = orig_board.get(c);
                     let loaded_tile = loaded_board.get(c);
                     match (orig_tile, loaded_tile) {
                         (None, None) => {}
                         (Some(o), Some(l)) => {
-                            assert_eq!(o.tile.tile_type(), l.tile.tile_type(),
+                            assert_eq!(o.tile_type, l.tile_type,
                                 "Game {} state {} ({},{}) tile type mismatch", i, j, x, y);
                             assert_eq!(o.current_side, l.current_side,
                                 "Game {} state {} ({},{}) side mismatch", i, j, x, y);
@@ -1022,10 +1022,8 @@ use duke_rust::game::ai::heuristics::Heuristic;
 use duke_rust::game::bag::DiscardBag;
 use duke_rust::game::tile::{PlacedTile, TileType};
 use duke_rust::game::units;
-use duke_rust::game::units::tile_from_type;
-
 /// Shorthand for creating coordinates in tests.
-fn coord(x: u16, y: u16) -> Coordinates {
+fn coord(x: u8, y: u8) -> Coordinates {
     Coordinates { x, y }
 }
 
@@ -1098,8 +1096,8 @@ fn duke_movement_options_simple_unblocked() {
     //   Left: out of bounds; Right: x=1,2,3,4,5 => 5 squares.
     // No guard issues since dukes are on different rows.
     let gs = snapshot_state(vec![
-        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::DukeMovementOptions;
@@ -1128,9 +1126,9 @@ fn duke_movement_options_blocked_by_own_tile() {
     //   Total: 3 moves.
     // TopPlayer Duke at (0,0) far away.
     let gs = snapshot_state(vec![
-        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-        (Coordinates { x: 4, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (Coordinates { x: 4, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::DukeMovementOptions;
@@ -1148,11 +1146,11 @@ fn duke_movement_options_flipped_duke_slides_vertically() {
     // BottomPlayer Duke (Flipped) at (2,2): slides top/bottom.
     //   Top: y=1,0 => 2 squares; Bottom: y=3,4,5 => 3 squares => 5 total.
     // TopPlayer Duke at (5,5).
-    let mut bottom_duke = PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke));
+    let mut bottom_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
     bottom_duke.flip();
     let gs = snapshot_state(vec![
         (Coordinates { x: 2, y: 2 }, bottom_duke),
-        (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::DukeMovementOptions;
@@ -1177,9 +1175,9 @@ fn total_tiles_on_board_simple() {
     // TotalTilesOnBoard = count * 10.
     // BottomPlayer: 2 * 10 = 20; TopPlayer: 1 * 10 = 10.
     let gs = snapshot_state(vec![
-        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-        (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::TotalTilesOnBoard;
@@ -1200,12 +1198,12 @@ fn total_tiles_on_board_symmetric() {
     // Both players have 3 tiles each (Duke + 2 Footmen).
     // Each player: 3 * 10 = 30.
     let gs = snapshot_state(vec![
-        (Coordinates { x: 2, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-        (Coordinates { x: 1, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-        (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-        (Coordinates { x: 2, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
-        (Coordinates { x: 1, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Footman))),
-        (Coordinates { x: 3, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Footman))),
+        (Coordinates { x: 2, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (Coordinates { x: 1, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        (Coordinates { x: 2, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+        (Coordinates { x: 1, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+        (Coordinates { x: 3, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::TotalTilesOnBoard;
@@ -1228,8 +1226,8 @@ fn total_movement_options_duke_only() {
     // TotalMovementOptions counts all valid game moves (tile moves only, no placements
     // since bags are empty).
     let gs = snapshot_state(vec![
-        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::TotalMovementOptions;
@@ -1257,13 +1255,13 @@ fn total_movement_options_multiple_pieces_with_bag() {
     // near the duke at (3,5): valid offsets that are empty.
     let gs = snapshot_state_with_bags(
         vec![
-            (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-            (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+            (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
         ],
         Owner::BottomPlayer,
         TileBag::new(vec![]),  // TopPlayer empty bag
-        TileBag::new(vec![std::sync::Arc::new(tile_from_type(TileType::Pikeman))]),  // BottomPlayer has a tile
+        TileBag::new(vec![TileType::Pikeman]),  // BottomPlayer has a tile
     );
 
     let h = Heuristics::TotalMovementOptions;
@@ -1289,8 +1287,8 @@ fn total_movement_options_multiple_pieces_with_bag() {
 fn discarded_units_empty_discards() {
     // No discarded tiles => score is 0 * -15 = 0.0 for both players.
     let gs = snapshot_state(vec![
-        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+        (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::DiscardedUnits;
@@ -1305,19 +1303,19 @@ fn discarded_units_empty_discards() {
 fn discarded_units_with_discards() {
     // TopPlayer has 2 discarded tiles => 2 * -15 = -30.0.
     // BottomPlayer has 1 discarded tile => 1 * -15 = -15.0.
-    use std::sync::Arc;
+
     let gs = snapshot_state_with_discards(
         vec![
-            (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+            (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
         ],
         Owner::BottomPlayer,
         DiscardBag::from_tiles(vec![
-            Arc::new(tile_from_type(TileType::Footman)),
-            Arc::new(tile_from_type(TileType::Pikeman)),
+            TileType::Footman,
+            TileType::Pikeman,
         ]),
         DiscardBag::from_tiles(vec![
-            Arc::new(tile_from_type(TileType::Knight)),
+            TileType::Knight,
         ]),
     );
 
@@ -1343,18 +1341,18 @@ fn discarded_units_with_discards() {
 fn discarded_units_three_tiles_discarded() {
     // TopPlayer has 0 discarded, BottomPlayer has 3 discarded.
     // BottomPlayer: 3 * -15 = -45.0
-    use std::sync::Arc;
+
     let gs = snapshot_state_with_discards(
         vec![
-            (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+            (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
         ],
         Owner::BottomPlayer,
         DiscardBag::empty(),
         DiscardBag::from_tiles(vec![
-            Arc::new(tile_from_type(TileType::Footman)),
-            Arc::new(tile_from_type(TileType::Pikeman)),
-            Arc::new(tile_from_type(TileType::Knight)),
+            TileType::Footman,
+            TileType::Pikeman,
+            TileType::Knight,
         ]),
     );
 
@@ -1383,11 +1381,11 @@ mod manhattan_tests {
         let opp = Owner::BottomPlayer;
 
         let tiles = vec![
-            (coord(2, 2), PlacedTile::new(me, units::duke())),
-            (coord(2, 3), PlacedTile::new(me, units::footman())),  // dist 1 from my duke
-            (coord(3, 2), PlacedTile::new(me, units::footman())),  // dist 1 from my duke
-            (coord(5, 5), PlacedTile::new(me, units::pikeman())),  // dist 6 from my duke
-            (coord(4, 4), PlacedTile::new(opp, units::duke())),
+            (coord(2, 2), PlacedTile::new(me, TileType::Duke)),
+            (coord(2, 3), PlacedTile::new(me, TileType::Footman)),  // dist 1 from my duke
+            (coord(3, 2), PlacedTile::new(me, TileType::Footman)),  // dist 1 from my duke
+            (coord(5, 5), PlacedTile::new(me, TileType::Pikeman)),  // dist 6 from my duke
+            (coord(4, 4), PlacedTile::new(opp, TileType::Duke)),
         ];
         let gs = make_state(tiles, me);
         let f = manhattan_distance_features(&gs);
@@ -1411,13 +1409,13 @@ mod manhattan_tests {
         let opp = Owner::BottomPlayer;
 
         let tiles = vec![
-            (coord(1, 1), PlacedTile::new(me, units::duke())),
-            (coord(4, 4), PlacedTile::new(opp, units::duke())),
-            (coord(1, 2), PlacedTile::new(me, units::footman())),   // near my duke
-            (coord(3, 3), PlacedTile::new(me, units::pikeman())),   // near enemy duke
-            (coord(1, 0), PlacedTile::new(opp, units::footman())),  // near my duke
-            (coord(4, 3), PlacedTile::new(opp, units::bowman())),   // near enemy duke
-            (coord(3, 4), PlacedTile::new(opp, units::pikeman())),  // near enemy duke
+            (coord(1, 1), PlacedTile::new(me, TileType::Duke)),
+            (coord(4, 4), PlacedTile::new(opp, TileType::Duke)),
+            (coord(1, 2), PlacedTile::new(me, TileType::Footman)),   // near my duke
+            (coord(3, 3), PlacedTile::new(me, TileType::Pikeman)),   // near enemy duke
+            (coord(1, 0), PlacedTile::new(opp, TileType::Footman)),  // near my duke
+            (coord(4, 3), PlacedTile::new(opp, TileType::Bowman)),   // near enemy duke
+            (coord(3, 4), PlacedTile::new(opp, TileType::Pikeman)),  // near enemy duke
         ];
         let gs = make_state(tiles, me);
         let f = manhattan_distance_features(&gs);
@@ -1440,12 +1438,12 @@ mod manhattan_tests {
         let opp = Owner::BottomPlayer;
 
         let tiles = vec![
-            (coord(0, 0), PlacedTile::new(me, units::duke())),
-            (coord(5, 5), PlacedTile::new(opp, units::duke())),
-            (coord(0, 1), PlacedTile::new(me, units::footman())),   // dist 1 from my duke
-            (coord(1, 1), PlacedTile::new(me, units::footman())),   // dist 2 from my duke
-            (coord(0, 2), PlacedTile::new(opp, units::bowman())),   // dist 2 from my duke
-            (coord(5, 4), PlacedTile::new(opp, units::pikeman())),  // dist 1 from enemy duke
+            (coord(0, 0), PlacedTile::new(me, TileType::Duke)),
+            (coord(5, 5), PlacedTile::new(opp, TileType::Duke)),
+            (coord(0, 1), PlacedTile::new(me, TileType::Footman)),   // dist 1 from my duke
+            (coord(1, 1), PlacedTile::new(me, TileType::Footman)),   // dist 2 from my duke
+            (coord(0, 2), PlacedTile::new(opp, TileType::Bowman)),   // dist 2 from my duke
+            (coord(5, 4), PlacedTile::new(opp, TileType::Pikeman)),  // dist 1 from enemy duke
         ];
         let gs = make_state(tiles, me);
         let f = manhattan_distance_features(&gs);
@@ -1470,10 +1468,10 @@ mod manhattan_tests {
         // My duke at (2,2), enemy duke at (3,3) => distance 2 from each other.
         // Also place one non-duke tile from each side near each duke.
         let tiles = vec![
-            (coord(2, 2), PlacedTile::new(me, units::duke())),
-            (coord(3, 3), PlacedTile::new(opp, units::duke())),
-            (coord(2, 3), PlacedTile::new(me, units::footman())),   // dist 1 from my duke, dist 1 from enemy duke
-            (coord(3, 2), PlacedTile::new(opp, units::footman())),  // dist 1 from my duke, dist 1 from enemy duke
+            (coord(2, 2), PlacedTile::new(me, TileType::Duke)),
+            (coord(3, 3), PlacedTile::new(opp, TileType::Duke)),
+            (coord(2, 3), PlacedTile::new(me, TileType::Footman)),   // dist 1 from my duke, dist 1 from enemy duke
+            (coord(3, 2), PlacedTile::new(opp, TileType::Footman)),  // dist 1 from my duke, dist 1 from enemy duke
         ];
         let gs = make_state(tiles, me);
         let f = manhattan_distance_features(&gs);
@@ -1497,14 +1495,14 @@ mod manhattan_tests {
 
 mod board_control_tests {
     use super::*;
-    use std::sync::Arc;
+
     use crate::learned_heuristic::board_control_features_with_duke_mob;
 
     #[test]
     fn simple_two_dukes() {
         let gs = make_state(vec![
-            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         ], Owner::TopPlayer);
 
         let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features_with_duke_mob(&gs).0;
@@ -1518,9 +1516,9 @@ mod board_control_tests {
     #[test]
     fn blocking_slide() {
         let gs = make_state(vec![
-            (coord(3, 3), PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (coord(1, 3), PlacedTile::new(Owner::TopPlayer, units::footman())),
-            (coord(0, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            (coord(3, 3), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(1, 3), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (coord(0, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         ], Owner::TopPlayer);
 
         let [my_moves, opp_moves, my_reach, opp_reach, contested, ..] = board_control_features_with_duke_mob(&gs).0;
@@ -1533,9 +1531,9 @@ mod board_control_tests {
 
     #[test]
     fn contested_invariant() {
-        let mut top_duke = PlacedTile::new(Owner::TopPlayer, units::duke());
+        let mut top_duke = PlacedTile::new(Owner::TopPlayer, TileType::Duke);
         top_duke.flip();
-        let mut bottom_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        let mut bottom_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
         bottom_duke.flip();
 
         let gs = make_state(vec![
@@ -1562,11 +1560,11 @@ mod board_control_tests {
         // The placement moves should not be counted in approx_moves.
         let gs = snapshot_state_with_bags(
             vec![
-                (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
-                (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+                (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+                (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
             ],
             Owner::TopPlayer,
-            TileBag::new(vec![Arc::new(units::footman())]),  // TopPlayer has a footman in bag
+            TileBag::new(vec![TileType::Footman]),  // TopPlayer has a footman in bag
             TileBag::new(vec![]),  // BottomPlayer empty bag
         );
 
@@ -1588,7 +1586,7 @@ mod board_control_tests {
         //   Top Move, FarTop Strike,
         //   NearLeft+Top Strike, NearRight+Top Strike,
         //   NearLeft+Bottom Move, NearRight+Bottom Move.
-        let mut bowman = PlacedTile::new(Owner::TopPlayer, units::bowman());
+        let mut bowman = PlacedTile::new(Owner::TopPlayer, TileType::Bowman);
         bowman.flip(); // flip to side B which has Strike actions
 
         // Place bowman at (3,3) so all offsets are on-board.
@@ -1598,12 +1596,12 @@ mod board_control_tests {
         // NearLeft+Top Strike => (2,2), NearRight+Top Strike => (4,2)
         let gs = make_state(vec![
             (coord(3, 3), bowman),
-            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
             // Place enemy tiles at Strike destinations so Strikes are valid
-            (coord(3, 1), PlacedTile::new(Owner::BottomPlayer, units::footman())),
-            (coord(2, 2), PlacedTile::new(Owner::BottomPlayer, units::footman())),
-            (coord(4, 2), PlacedTile::new(Owner::BottomPlayer, units::footman())),
+            (coord(3, 1), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+            (coord(2, 2), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+            (coord(4, 2), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
         ], Owner::TopPlayer);
 
         let [my_moves, _opp_moves, my_reach, _opp_reach, _contested, ..] = board_control_features_with_duke_mob(&gs).0;
@@ -1638,9 +1636,9 @@ mod board_control_tests {
         // BottomPlayer duke at (0,5) slides right: (1,5)..(5,5).
         //   None of those squares hold a TopPlayer tile → opp_threatened == 0.
         let gs = make_state(vec![
-            (coord(3, 3), PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (coord(0, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
-            (coord(5, 3), PlacedTile::new(Owner::BottomPlayer, units::footman())),
+            (coord(3, 3), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(0, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (coord(5, 3), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
         ], Owner::TopPlayer);
 
         let feats = board_control_features_with_duke_mob(&gs).0;
@@ -1709,10 +1707,10 @@ mod board_control_tests {
         // BottomPlayer duke at (0,4) slides right: (1,4),(2,4),(3,4) — captures footman.
         // So TopPlayer footman at (3,4) is in opp_reach → opp_threatened >= 1.
         let gs = make_state(vec![
-            (coord(3, 3), PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (coord(3, 4), PlacedTile::new(Owner::TopPlayer, units::footman())),
-            (coord(0, 4), PlacedTile::new(Owner::BottomPlayer, units::duke())),
-            (coord(5, 3), PlacedTile::new(Owner::BottomPlayer, units::footman())),
+            (coord(3, 3), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(3, 4), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (coord(0, 4), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (coord(5, 3), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
         ], Owner::TopPlayer);
 
         let feats = board_control_features_with_duke_mob(&gs).0;
@@ -1810,9 +1808,9 @@ fn extract_combined_features_length_and_layout() {
     // Verify the combined feature vector has the right length and that
     // each sub-array is placed at the documented index range.
     let gs = make_state(vec![
-        (coord(2, 2), PlacedTile::new(Owner::TopPlayer, units::duke())),
-        (coord(4, 4), PlacedTile::new(Owner::BottomPlayer, units::duke())),
-        (coord(2, 3), PlacedTile::new(Owner::TopPlayer, units::footman())),
+        (coord(2, 2), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+        (coord(4, 4), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (coord(2, 3), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
     ], Owner::TopPlayer);
 
     let combined = extract_combined_features(&gs);
@@ -1846,7 +1844,7 @@ fn extract_combined_features_length_and_layout() {
 
 #[test]
 fn discard_vector_maps_tile_types_correctly() {
-    use std::sync::Arc;
+
     use duke_rust::game::bag::DiscardBag;
 
     // TopPlayer discards: 1 Footman + 1 Knight
@@ -1854,17 +1852,17 @@ fn discard_vector_maps_tile_types_correctly() {
     // Current player = TopPlayer
     let gs = snapshot_state_with_discards(
         vec![
-            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         ],
         Owner::TopPlayer,
         DiscardBag::from_tiles(vec![
-            Arc::new(units::footman()),
-            Arc::new(units::knight()),
+            TileType::Footman,
+            TileType::Knight,
         ]),
         DiscardBag::from_tiles(vec![
-            Arc::new(units::pikeman()),
-            Arc::new(units::pikeman()),
+            TileType::Pikeman,
+            TileType::Pikeman,
         ]),
     );
 
@@ -2595,25 +2593,25 @@ fn l1_accumulator_forward_quantized_consistent() {
 #[test]
 fn trajectory_roundtrip_preserves_bags() {
     use crate::trajectory_io::{TrajectoryWriter, load_trajectories};
-    use std::sync::Arc;
+
 
     // Build a state with non-empty bags
     let gs = GameState::from_snapshot(GameSnapshot {
         tiles: vec![
-            (coord(2, 5), PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-            (coord(1, 5), PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
-            (coord(1, 0), PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Footman))),
-            (coord(3, 0), PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Footman))),
+            (coord(2, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (coord(1, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+            (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(1, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (coord(3, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
         ],
         current_turn: Owner::TopPlayer,
         top_bag: TileBag::new(vec![
-            Arc::new(tile_from_type(TileType::Bowman)),
-            Arc::new(tile_from_type(TileType::Knight)),
+            TileType::Bowman,
+            TileType::Knight,
         ]),
         bottom_bag: TileBag::new(vec![
-            Arc::new(tile_from_type(TileType::Pikeman)),
+            TileType::Pikeman,
         ]),
         top_discard: DiscardBag::empty(),
         bottom_discard: DiscardBag::empty(),
@@ -2633,38 +2631,38 @@ fn trajectory_roundtrip_preserves_bags() {
 
     // Verify top bag contents
     let orig_top_bag: Vec<TileType> = gs.bag_for_owner(Owner::TopPlayer).remaining()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     let loaded_top_bag: Vec<TileType> = loaded_gs.bag_for_owner(Owner::TopPlayer).remaining()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     assert_eq!(orig_top_bag, loaded_top_bag, "Top bag contents should match after roundtrip");
 
     // Verify bottom bag contents
     let orig_bottom_bag: Vec<TileType> = gs.bag_for_owner(Owner::BottomPlayer).remaining()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     let loaded_bottom_bag: Vec<TileType> = loaded_gs.bag_for_owner(Owner::BottomPlayer).remaining()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     assert_eq!(orig_bottom_bag, loaded_bottom_bag, "Bottom bag contents should match after roundtrip");
 }
 
 #[test]
 fn trajectory_roundtrip_preserves_discards() {
     use crate::trajectory_io::{TrajectoryWriter, load_trajectories};
-    use std::sync::Arc;
+
 
     let gs = GameState::from_snapshot(GameSnapshot {
         tiles: vec![
-            (coord(2, 5), PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
+            (coord(2, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
         ],
         current_turn: Owner::TopPlayer,
         top_bag: TileBag::new(vec![]),
         bottom_bag: TileBag::new(vec![]),
         top_discard: DiscardBag::from_tiles(vec![
-            Arc::new(tile_from_type(TileType::Footman)),
-            Arc::new(tile_from_type(TileType::Bowman)),
+            TileType::Footman,
+            TileType::Bowman,
         ]),
         bottom_discard: DiscardBag::from_tiles(vec![
-            Arc::new(tile_from_type(TileType::Knight)),
+            TileType::Knight,
         ]),
         idle_move_count: 0,
     });
@@ -2680,15 +2678,15 @@ fn trajectory_roundtrip_preserves_discards() {
     let loaded_gs = &loaded[0].states[0];
 
     let orig_top_disc: Vec<TileType> = gs.discard_bag_for(Owner::TopPlayer).existing()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     let loaded_top_disc: Vec<TileType> = loaded_gs.discard_bag_for(Owner::TopPlayer).existing()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     assert_eq!(orig_top_disc, loaded_top_disc, "Top discard contents should match after roundtrip");
 
     let orig_bot_disc: Vec<TileType> = gs.discard_bag_for(Owner::BottomPlayer).existing()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     let loaded_bot_disc: Vec<TileType> = loaded_gs.discard_bag_for(Owner::BottomPlayer).existing()
-        .iter().map(|t| t.tile_type()).collect();
+        .iter().copied().collect();
     assert_eq!(orig_bot_disc, loaded_bot_disc, "Bottom discard contents should match after roundtrip");
 }
 
@@ -2698,10 +2696,10 @@ fn trajectory_roundtrip_preserves_idle_move_count() {
 
     let gs = GameState::from_snapshot(GameSnapshot {
         tiles: vec![
-            (coord(2, 5), PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Duke))),
-            (coord(1, 5), PlacedTile::new(Owner::BottomPlayer, tile_from_type(TileType::Footman))),
-            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Duke))),
-            (coord(1, 0), PlacedTile::new(Owner::TopPlayer, tile_from_type(TileType::Footman))),
+            (coord(2, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (coord(1, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+            (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (coord(1, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
         ],
         current_turn: Owner::TopPlayer,
         top_bag: TileBag::new(vec![]),

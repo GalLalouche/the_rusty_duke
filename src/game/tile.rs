@@ -1,7 +1,6 @@
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 
 use crate::common::coordinates::Coordinates;
 use crate::game::tile_side::{TileAction, TileSide};
@@ -40,6 +39,11 @@ impl TileType {
     #[inline]
     pub fn is_duke(self) -> bool {
         self == TileType::Duke
+    }
+
+    #[inline]
+    pub fn get_name(self) -> &'static str {
+        self.into()
     }
 }
 
@@ -121,8 +125,6 @@ impl Tile {
     }
 }
 
-pub type TileRef = Arc<Tile>;
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Owner {
     TopPlayer,
@@ -153,56 +155,40 @@ impl CurrentSide {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct PlacedTile {
-    pub tile: TileRef,
-    // TODO: this should be private
+    pub tile_type: TileType,
     pub current_side: CurrentSide,
     pub owner: Owner,
 }
 
 impl Display for PlacedTile {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({}, {:?})", self.tile.tile_type(), self.owner, self.current_side)
-    }
-}
-
-impl Clone for PlacedTile {
-    fn clone(&self) -> Self {
-        PlacedTile {
-            tile: self.tile.clone(),
-            current_side: self.current_side,
-            owner: self.owner,
-        }
+        write!(f, "{} ({}, {:?})", self.tile_type, self.owner, self.current_side)
     }
 }
 
 impl PlacedTile {
-    pub fn new(owner: Owner, tile: Tile) -> PlacedTile {
-        let maybe_flipped_tile = match owner {
-            Owner::TopPlayer => tile.flip_vertical(),
-            Owner::BottomPlayer => tile,
-        };
-        PlacedTile { owner, tile: Arc::new(maybe_flipped_tile), current_side: CurrentSide::Initial }
+    pub fn new(owner: Owner, tile_type: TileType) -> PlacedTile {
+        PlacedTile { owner, tile_type, current_side: CurrentSide::Initial }
     }
-    pub fn new_from_ref(owner: Owner, tile: TileRef) -> PlacedTile {
-        let maybe_flipped_tile = match owner {
-            Owner::TopPlayer => Arc::new(tile.flip_vertical()),
-            Owner::BottomPlayer => tile,
-        };
-        PlacedTile { owner, tile: maybe_flipped_tile, current_side: CurrentSide::Initial }
+    /// Look up the full Tile data from the static tile table.
+    #[inline]
+    pub fn tile(&self) -> &'static Tile {
+        crate::game::units::tile_table_lookup(self.tile_type, self.owner)
     }
     pub fn get_current_side(&self) -> &TileSide {
+        let tile = self.tile();
         match self.current_side {
-            CurrentSide::Initial => &self.tile.side_a,
-            CurrentSide::Flipped => &self.tile.side_b,
+            CurrentSide::Initial => &tile.side_a,
+            CurrentSide::Flipped => &tile.side_b,
         }
     }
     pub fn flip(&mut self) -> () {
         self.current_side = self.current_side.flip();
     }
     pub fn single_char_token(&self) -> char {
-        let c = self.tile.get_name().chars().next().unwrap();
+        let c = self.tile_type.get_name().chars().next().unwrap();
         match self.current_side {
             CurrentSide::Initial => c.to_ascii_lowercase(),
             CurrentSide::Flipped => c.to_ascii_uppercase(),

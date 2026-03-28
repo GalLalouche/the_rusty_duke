@@ -18,9 +18,8 @@ impl Widget for &ViewState {
             ViewStateMode::MovingSelection { src, target } => render_board_aux(
                 area, buf, self.get_game_state(), self.info.as_ref(), src, Some(target)),
             ViewStateMode::Placing(relative_duke_offset) => {
-                let tile = self.get_game_state()
+                let tile_type = self.get_game_state()
                     .pulled_tile()
-                    .clone()
                     .expect("ViewPosition is placing but state has no pulled tile");
                 let duke_coordinate = self.get_game_state().current_duke_coordinate();
                 let placement =
@@ -29,7 +28,7 @@ impl Widget for &ViewState {
                 let mut temp_board = self.get_game_state().board().clone();
                 temp_board.put(
                     placement,
-                    PlacedTile::new_from_ref(self.get_game_state().current_player_turn(), tile),
+                    PlacedTile::new(self.get_game_state().current_player_turn(), tile_type),
                 );
                 render_board(
                     &temp_board,

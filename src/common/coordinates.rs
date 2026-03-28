@@ -5,8 +5,8 @@ use crate::common::utils::Distance;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct Coordinates {
-    pub x: u16,
-    pub y: u16,
+    pub x: u8,
+    pub y: u8,
 }
 
 impl Display for Coordinates {
@@ -70,7 +70,7 @@ impl Coordinates {
     }
 
     // TODO deduplicate
-    pub fn on_the_linear_path_to(&self, dst: Coordinates, p: impl Fn(u16, u16) -> bool) -> bool {
+    pub fn on_the_linear_path_to(&self, dst: Coordinates, p: impl Fn(u8, u8) -> bool) -> bool {
         debug_assert_ne!(*self, dst, "{}", f!("Can't take linear path from {dst:?} to itself"));
         // TODO use macros to avoid this ugly ass duplication
         if self.x == dst.x {

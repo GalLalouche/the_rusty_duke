@@ -1,3 +1,7 @@
+use std::convert::TryFrom;
+use std::sync::OnceLock;
+use strum::EnumCount;
+
 use crate::game::offset::{FourWaySymmetric, HorizontalSymmetricOffset, VerticalOffset};
 use crate::game::tile::{Owner, PlacedTile, Tile, TileType};
 use crate::game::tile_side::{TileAction, TileSide};
@@ -315,12 +319,54 @@ pub fn tile_from_type(tt: TileType) -> Tile {
     }
 }
 
+/// Static tile table: [TileType::COUNT] entries for BottomPlayer (normal orientation),
+/// [TileType::COUNT] entries for TopPlayer (vertically flipped).
+/// Layout: [bottom_0, bottom_1, ..., bottom_12, top_0, top_1, ..., top_12]
+struct TileTable {
+    tiles: Vec<Tile>,
+}
+
+impl TileTable {
+    fn new() -> Self {
+        let mut tiles = Vec::with_capacity(TileType::COUNT * 2);
+        // First half: BottomPlayer tiles (normal orientation)
+        for i in 0..TileType::COUNT {
+            let tt = TileType::try_from(i as u8).unwrap();
+            tiles.push(tile_from_type(tt));
+        }
+        // Second half: TopPlayer tiles (vertically flipped)
+        for i in 0..TileType::COUNT {
+            let tt = TileType::try_from(i as u8).unwrap();
+            tiles.push(tile_from_type(tt).flip_vertical());
+        }
+        TileTable { tiles }
+    }
+}
+
+static TILE_TABLE: OnceLock<TileTable> = OnceLock::new();
+
+fn tile_table() -> &'static TileTable {
+    TILE_TABLE.get_or_init(TileTable::new)
+}
+
+/// Look up the static Tile for a given TileType and Owner.
+/// TopPlayer tiles are pre-flipped vertically; BottomPlayer tiles are in normal orientation.
+#[inline]
+pub fn tile_table_lookup(tt: TileType, owner: Owner) -> &'static Tile {
+    let table = tile_table();
+    let idx = match owner {
+        Owner::BottomPlayer => tt.index(),
+        Owner::TopPlayer => TileType::COUNT + tt.index(),
+    };
+    &table.tiles[idx]
+}
+
 pub fn place_tile<U>(o: Owner, ctor: U) -> PlacedTile where U: Fn() -> Tile {
-    PlacedTile::new(o, ctor())
+    PlacedTile::new(o, ctor().tile_type())
 }
 
 pub fn place_tile_flipped<U>(o: Owner, ctor: U) -> PlacedTile where U: Fn() -> Tile {
-    let mut result = PlacedTile::new(o, ctor());
+    let mut result = PlacedTile::new(o, ctor().tile_type());
     result.flip();
     result
 }

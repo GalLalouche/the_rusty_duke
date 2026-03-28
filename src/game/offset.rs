@@ -177,7 +177,7 @@ impl From<Offsets> for Coordinates {
 
 pub trait Centerable {
     fn center(&self) -> Offsets;
-    fn distance_from_center(&self) -> u16;
+    fn distance_from_center(&self) -> u8;
     fn is_centered(&self) -> bool {
         self.distance_from_center() == 0
     }
@@ -191,7 +191,7 @@ impl Centerable for HorizontalOffset {
         }
     }
 
-    fn distance_from_center(&self) -> u16 {
+    fn distance_from_center(&self) -> u8 {
         match self {
             HorizontalOffset::FarLeft => 2,
             HorizontalOffset::Left => 1,
@@ -210,7 +210,7 @@ impl Centerable for VerticalOffset {
         }
     }
 
-    fn distance_from_center(&self) -> u16 {
+    fn distance_from_center(&self) -> u8 {
         match self {
             FarTop => 2,
             Top => 1,
@@ -223,16 +223,16 @@ impl Centerable for VerticalOffset {
 
 
 pub trait Indexable: Sized {
-    fn to_index(&self) -> u16;
-    fn from_index(i: u16) -> Self;
+    fn to_index(&self) -> u8;
+    fn from_index(i: u8) -> Self;
 
-    fn distance_from(&self, other: Self) -> u16 {
-        u16::try_from((i32::from(self.to_index()) - i32::from(other.to_index())).abs()).unwrap()
+    fn distance_from(&self, other: Self) -> u8 {
+        (self.to_index() as i8 - other.to_index() as i8).unsigned_abs()
     }
 }
 
 impl Indexable for HorizontalOffset {
-    fn to_index(&self) -> u16 {
+    fn to_index(&self) -> u8 {
         match self {
             HorizontalOffset::FarLeft => 0,
             HorizontalOffset::Left => 1,
@@ -242,7 +242,7 @@ impl Indexable for HorizontalOffset {
         }
     }
 
-    fn from_index(i: u16) -> Self {
+    fn from_index(i: u8) -> Self {
         match i {
             0 => FarLeft,
             1 => Left,
@@ -255,7 +255,7 @@ impl Indexable for HorizontalOffset {
 }
 
 impl Indexable for VerticalOffset {
-    fn to_index(&self) -> u16 {
+    fn to_index(&self) -> u8 {
         match self {
             VerticalOffset::FarTop => 0,
             VerticalOffset::Top => 1,
@@ -265,7 +265,7 @@ impl Indexable for VerticalOffset {
         }
     }
 
-    fn from_index(i: u16) -> Self {
+    fn from_index(i: u8) -> Self {
         match i {
             0 => FarTop,
             1 => Top,

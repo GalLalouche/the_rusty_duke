@@ -47,7 +47,7 @@ pub struct TileSide {
 }
 
 impl TileSide {
-    pub const SIDE: u16 = 5;
+    pub const SIDE: u8 = 5;
 
     pub(in crate::game) fn new(
         vec: Vec<(&dyn Offsetable, TileAction)>) -> TileSide {

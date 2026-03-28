@@ -11,8 +11,8 @@ pub struct Board<A> {
     //  4 5 6]
     // Is represented as [1 2 3 4 5 6]
     board: Vec<Option<A>>,
-    width: u16,
-    height: u16,
+    width: u8,
+    height: u8,
 }
 
 impl<A> Board<A> {
@@ -25,13 +25,13 @@ impl<A> Board<A> {
             board,
         }
     }
-    pub fn square(side: u16) -> Board<A> { Board::rect(Square::new(side)) }
+    pub fn square(side: u8) -> Board<A> { Board::rect(Square::new(side)) }
     #[inline(always)]
     fn verify_bounds(&self, c: Coordinates) -> () {
         debug_assert!(self.is_in_bounds(c), "Coordinate {:?} is out of bounds", c)
     }
     #[inline(always)]
-    fn to_vec_index(&self, c: Coordinates) -> usize { (self.width * c.y + c.x) as usize }
+    fn to_vec_index(&self, c: Coordinates) -> usize { (self.width as usize) * (c.y as usize) + (c.x as usize) }
     fn place(&mut self, c: Coordinates, a: Option<A>) -> Option<A> {
         self.verify_bounds(c);
         let index = self.to_vec_index(c);
@@ -117,8 +117,8 @@ impl<A: Clone> Board<A> {
 }
 
 impl<A> Rectangular for Board<A> {
-    fn width(&self) -> u16 { self.width }
-    fn height(&self) -> u16 { self.height }
+    fn width(&self) -> u8 { self.width }
+    fn height(&self) -> u8 { self.height }
 }
 
 #[cfg(test)]

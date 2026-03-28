@@ -186,8 +186,7 @@ mod tests {
     use crate::common::utils::test_rng;
     use crate::game::bag::TileBag;
     use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
-    use crate::game::tile::TileRef;
-    use crate::game::units;
+    use crate::game::tile::TileType;
     use super::*;
 
     #[test]
@@ -195,10 +194,10 @@ mod tests {
     fn my_main() {
         let mut gs = GameState::new(
             &TileBag::new(vec!(
-                TileRef::new(units::footman()),
-                TileRef::new(units::footman()),
-                TileRef::new(units::pikeman()),
-                TileRef::new(units::pikeman()),
+                TileType::Footman,
+                TileType::Footman,
+                TileType::Pikeman,
+                TileType::Pikeman,
             )),
             (DukeInitialLocation::Left, FootmenSetup::Left),
             (DukeInitialLocation::Right, FootmenSetup::Right),

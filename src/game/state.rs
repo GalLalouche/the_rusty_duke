@@ -1,5 +1,4 @@
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use strum::IntoEnumIterator;
@@ -14,7 +13,7 @@ use crate::game::bag::{DiscardBag, TileBag};
 use crate::game::board::{BoardMove, DukeOffset, GameBoard, PossibleMove, WithNewTiles};
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::dumb_printer::{double_char_print_state, single_char_print_state};
-use crate::game::tile::{CurrentSide, Owner, PlacedTile, TileRef};
+use crate::game::tile::{CurrentSide, Owner, PlacedTile, TileType};
 use crate::game::tile_side::TileAction;
 
 // Technically not part of the base game rules, but it makes it easier for the AI
@@ -23,7 +22,7 @@ pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 10;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameState {
     board: GameBoard,
-    pulled_tile: Option<TileRef>,
+    pulled_tile: Option<TileType>,
     current_player_turn: Owner,
     top_player_bag: TileBag,
     top_player_discard: DiscardBag,
@@ -82,7 +81,7 @@ pub struct GameSnapshot {
 impl GameState {
     pub fn board(&self) -> &Board<PlacedTile> { self.board.get_board() }
 
-    pub fn pulled_tile(&self) -> &Option<TileRef> { &self.pulled_tile }
+    pub fn pulled_tile(&self) -> &Option<TileType> { &self.pulled_tile }
     pub fn current_player_turn(&self) -> Owner { self.current_player_turn }
     pub fn idle_move_count(&self) -> usize {
         *self.moves_without_capture_or_placement_stack.last()
@@ -125,11 +124,11 @@ impl GameState {
         // Validate that both dukes exist on the board — downstream methods
         // (duke_coordinate, guard checking) will panic if a duke is missing.
         assert!(
-            board.get_board().find(|t: &PlacedTile| t.owner == Owner::TopPlayer && t.tile.tile_type().is_duke()).is_some(),
+            board.get_board().find(|t: &PlacedTile| t.owner == Owner::TopPlayer && t.tile_type.is_duke()).is_some(),
             "from_snapshot: TopPlayer duke is missing from the board"
         );
         assert!(
-            board.get_board().find(|t: &PlacedTile| t.owner == Owner::BottomPlayer && t.tile.tile_type().is_duke()).is_some(),
+            board.get_board().find(|t: &PlacedTile| t.owner == Owner::BottomPlayer && t.tile_type.is_duke()).is_some(),
             "from_snapshot: BottomPlayer duke is missing from the board"
         );
         GameState {
@@ -256,7 +255,7 @@ impl GameState {
         match gm {
             GameMove::PlaceNewTile(offset) =>
                 BoardMove::PlaceNewTile(
-                    self.pulled_tile.as_ref().expect("No pulled tile").clone(),
+                    self.pulled_tile.expect("No pulled tile"),
                     *offset,
                     self.current_player_turn,
                 ),
@@ -268,11 +267,10 @@ impl GameState {
         }
     }
 
-    fn unit_stub() -> TileRef { Arc::new(units::footman()) }
     fn possible_move_to_board_move(&self, pm: &PossibleMove) -> BoardMove {
         match pm {
             PossibleMove::PlaceNewTile(offset, owner) => BoardMove::PlaceNewTile(
-                GameState::unit_stub(),
+                TileType::Footman, // stub tile for guard checking
                 *offset,
                 *owner,
             ),
@@ -316,7 +314,7 @@ impl GameState {
         let owner = self.current_player_turn;
         self.board.is_valid_placement(owner, offset) &&
             self.board.does_not_put_in_guard(
-                BoardMove::PlaceNewTile(TileRef::new(units::footman()), offset, owner),
+                BoardMove::PlaceNewTile(TileType::Footman, offset, owner),
                 owner,
             )
     }
@@ -484,7 +482,7 @@ impl GameState {
             };
             assert_eq!(t.owner, self.current_player_turn);
             assert_eq!(t.current_side, CurrentSide::Initial);
-            bag.push(t.tile);
+            bag.push(t.tile_type);
         }
     }
 
@@ -500,11 +498,11 @@ impl Hash for GameState {
 }
 
 impl Rectangular for GameState {
-    fn width(&self) -> u16 {
+    fn width(&self) -> u8 {
         self.board.width()
     }
 
-    fn height(&self) -> u16 {
+    fn height(&self) -> u8 {
         self.board.height()
     }
 }
@@ -520,10 +518,10 @@ mod tests {
     #[test]
     fn get_legal_moves_does_not_allow_the_duke_to_remain_in_guard() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
         let footman_coordinates = Coordinates { x: 2, y: 2 };
-        board.place(footman_coordinates, PlacedTile::new(Owner::TopPlayer, units::footman()));
-        board.place(Coordinates { x: 0, y: 1 }, PlacedTile::new(Owner::BottomPlayer, units::footman()));
+        board.place(footman_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(Coordinates { x: 0, y: 1 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
 
         assert_empty!(GameState::from_board(board, Owner::TopPlayer).get_legal_moves(footman_coordinates));
     }
@@ -532,8 +530,8 @@ mod tests {
     fn get_legal_moves_does_not_allow_the_duke_to_move_into_guard() {
         let mut board = GameBoard::empty();
         let duke_coordinates = Coordinates { x: 0, y: 0 };
-        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        board.place(Coordinates { x: 3, y: 1 }, PlacedTile::new(Owner::BottomPlayer, units::footman()));
+        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 3, y: 1 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
 
         assert_eq!(
             vec!(
@@ -564,11 +562,11 @@ mod tests {
     fn can_not_pull_from_bag_if_not_tile_removes_duke_from_guard_move_threat() {
         let mut board = GameBoard::empty();
         let duke_coordinates = Coordinates { x: 0, y: 0 };
-        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let bag = TileBag::new(vec!(TileRef::new(units::footman())));
+        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let bag = TileBag::new(vec!(TileType::Footman));
         board.place(
             Coordinates { x: 0, y: 1 },
-            PlacedTile::new(Owner::BottomPlayer, units::footman()),
+            PlacedTile::new(Owner::BottomPlayer, TileType::Footman),
         );
 
         assert_eq!(
@@ -581,11 +579,11 @@ mod tests {
     fn can_not_pull_from_bag_if_not_tile_removes_duke_from_guard_jump() {
         let mut board = GameBoard::empty();
         let duke_coordinates = Coordinates { x: 0, y: 0 };
-        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let bag = TileBag::new(vec!(TileRef::new(units::footman())));
+        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let bag = TileBag::new(vec!(TileType::Footman));
         board.place(
             Coordinates { x: 0, y: 2 },
-            PlacedTile::new(Owner::BottomPlayer, units::champion()),
+            PlacedTile::new(Owner::BottomPlayer, TileType::Champion),
         );
 
         assert_eq!(
@@ -598,9 +596,9 @@ mod tests {
     fn can_pull_from_bag_returns_correct_value_if_duke_is_in_guard() {
         let mut board = GameBoard::empty();
         let duke_coordinates = Coordinates { x: 0, y: 0 };
-        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let bag = TileBag::new(vec!(TileRef::new(units::footman())));
-        let mut opposite_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let bag = TileBag::new(vec!(TileType::Footman));
+        let mut opposite_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
         opposite_duke.flip();
         board.place(Coordinates { x: 0, y: 5 }, opposite_duke);
 
@@ -623,9 +621,9 @@ mod tests {
     fn can_place_does_not_allow_the_duke_to_move_into_guard() {
         let mut board = GameBoard::empty();
         let duke_coordinates = Coordinates { x: 0, y: 0 };
-        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let bag = TileBag::new(vec!(TileRef::new(units::footman())));
-        let mut opposite_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let bag = TileBag::new(vec!(TileType::Footman));
+        let mut opposite_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
         opposite_duke.flip();
         board.place(Coordinates { x: 0, y: 5 }, opposite_duke);
 
@@ -648,11 +646,11 @@ mod tests {
     fn all_valid_game_moves_returns_all_valid_moves() {
         let mut board = GameBoard::empty();
         let duke_coordinates = Coordinates { x: 2, y: 0 };
-        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, units::duke()));
+        board.place(duke_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
         let footman_coordinates = Coordinates { x: 5, y: 0 };
-        board.place(footman_coordinates, PlacedTile::new(Owner::TopPlayer, units::footman()));
-        let bag = TileBag::new(vec!(TileRef::new(units::footman())));
-        let mut opposite_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        board.place(footman_coordinates, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        let bag = TileBag::new(vec!(TileType::Footman));
+        let mut opposite_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
         opposite_duke.flip();
         board.place(Coordinates { x: 0, y: 5 }, opposite_duke);
 
@@ -694,7 +692,7 @@ mod tests {
     fn undo_can_undo_a_pull() {
         test_undo_move(
             GameState::new(
-                &TileBag::new(vec!(TileRef::new(units::knight()))),
+                &TileBag::new(vec!(TileType::Knight)),
                 (DukeInitialLocation::Right, FootmenSetup::Sides),
                 (DukeInitialLocation::Left, FootmenSetup::Right),
             ),
@@ -706,7 +704,7 @@ mod tests {
     fn undo_can_undo_a_move_without_capture() {
         test_undo_move(
             GameState::new(
-                &TileBag::new(vec!(TileRef::new(units::knight()))),
+                &TileBag::new(vec!(TileType::Knight)),
                 (DukeInitialLocation::Right, FootmenSetup::Sides),
                 (DukeInitialLocation::Left, FootmenSetup::Right),
             ),
@@ -720,12 +718,12 @@ mod tests {
     #[test]
     fn undo_can_undo_a_move_with_capture() {
         let mut gs = GameState::new(
-            &TileBag::new(vec!(TileRef::new(units::knight()))),
+            &TileBag::new(vec!(TileType::Knight)),
             (DukeInitialLocation::Right, FootmenSetup::Sides),
             (DukeInitialLocation::Left, FootmenSetup::Right),
         );
         let dst = Coordinates { x: 1, y: 1 };
-        gs.board.place(dst, PlacedTile::new(Owner::BottomPlayer, units::footman()));
+        gs.board.place(dst, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
         test_undo_move(
             gs,
             GameMove::ApplyNonCommandTileAction {
@@ -738,12 +736,12 @@ mod tests {
     #[test]
     fn undo_can_undo_a_strike_move_with_capture() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let mut pikeman = PlacedTile::new(Owner::TopPlayer, units::pikeman());
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let mut pikeman = PlacedTile::new(Owner::TopPlayer, TileType::Pikeman);
         pikeman.flip();
         board.place(Coordinates { x: 1, y: 0 }, pikeman);
         let footman_coordinates = Coordinates { x: 2, y: 2 };
-        board.place(footman_coordinates, PlacedTile::new(Owner::BottomPlayer, units::footman()));
+        board.place(footman_coordinates, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
         let gs = GameState::from_board(board, Owner::TopPlayer);
         test_undo_move(
             gs,
@@ -757,8 +755,8 @@ mod tests {
     #[test]
     fn game_result_should_return_ongoing_if_no_winner_nor_tie() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::BottomPlayer, units::duke()));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
         assert_eq!(
             GameState::from_board(board, Owner::TopPlayer).game_result(),
             GameResult::Ongoing,
@@ -768,11 +766,11 @@ mod tests {
     #[test]
     fn game_result_should_return_ongoing_if_other_player_still_has_moves() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let mut footman = PlacedTile::new(Owner::TopPlayer, units::footman());
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let mut footman = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
         footman.flip();
         board.place(Coordinates { x: 4, y: 5 }, footman);
-        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
         op_duke.flip();
         board.place(Coordinates { x: 5, y: 0 }, op_duke);
         // TopPlayer can still play a footman move
@@ -785,10 +783,10 @@ mod tests {
     #[test]
     fn game_result_should_return_some_on_winner() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        let footman = PlacedTile::new(Owner::TopPlayer, units::footman());
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        let footman = PlacedTile::new(Owner::TopPlayer, TileType::Footman);
         board.place(Coordinates { x: 4, y: 5 }, footman);
-        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, units::duke());
+        let mut op_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
         op_duke.flip();
         board.place(Coordinates { x: 5, y: 0 }, op_duke);
         assert_eq!(
@@ -800,8 +798,8 @@ mod tests {
     #[test]
     fn game_result_should_return_tie_after_enough_consecutive_moves_with_no_capture_or_placement() {
         let mut board = GameBoard::empty();
-        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, units::duke()));
-        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, units::duke()));
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
         let mut gs = GameState::from_board(board, Owner::TopPlayer);
         // TODO base this count on the maximum const
         for _ in 0..7 {
@@ -870,11 +868,11 @@ mod tests {
         let top_duke_pos = Coordinates { x: 0, y: 0 };
         let bottom_duke_pos = Coordinates { x: 5, y: 5 };
         let tiles = vec![
-            (top_duke_pos, PlacedTile::new(Owner::TopPlayer, units::duke())),
-            (bottom_duke_pos, PlacedTile::new(Owner::BottomPlayer, units::duke())),
+            (top_duke_pos, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (bottom_duke_pos, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         ];
         let top_bag = TileBag::empty();
-        let bottom_bag = TileBag::new(vec![TileRef::new(units::footman())]);
+        let bottom_bag = TileBag::new(vec![TileType::Footman]);
 
         let state = GameState::from_snapshot(GameSnapshot {
             tiles,

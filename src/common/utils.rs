@@ -29,6 +29,16 @@ impl Distance for usize {
     }
 }
 
+impl Distance for u8 {
+    fn distance_to(&self, other: Self) -> Self {
+        if self < &other {
+            other - self
+        } else {
+            self - other
+        }
+    }
+}
+
 impl Distance for u16 {
     fn distance_to(&self, other: Self) -> Self {
         if self < &other {

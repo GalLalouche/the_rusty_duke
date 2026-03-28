@@ -208,8 +208,7 @@ mod tests {
     use crate::game::bag::TileBag;
     use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
     use crate::game::state::GameState;
-    use crate::game::tile::TileRef;
-    use crate::game::units;
+    use crate::game::tile::TileType;
     use crate::common::utils::test_rng;
 
     use super::*;
@@ -217,10 +216,10 @@ mod tests {
     fn setup() -> Controller {
         Controller::new(ViewState::new(GameState::new(
             &TileBag::new(vec!(
-                TileRef::new(units::footman()),
-                TileRef::new(units::footman()),
-                TileRef::new(units::pikeman()),
-                TileRef::new(units::pikeman()),
+                TileType::Footman,
+                TileType::Footman,
+                TileType::Pikeman,
+                TileType::Pikeman,
             )),
             (DukeInitialLocation::Left, FootmenSetup::Right),
             (DukeInitialLocation::Right, FootmenSetup::Right),

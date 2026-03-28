@@ -23,7 +23,7 @@ pub fn double_char_print_state(gs: &GameState) -> String {
 
 pub fn double_char_print_board(t: &Board<PlacedTile>) -> String {
     fn name(b: &PlacedTile) -> String {
-        b.tile.get_name()[..2].to_owned()
+        b.tile_type.get_name()[..2].to_owned()
     }
     fn state(b: &PlacedTile) -> String {
         match b.current_side {

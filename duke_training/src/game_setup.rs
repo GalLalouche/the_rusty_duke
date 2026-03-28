@@ -1,7 +1,5 @@
 //! Shared game setup used by training, benchmarking, and tests.
 
-use std::sync::Arc;
-
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -12,7 +10,7 @@ use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameResult, GameState};
-use duke_rust::game::units;
+use duke_rust::game::tile::TileType;
 
 use duke_rust::game::ai::heuristics::Heuristic;
 
@@ -95,19 +93,19 @@ impl GameEvaluator for StaticHeuristicEvaluator {
 /// Create the standard tile bag (all tiles except Assassin).
 pub fn create_bag() -> TileBag {
     TileBag::new(vec![
-        Arc::new(units::footman()),
-        Arc::new(units::bowman()),
-        Arc::new(units::knight()),
-        Arc::new(units::pikeman()),
-        Arc::new(units::pikeman()),
-        Arc::new(units::champion()),
-        Arc::new(units::priest()),
-        Arc::new(units::wizard()),
-        Arc::new(units::dragoon()),
+        TileType::Footman,
+        TileType::Bowman,
+        TileType::Knight,
+        TileType::Pikeman,
+        TileType::Pikeman,
+        TileType::Champion,
+        TileType::Priest,
+        TileType::Wizard,
+        TileType::Dragoon,
         // Assassin excluded: JumpSlide not yet fully implemented in board logic
-        Arc::new(units::general()),
-        Arc::new(units::marshall()),
-        Arc::new(units::longbowman()),
+        TileType::General,
+        TileType::Marshall,
+        TileType::Longbowman,
     ])
 }
 

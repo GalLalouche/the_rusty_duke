@@ -11,16 +11,15 @@ use crate::game::ai::stupid_sync_ai::StupidSyncAi;
 use crate::game::bag::TileBag;
 use crate::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use crate::game::state::GameState;
-use crate::game::tile::{Owner, TileRef};
-use crate::game::units;
+use crate::game::tile::{Owner, TileType};
 
 fn go_aux(turn_count: u32, max_depth: u32, print: bool, wait_for_input: bool) {
     let mut gs = GameState::new(
         &TileBag::new(vec!(
-            TileRef::new(units::footman()),
-            TileRef::new(units::footman()),
-            TileRef::new(units::pikeman()),
-            TileRef::new(units::pikeman()),
+            TileType::Footman,
+            TileType::Footman,
+            TileType::Pikeman,
+            TileType::Pikeman,
         )),
         (DukeInitialLocation::Left, FootmenSetup::Left),
         (DukeInitialLocation::Right, FootmenSetup::Right),

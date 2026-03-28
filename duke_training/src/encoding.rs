@@ -72,7 +72,7 @@ pub fn active_board_features(gs: &GameState) -> FeatureBuffer {
             "Board coordinate ({}, {}) maps to cell {} which is outside the {}x{} board",
             coords.x, coords.y, cell, BOARD_SIZE, BOARD_SIZE);
         let is_mine = placed_tile.owner == current_player;
-        let tile_idx = placed_tile.tile.tile_type().index();
+        let tile_idx = placed_tile.tile_type.index();
 
         let type_plane = if is_mine { tile_idx } else { tile_idx + NUM_TILE_TYPES };
         features.push(type_plane * BOARD_SIZE * BOARD_SIZE + cell);
@@ -99,12 +99,12 @@ pub fn bag_features(gs: &GameState) -> [f32; BAG_FEATURES] {
     let mut features = [0.0f32; BAG_FEATURES];
 
     for tile in my_bag.remaining() {
-        let idx = tile.tile_type().index();
+        let idx = tile.index();
         debug_assert!(idx < NUM_TILE_TYPES, "tile type index {} >= NUM_TILE_TYPES {}", idx, NUM_TILE_TYPES);
         features[idx] += 1.0;
     }
     for tile in opp_bag.remaining() {
-        let idx = tile.tile_type().index();
+        let idx = tile.index();
         debug_assert!(idx < NUM_TILE_TYPES, "tile type index {} >= NUM_TILE_TYPES {}", idx, NUM_TILE_TYPES);
         features[NUM_TILE_TYPES + idx] += 1.0;
     }

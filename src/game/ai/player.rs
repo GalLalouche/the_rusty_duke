@@ -42,7 +42,7 @@ impl Display for AiMove {
                        dst,
                        match &capturing {
                            None => "".to_owned(),
-                           Some(t) => format!("capturing: {}", t.tile.get_name()),
+                           Some(t) => format!("capturing: {}", t.tile_type.get_name()),
                        }
                 )
         }
