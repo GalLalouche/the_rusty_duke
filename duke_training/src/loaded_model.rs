@@ -144,14 +144,17 @@ impl LoadedModel {
     }
 
     /// Convert to a Player reference with a specific search depth.
-    /// depth=1 uses greedy (depth-1) search, depth=2 uses minimax depth-2.
+    /// depth=1 uses greedy (depth-1) search, depth>=2 uses negamax.
     /// Random players always stay Random regardless of depth.
     pub fn as_player_with_depth(&self, depth: u32) -> crate::match_runner::Player<'_> {
         match &self.evaluator {
-            Some(eval) => match depth {
-                2 => crate::match_runner::Player::EvaluatorDepth2(eval.as_ref()),
-                _ => crate::match_runner::Player::Evaluator(eval.as_ref()),
-            },
+            Some(eval) => {
+                if depth >= 2 {
+                    crate::match_runner::Player::EvaluatorDepth(eval.as_ref(), depth)
+                } else {
+                    crate::match_runner::Player::Evaluator(eval.as_ref())
+                }
+            }
             None => crate::match_runner::Player::Random,
         }
     }

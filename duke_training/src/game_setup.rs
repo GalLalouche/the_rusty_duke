@@ -201,93 +201,80 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
     }
 }
 
-/// Depth-2 minimax move selection: pick the move that maximises our score
-/// after the opponent's best response.
+/// Negamax search: evaluate a position to the given depth.
 ///
-/// For each candidate move we play it, then enumerate all opponent replies,
-/// evaluate the resulting positions from our perspective, and keep the move
-/// whose worst-case (minimax) evaluation is highest.
+/// Returns a score from the perspective of the current player (higher = better).
+/// Terminal positions are scored as +1000 (win), -1000 (loss), or 0 (tie).
+/// At depth 0 or when no moves are available, returns the static evaluation.
+fn negamax<E: GameEvaluator + ?Sized>(
+    gs: &GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
+) -> f64 {
+    // Terminal check
+    match gs.game_result() {
+        GameResult::Won(winner) => {
+            if winner == gs.current_player_turn() {
+                return 1000.0; // I won
+            } else {
+                return -1000.0; // I lost
+            }
+        }
+        GameResult::Tie => return 0.0,
+        GameResult::Ongoing => {}
+    }
+
+    if depth == 0 {
+        return evaluator.evaluate(gs) as f64;
+    }
+
+    let moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
+    if moves.is_empty() {
+        return evaluator.evaluate(gs) as f64;
+    }
+
+    let mut best = f64::NEG_INFINITY;
+    let base_rng = StdRng::seed_from_u64(0);
+    for mv in &moves {
+        let mut child = gs.clone();
+        let mut eval_rng = base_rng.clone();
+        mv.play(&mut child, &mut eval_rng);
+        // Negate because opponent's best is our worst
+        let score = -negamax(&child, evaluator, depth - 1, rng);
+        if score > best {
+            best = score;
+        }
+    }
+    best
+}
+
+/// Arbitrary-depth minimax move selection using negamax.
 ///
-/// Works with any `GameEvaluator` implementation. Terminal positions
+/// Enumerates all legal moves, scores each via `negamax` at `depth - 1`,
+/// and returns the move with the highest score.  Moves are shuffled before
+/// evaluation so ties are broken randomly.
+///
+/// Works with any `GameEvaluator` implementation.  Terminal positions
 /// (win/loss/tie) are handled explicitly so the search never misses a
 /// forced win or avoids a forced loss.
-pub fn greedy_move_depth2<E: GameEvaluator + ?Sized>(
-    gs: &GameState, evaluator: &E, rng: &mut impl Rng,
+pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
+    gs: &GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> AiMove {
+    assert!(depth >= 1, "greedy_move_deep requires depth >= 1");
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
-    assert!(!moves.is_empty(), "greedy_move_depth2 called with no legal moves");
+    assert!(!moves.is_empty(), "greedy_move_deep called with no legal moves");
     moves.shuffle(rng);
 
     let base_eval_rng = StdRng::seed_from_u64(0);
-    let my_color = gs.current_player_turn();
     let mut best_score = f64::NEG_INFINITY;
-    // Initialize to first move so we always have something to return,
-    // even if every move leads to a loss (all scores are NEG_INFINITY).
     let mut best_move = moves[0].clone();
 
     for mv in &moves {
-        let mut after_my_move = gs.clone();
+        let mut child = gs.clone();
         let mut eval_rng = base_eval_rng.clone();
-        mv.play(&mut after_my_move, &mut eval_rng);
-
-        // Check if game ended after my move.
-        match after_my_move.game_result() {
-            GameResult::Ongoing => {},
-            GameResult::Won(winner) => {
-                if winner == my_color {
-                    // Immediate win — best possible outcome.
-                    return mv.clone();
-                }
-                // I just lost after my own move (e.g. tile placement reveals duke).
-                // Skip -- best_move is already initialized to a default.
-                continue;
-            }
-            GameResult::Tie => {
-                // Treat a tie as score 0.
-                let score = 0.0_f64;
-                if score > best_score {
-                    best_score = score;
-                    best_move = mv.clone();
-                }
-                continue;
-            }
-        }
-
-        // Opponent's best response (minimax): opponent tries to minimise my score.
-        let opponent_moves: Vec<AiMove> = AiMove::all_moves(&after_my_move).collect();
-        let mut worst_for_me = f64::INFINITY;
-
-        for opp_mv in &opponent_moves {
-            let mut after_opp_move = after_my_move.clone();
-            let mut eval_rng2 = base_eval_rng.clone();
-            opp_mv.play(&mut after_opp_move, &mut eval_rng2);
-
-            let score = match after_opp_move.game_result() {
-                GameResult::Ongoing => {
-                    // after_opp_move: it is my turn again, so evaluate() returns
-                    // higher-is-better-for-me directly.
-                    evaluator.evaluate(&after_opp_move) as f64
-                }
-                GameResult::Won(winner) => {
-                    if winner == my_color { f64::INFINITY } else { f64::NEG_INFINITY }
-                }
-                GameResult::Tie => 0.0,
-            };
-
-            if score < worst_for_me {
-                worst_for_me = score;
-            }
-        }
-
-        if opponent_moves.is_empty() {
-            // Opponent has no moves — shouldn't happen if game is Ongoing, but
-            // fall back to a direct evaluation from the opponent's perspective
-            // (negated, because evaluate returns "better for current player").
-            worst_for_me = -(evaluator.evaluate(&after_my_move) as f64);
-        }
-
-        if worst_for_me > best_score {
-            best_score = worst_for_me;
+        mv.play(&mut child, &mut eval_rng);
+        // Score from opponent's perspective, negated to get ours
+        let score = -negamax(&child, evaluator, depth - 1, rng);
+        if score > best_score {
+            best_score = score;
             best_move = mv.clone();
         }
     }

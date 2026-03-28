@@ -11,13 +11,13 @@ use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
 
-use crate::game_setup::{greedy_move, greedy_move_depth2, GameEvaluator};
+use crate::game_setup::{greedy_move, greedy_move_deep, GameEvaluator};
 
 /// Represents a player strategy in a benchmark match.
 pub enum Player<'a> {
     Random,
     Evaluator(&'a (dyn GameEvaluator + Sync)),
-    EvaluatorDepth2(&'a (dyn GameEvaluator + Sync)),
+    EvaluatorDepth(&'a (dyn GameEvaluator + Sync), u32),
 }
 
 /// Play a single match between a top player and a bottom player.
@@ -53,8 +53,12 @@ pub fn play_match(
                         let mv = greedy_move(&game, *eval, rng);
                         mv.play(&mut game, rng);
                     }
-                    Player::EvaluatorDepth2(eval) => {
-                        let mv = greedy_move_depth2(&game, *eval, rng);
+                    Player::EvaluatorDepth(eval, depth) => {
+                        let mv = if *depth <= 1 {
+                            greedy_move(&game, *eval, rng)
+                        } else {
+                            greedy_move_deep(&game, *eval, *depth, rng)
+                        };
                         mv.play(&mut game, rng);
                     }
                 }

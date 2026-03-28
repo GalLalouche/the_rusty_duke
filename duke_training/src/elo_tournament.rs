@@ -122,8 +122,8 @@ fn parse_args() -> (Vec<String>, u32, String, bool, Vec<u32>) {
                 std::process::exit(1);
             }
             for &depth in &d {
-                if depth != 1 && depth != 2 {
-                    eprintln!("Error: --depth entries must be 1 or 2, got {}", depth);
+                if depth == 0 {
+                    eprintln!("Error: --depth entries must be positive integers, got 0");
                     std::process::exit(1);
                 }
             }
