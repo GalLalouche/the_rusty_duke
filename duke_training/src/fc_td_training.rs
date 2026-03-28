@@ -6,7 +6,7 @@ use burn::tensor::backend::AutodiffBackend;
 
 use duke_rust::game::state::{GameResult, GameState};
 
-use crate::encoding::encode_state_flat;
+use crate::encoding::{encode_state_flat_into, TOTAL_FEATURES};
 use crate::fc_model::FcValueNetwork;
 // Re-export GameTrajectory from trajectory_io for backward compatibility.
 pub use crate::trajectory_io::GameTrajectory;
@@ -71,12 +71,15 @@ impl<B: AutodiffBackend> FcTdTrainer<B> {
 
         let total_states = all_states.len();
 
-        // Encode all states as a batch and run forward pass
-        let tensors: Vec<Tensor<B, 1>> = all_states
-            .iter()
-            .map(|gs| encode_state_flat::<B>(gs, &self.device))
-            .collect();
-        let batch = Tensor::stack(tensors, 0); // [total_states, TOTAL_FEATURES]
+        // Encode all states into a single flat buffer, then create one batch tensor
+        let mut flat_buf = vec![0.0f32; total_states * TOTAL_FEATURES];
+        for (i, gs) in all_states.iter().enumerate() {
+            encode_state_flat_into(gs, &mut flat_buf[i * TOTAL_FEATURES..(i + 1) * TOTAL_FEATURES]);
+        }
+        let batch = Tensor::<B, 2>::from_floats(
+            burn::tensor::TensorData::new(flat_buf, [total_states, TOTAL_FEATURES]),
+            &self.device,
+        ); // [total_states, TOTAL_FEATURES]
         let predictions = self.model.forward(batch); // [total_states, 1]
         let predictions = predictions.squeeze::<1>(1); // [total_states]
 

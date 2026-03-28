@@ -2,7 +2,7 @@
 
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
+use rand::rngs::{SmallRng, StdRng};
 
 use duke_rust::game::ai::player::{AiMove, EvaluatingPlayer};
 use duke_rust::game::ai::player::ArtificialPlayer;
@@ -245,7 +245,7 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
     }
 
     let mut best = f64::NEG_INFINITY;
-    let base_rng = StdRng::seed_from_u64(0);
+    let base_rng = SmallRng::seed_from_u64(0);
     for mv in &moves {
         let mut child = gs.clone();
         let mut eval_rng = base_rng.clone();
@@ -276,7 +276,7 @@ pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
     assert!(!moves.is_empty(), "greedy_move_deep called with no legal moves");
     moves.shuffle(rng);
 
-    let base_eval_rng = StdRng::seed_from_u64(0);
+    let base_eval_rng = SmallRng::seed_from_u64(0);
     let mut best_score = f64::NEG_INFINITY;
     let mut best_move = moves[0].clone();
 
@@ -316,8 +316,8 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &GameState, evaluator: &E, rng
     let mut best_score = f64::NEG_INFINITY;
     let mut best_move = None;
 
-    // Create the deterministic rng once; clone per candidate to avoid re-seeding overhead.
-    let base_eval_rng = StdRng::seed_from_u64(0);
+    // Use SmallRng (cheaper to seed/clone than StdRng) for deterministic tile-draw outcomes.
+    let base_eval_rng = SmallRng::seed_from_u64(0);
     for mv in &moves {
         let mut clone = gs.clone();
         let mut eval_rng = base_eval_rng.clone();
@@ -367,7 +367,7 @@ pub fn greedy_move_incremental(
     };
 
     // Evaluate each candidate move individually using incremental accumulator updates.
-    let base_eval_rng = StdRng::seed_from_u64(0);
+    let base_eval_rng = SmallRng::seed_from_u64(0);
     let mut best_score = f64::NEG_INFINITY;
     let mut best_move = None;
 

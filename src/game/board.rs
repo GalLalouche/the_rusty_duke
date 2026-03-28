@@ -312,8 +312,17 @@ impl GameBoard {
                 if !src.is_straight_line_to(dst) {
                     return false;
                 }
-                let path = src.linear_path_to(dst);
-                path.iter().skip(1).all(|c| self.board.is_empty(*c))
+                // Avoid Vec allocation: check intermediate squares after the first one.
+                // The first intermediate square (adjacent to src) may be jumped over.
+                let skip = std::cell::Cell::new(true);
+                !src.on_the_linear_path_to(dst, |x, y| {
+                    if skip.get() {
+                        skip.set(false);
+                        false // skip first square (the one being jumped over)
+                    } else {
+                        self.board.is_occupied(Coordinates { x, y })
+                    }
+                })
             }
             TileAction::Strike => self.get(dst).exists(|o| o.different_team(&self.get(src).unwrap())),
         }

@@ -44,6 +44,7 @@ impl TileAction {
 pub struct TileSide {
     board: Board<TileAction>,
     actions: Vec<(Offsets, TileAction)>,
+    cached_center_offset: VerticalOffset,
 }
 
 impl TileSide {
@@ -71,7 +72,8 @@ impl TileSide {
             assert_none!(result);
         }
         let actions = TileSide::actions_aux(&board);
-        TileSide { actions, board }
+        let cached_center_offset = TileSide::compute_center_offset(&board);
+        TileSide { actions, board, cached_center_offset }
     }
 
     // TODO: Verify that there is nothing after slides
@@ -157,13 +159,17 @@ impl TileSide {
     }
 
     pub fn center_offset(&self) -> VerticalOffset {
+        self.cached_center_offset
+    }
+
+    fn compute_center_offset(board: &Board<TileAction>) -> VerticalOffset {
         let center_horizontal_offset = TileSide::SIDE / 2;
         for y in 0..5 {
-            if self.board.get(Coordinates { x: center_horizontal_offset, y }).cloned() == Some(TileAction::Unit) {
+            if board.get(Coordinates { x: center_horizontal_offset, y }).cloned() == Some(TileAction::Unit) {
                 return VerticalOffset::from_index(y);
             };
         }
-        panic!("No Unit action found in the center columns;\n{:?}", self);
+        panic!("No Unit action found in the center columns;\n{:?}", board);
     }
 
     /// If `dst` is linear to to `src`, returns the direction offset from the center.
@@ -243,7 +249,8 @@ impl TileSide {
         // TODO extract private ctor
         let board = self.board.flip_vertical();
         let actions = TileSide::actions_aux(&board);
-        TileSide { board, actions }
+        let cached_center_offset = TileSide::compute_center_offset(&board);
+        TileSide { board, actions, cached_center_offset }
     }
 }
 

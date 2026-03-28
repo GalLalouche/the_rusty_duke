@@ -401,6 +401,13 @@ fn run_es_training_loop(
     // Pre-allocate gradient vector; zeroed each iteration to avoid per-iter allocation
     let mut grad = vec![0.0f32; dim];
 
+    // Pre-allocate reward buffers; reused each iteration to avoid per-iter allocation
+    let mut reward_plus = vec![0.0f32; pop_size];
+    let mut reward_minus = vec![0.0f32; pop_size];
+
+    // Pre-allocate epsilon buffer for gradient accumulation; reused each iteration
+    let mut epsilon_buf = vec![0.0f32; dim];
+
     // Profiling accumulators (only used when config.profile is true)
     let mut profile = ProfileStats::new();
     let do_profile = config.profile;
@@ -468,9 +475,9 @@ fn run_es_training_loop(
             })
             .collect();
 
-        // Organize results
-        let mut reward_plus = vec![0.0f32; pop_size];
-        let mut reward_minus = vec![0.0f32; pop_size];
+        // Organize results (reuse pre-allocated buffers)
+        reward_plus.iter_mut().for_each(|v| *v = 0.0);
+        reward_minus.iter_mut().for_each(|v| *v = 0.0);
         for (i, &(pert_idx, win_rate, _)) in results.iter().enumerate() {
             if i % 2 == 0 {
                 reward_plus[pert_idx] = win_rate;
@@ -492,9 +499,10 @@ fn run_es_training_loop(
             let diff = reward_plus[i] - reward_minus[i];
             if diff.abs() < 1e-12 { continue; }
             let mut pert_rng = SmallRng::seed_from_u64(perturbation_seeds[i]);
-            let epsilon = randn_vec(dim, &mut pert_rng);
+            // Reuse pre-allocated buffer instead of allocating a new Vec each iteration
+            randn_vec_into(dim, &mut pert_rng, &mut epsilon_buf);
             for j in 0..dim {
-                grad[j] += diff * epsilon[j];
+                grad[j] += diff * epsilon_buf[j];
             }
         }
         for j in 0..dim {
@@ -824,6 +832,25 @@ fn randn_vec(n: usize, rng: &mut impl Rng) -> Vec<f32> {
         }
     }
     out
+}
+
+/// Fill a pre-allocated buffer with standard-normal samples using Box-Muller transform.
+/// Avoids heap allocation when the caller can reuse a buffer.
+fn randn_vec_into(n: usize, rng: &mut impl Rng, out: &mut [f32]) {
+    debug_assert!(out.len() >= n);
+    let mut i = 0;
+    while i < n {
+        let u1: f64 = rng.gen::<f64>().max(1e-30);
+        let u2: f64 = rng.gen::<f64>();
+        let r = (-2.0 * u1.ln()).sqrt();
+        let theta = 2.0 * std::f64::consts::PI * u2;
+        out[i] = (r * theta.cos()) as f32;
+        i += 1;
+        if i < n {
+            out[i] = (r * theta.sin()) as f32;
+            i += 1;
+        }
+    }
 }
 
 /// Describes the training opponent for use in parallel closures.

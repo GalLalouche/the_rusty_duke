@@ -134,18 +134,15 @@ pub fn load_trajectories(path: &str) -> io::Result<Vec<GameTrajectory>> {
 // --- Serialization helpers ---
 
 pub fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
-    // Current player
+    // Current player + idle move count in a single write
     let player_byte: u8 = match gs.current_player_turn() {
         Owner::TopPlayer => 0,
         Owner::BottomPlayer => 1,
     };
-    w.write_all(&[player_byte])?;
-
-    // Idle move count
     assert!(gs.idle_move_count() <= 255,
         "idle_move_count {} exceeds u8::MAX, would be truncated in serialization",
         gs.idle_move_count());
-    w.write_all(&[gs.idle_move_count() as u8])?;
+    w.write_all(&[player_byte, gs.idle_move_count() as u8])?;
 
     // Board tiles
     let board = gs.board();
@@ -154,16 +151,16 @@ pub fn write_game_state(w: &mut impl Write, gs: &GameState) -> io::Result<()> {
         "board has {} tiles, exceeds u8::MAX for serialization", tiles.len());
     w.write_all(&[tiles.len() as u8])?;
     for (coords, placed) in &tiles {
-        w.write_all(&[coords.x as u8, coords.y as u8])?;
-        w.write_all(&[placed.tile_type as u8])?;
-        w.write_all(&[match placed.current_side {
+        // Pack all 5 bytes per tile into a single write
+        let side_byte = match placed.current_side {
             CurrentSide::Initial => 0u8,
             CurrentSide::Flipped => 1u8,
-        }])?;
-        w.write_all(&[match placed.owner {
+        };
+        let owner_byte = match placed.owner {
             Owner::TopPlayer => 0u8,
             Owner::BottomPlayer => 1u8,
-        }])?;
+        };
+        w.write_all(&[coords.x as u8, coords.y as u8, placed.tile_type as u8, side_byte, owner_byte])?;
     }
 
     // Bags and discard piles
@@ -179,8 +176,10 @@ fn write_tile_list(w: &mut impl Write, tiles: &[TileType]) -> io::Result<()> {
     assert!(tiles.len() <= 255,
         "tile list has {} entries, exceeds u8::MAX for serialization", tiles.len());
     w.write_all(&[tiles.len() as u8])?;
-    for tile_type in tiles {
-        w.write_all(&[*tile_type as u8])?;
+    // Write all tile type bytes in a single call
+    let bytes: Vec<u8> = tiles.iter().map(|t| *t as u8).collect();
+    if !bytes.is_empty() {
+        w.write_all(&bytes)?;
     }
     Ok(())
 }
@@ -247,11 +246,15 @@ fn read_tile_type_list(r: &mut impl Read) -> io::Result<Vec<TileType>> {
     let mut buf1 = [0u8; 1];
     r.read_exact(&mut buf1)?;
     let len = buf1[0] as usize;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    // Read all tile type bytes at once instead of one at a time
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)?;
     let mut tiles = Vec::with_capacity(len);
-    for _ in 0..len {
-        r.read_exact(&mut buf1)?;
-        let tt = tile_type_from_u8(buf1[0])?;
-        tiles.push(tt);
+    for &b in &buf {
+        tiles.push(tile_type_from_u8(b)?);
     }
     Ok(tiles)
 }

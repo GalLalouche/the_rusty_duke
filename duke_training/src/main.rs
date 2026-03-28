@@ -218,7 +218,7 @@ fn main() {
         total_loss += loss * batch_size as f32;
         recent_loss += loss * batch_size as f32;
 
-        // Save to disk, extract features if heuristic mode, update stats
+        // Save to disk, extract features if heuristic mode, update stats (single pass)
         for traj in &trajectories {
             traj_writer.write_game(&traj.states, &traj.result)
                 .expect("Failed to write trajectory");
@@ -234,6 +234,7 @@ fn main() {
                 fw.write_game(&CachedGame { result: traj.result, states: cached_states })
                     .expect("Failed to write features");
             }
+            // Win/tie stats (merged into same loop instead of separate iteration)
             match traj.result {
                 GameResult::Won(duke_rust::game::tile::Owner::TopPlayer) => wins[0] += 1,
                 GameResult::Won(duke_rust::game::tile::Owner::BottomPlayer) => wins[1] += 1,
@@ -267,7 +268,6 @@ fn main() {
         if game_num / config.update_interval > (game_num - batch_size) / config.update_interval {
             let checkpoint_game = (game_num / config.update_interval) * config.update_interval;
             let checkpoint_path = format!("{}/fc_model_game_{}", config.checkpoint_dir, checkpoint_game);
-            std::fs::create_dir_all(&config.checkpoint_dir).expect("Failed to create checkpoints dir");
             trainer.save_model(&checkpoint_path);
 
             let nnue_path = format!("{}/nnue_game_{}.nnue", config.checkpoint_dir, checkpoint_game);

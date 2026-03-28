@@ -29,7 +29,7 @@ impl FeatureBuffer {
 
     #[inline]
     fn push(&mut self, val: usize) {
-        assert!(self.len < MAX_BOARD_FEATURE_COUNT,
+        debug_assert!(self.len < MAX_BOARD_FEATURE_COUNT,
             "FeatureBuffer overflow: tried to push {} features (max {})",
             self.len + 1, MAX_BOARD_FEATURE_COUNT);
         self.data[self.len] = val;
@@ -118,20 +118,27 @@ pub fn active_feature_indices(gs: &GameState) -> FeatureBuffer {
     active_board_features(gs)
 }
 
-/// Flat tensor of shape `[TOTAL_FEATURES]` (1106).
-/// Board features (sparse binary) + bag features (dense counts).
-pub fn encode_state_flat<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 1> {
-    let mut data = [0.0f32; TOTAL_FEATURES];
+/// Encode a game state into a pre-allocated slice (avoids per-state heap allocation).
+/// The slice must be exactly `TOTAL_FEATURES` long and will be zeroed and filled.
+#[inline]
+pub fn encode_state_flat_into(gs: &GameState, out: &mut [f32]) {
+    debug_assert_eq!(out.len(), TOTAL_FEATURES);
+    out.fill(0.0);
 
     let features = active_board_features(gs);
     for &idx in features.as_slice() {
         debug_assert!(idx < BOARD_FEATURES);
-        data[idx] = 1.0;
+        out[idx] = 1.0;
     }
 
-    // Bag features (dense, appended after board)
     let bag = bag_features(gs);
-    data[BOARD_FEATURES..TOTAL_FEATURES].copy_from_slice(&bag);
+    out[BOARD_FEATURES..TOTAL_FEATURES].copy_from_slice(&bag);
+}
 
+/// Flat tensor of shape `[TOTAL_FEATURES]` (1106).
+/// Board features (sparse binary) + bag features (dense counts).
+pub fn encode_state_flat<B: Backend>(gs: &GameState, device: &B::Device) -> Tensor<B, 1> {
+    let mut data = [0.0f32; TOTAL_FEATURES];
+    encode_state_flat_into(gs, &mut data);
     Tensor::<B, 1>::from_floats(data.as_slice(), device)
 }

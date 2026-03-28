@@ -45,6 +45,28 @@ impl TileType {
     pub fn get_name(self) -> &'static str {
         self.into()
     }
+
+    /// First character of the tile name, looked up via a const table
+    /// instead of going through the string conversion.
+    #[inline]
+    pub fn first_char(self) -> char {
+        const CHARS: [char; 13] = [
+            'D', // Duke
+            'F', // Footman
+            'P', // Pikeman
+            'K', // Knight
+            'C', // Champion
+            'D', // Dragoon
+            'W', // Wizard
+            'G', // General
+            'M', // Marshall
+            'A', // Assassin
+            'P', // Priest
+            'B', // Bowman
+            'L', // Longbowman
+        ];
+        CHARS[self as usize]
+    }
 }
 
 impl TryFrom<u8> for TileType {
@@ -188,7 +210,7 @@ impl PlacedTile {
         self.current_side = self.current_side.flip();
     }
     pub fn single_char_token(&self) -> char {
-        let c = self.tile_type.get_name().chars().next().unwrap();
+        let c = self.tile_type.first_char();
         match self.current_side {
             CurrentSide::Initial => c.to_ascii_lowercase(),
             CurrentSide::Flipped => c.to_ascii_uppercase(),
