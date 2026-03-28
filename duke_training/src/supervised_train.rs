@@ -1,8 +1,10 @@
-//! Supervised training binary: train a pure NN (1106->H->1) on labeled positions.
+//! Supervised training binary: train a pure NN on labeled positions.
+//!
+//! Supports arbitrary hidden layer depths, e.g. 1106->256->128->64->1.
 //!
 //! Usage:
 //!   supervised_train --input D:/temp/labeled_positions.bin \
-//!                    --hidden 128 \
+//!                    --hidden 256,128,64 \
 //!                    --lr 0.001 \
 //!                    --epochs 10 \
 //!                    --batch-size 256 \
@@ -144,33 +146,44 @@ fn label_to_target(label: f32, scale: f32) -> f32 {
 // ── Forward pass with intermediates ────────────────────────────────────────
 
 /// Forward pass result containing intermediate values needed for backpropagation.
-/// Only supports single-hidden-layer networks (1106 -> H -> 1).
+/// Supports arbitrary hidden layer depths.
 struct ForwardResult {
-    /// Pre-ReLU hidden activations.
-    h_pre: [f32; MAX_HIDDEN],
-    /// Post-ReLU hidden activations.
-    h: [f32; MAX_HIDDEN],
+    /// Pre-ReLU activations per hidden layer: pre_relu[layer_idx][neuron_idx].
+    pre_relu: Vec<Vec<f32>>,
+    /// Post-ReLU activations per hidden layer: post_relu[layer_idx][neuron_idx].
+    post_relu: Vec<Vec<f32>>,
     /// Sigmoid output.
     output: f32,
 }
 
-/// Perform forward pass on a single-hidden-layer network, saving intermediates.
+/// Perform forward pass through an arbitrary-depth network, saving intermediates.
 ///
-/// The network layout in `weights` is:
-///   [L1 weights: input_size * h1] [L1 bias: h1] [L2 weights: h1] [L2 bias: 1]
+/// Weight layout (same as GenericMlp):
+///   For each hidden layer i:
+///     [W_i: prev_size * cur_size] [b_i: cur_size]
+///   Output layer:
+///     [W_out: last_hidden] [b_out: 1]
 fn forward_with_intermediates(
     weights: &[f32],
     input_size: usize,
-    h1: usize,
+    hidden_layers: &[usize],
     active_board: &[u16],
     bag: &[f32; BAG_FEATURES],
 ) -> ForwardResult {
-    let l1_w = &weights[0..input_size * h1];
-    let l1_b = &weights[input_size * h1..input_size * h1 + h1];
+    let num_layers = hidden_layers.len();
+    let mut pre_relu: Vec<Vec<f32>> = Vec::with_capacity(num_layers);
+    let mut post_relu: Vec<Vec<f32>> = Vec::with_capacity(num_layers);
+    let mut offset = 0usize;
 
-    let mut h_pre = [0.0f32; MAX_HIDDEN];
-    // Initialize with bias
-    h_pre[..h1].copy_from_slice(l1_b);
+    // ── First hidden layer: sparse input accumulation ──
+    let h1 = hidden_layers[0];
+    let l1_w = &weights[offset..offset + input_size * h1];
+    offset += input_size * h1;
+    let l1_b = &weights[offset..offset + h1];
+    offset += h1;
+
+    let mut h_pre = vec![0.0f32; h1];
+    h_pre.copy_from_slice(l1_b);
 
     // Sparse board features (binary, value = 1.0)
     for &idx in active_board {
@@ -194,36 +207,65 @@ fn forward_with_intermediates(
     }
 
     // ReLU
-    let mut h = [0.0f32; MAX_HIDDEN];
-    for j in 0..h1 {
-        h[j] = h_pre[j].max(0.0);
+    let h_post: Vec<f32> = h_pre.iter().map(|&v| v.max(0.0)).collect();
+    pre_relu.push(h_pre);
+    post_relu.push(h_post);
+
+    // ── Subsequent hidden layers: dense ──
+    for layer_idx in 1..num_layers {
+        let prev_size = hidden_layers[layer_idx - 1];
+        let cur_size = hidden_layers[layer_idx];
+        let lw = &weights[offset..offset + prev_size * cur_size];
+        offset += prev_size * cur_size;
+        let lb = &weights[offset..offset + cur_size];
+        offset += cur_size;
+
+        let mut cur_pre = vec![0.0f32; cur_size];
+        cur_pre.copy_from_slice(lb);
+        let prev_post = &post_relu[layer_idx - 1];
+        for i in 0..prev_size {
+            let w_row = &lw[i * cur_size..(i + 1) * cur_size];
+            let s = prev_post[i];
+            for j in 0..cur_size {
+                cur_pre[j] += w_row[j] * s;
+            }
+        }
+
+        let cur_post: Vec<f32> = cur_pre.iter().map(|&v| v.max(0.0)).collect();
+        pre_relu.push(cur_pre);
+        post_relu.push(cur_post);
     }
 
-    // Output layer: logit = W2 * h + b2
-    let w2_offset = input_size * h1 + h1;
-    let w2 = &weights[w2_offset..w2_offset + h1];
-    let b2 = weights[w2_offset + h1];
+    // ── Output layer: dot product + sigmoid ──
+    let last_h = hidden_layers[num_layers - 1];
+    let out_w = &weights[offset..offset + last_h];
+    offset += last_h;
+    let out_b = weights[offset];
 
-    let mut logit = b2;
-    for j in 0..h1 {
-        logit += w2[j] * h[j];
+    let last_post = &post_relu[num_layers - 1];
+    let mut logit = out_b;
+    for j in 0..last_h {
+        logit += out_w[j] * last_post[j];
     }
 
     let output = sigmoid(logit);
 
-    ForwardResult { h_pre, h, output }
+    ForwardResult { pre_relu, post_relu, output }
 }
 
 // ── Backward pass ──────────────────────────────────────────────────────────
 
 /// Accumulate gradients for one sample into `grad`.
 ///
-/// Layout of `grad` matches `weights`:
-///   [L1 weights: input_size * h1] [L1 bias: h1] [L2 weights: h1] [L2 bias: 1]
+/// Layout of `grad` matches `weights` (same as GenericMlp):
+///   For each hidden layer i:
+///     [W_i: prev_size * cur_size] [b_i: cur_size]
+///   Output layer:
+///     [W_out: last_hidden] [b_out: 1]
 fn backward(
     weights: &[f32],
     input_size: usize,
-    h1: usize,
+    hidden_layers: &[usize],
     active_board: &[u16],
     bag: &[f32; BAG_FEATURES],
     fwd: &ForwardResult,
@@ -231,47 +273,109 @@ fn backward(
     sample_weight: f32,
     grad: &mut [f32],
 ) {
+    let num_layers = hidden_layers.len();
+
+    // Precompute weight offsets for each layer
+    // layer_offsets[i] = start of hidden layer i's weights in the flat vector
+    let mut layer_offsets = Vec::with_capacity(num_layers + 1);
+    {
+        let mut off = 0usize;
+        let mut prev = input_size;
+        for &h in hidden_layers {
+            layer_offsets.push(off);
+            off += prev * h + h; // weights + bias
+            prev = h;
+        }
+        layer_offsets.push(off); // output layer offset
+    }
+
     // MSE loss: L = (output - target)^2
     // dL/d_output = 2 * (output - target)
     // d_output/d_logit = output * (1 - output)  [sigmoid derivative]
     let d_logit = 2.0 * (fwd.output - target) * fwd.output * (1.0 - fwd.output) * sample_weight;
 
-    // Output layer: logit = W2 * h + b2
-    let w2_offset = input_size * h1 + h1;
-    let w2 = &weights[w2_offset..w2_offset + h1];
+    // ── Output layer gradients ──
+    let last_h = hidden_layers[num_layers - 1];
+    let out_offset = layer_offsets[num_layers];
+    let last_post = &fwd.post_relu[num_layers - 1];
 
-    // Gradients for W2 and b2
-    for j in 0..h1 {
-        grad[w2_offset + j] += d_logit * fwd.h[j];
+    for j in 0..last_h {
+        grad[out_offset + j] += d_logit * last_post[j];
     }
-    grad[w2_offset + h1] += d_logit; // bias
+    grad[out_offset + last_h] += d_logit; // output bias
 
-    // Backprop through ReLU to L1
-    // d_logit/d_h[j] = W2[j]
-    // d_h/d_h_pre[j] = 1 if h_pre[j] > 0, else 0 (ReLU derivative)
-    let l1_bias_offset = input_size * h1;
+    // ── Backprop through hidden layers (last to first) ──
+    // d_next[j] = gradient w.r.t. post-ReLU activation of layer (layer_idx)
+    // Start from output layer: d_next = d_logit * W_out
+    let out_w = &weights[out_offset..out_offset + last_h];
+    let mut d_next: Vec<f32> = (0..last_h).map(|j| d_logit * out_w[j]).collect();
 
-    for j in 0..h1 {
-        if fwd.h_pre[j] <= 0.0 {
-            continue; // ReLU killed this neuron
-        }
-        let d_h_j = d_logit * w2[j];
+    for layer_idx in (0..num_layers).rev() {
+        let cur_size = hidden_layers[layer_idx];
+        let prev_size = if layer_idx == 0 { input_size } else { hidden_layers[layer_idx - 1] };
+        let off = layer_offsets[layer_idx];
+        let bias_offset = off + prev_size * cur_size;
 
-        // L1 bias gradient
-        grad[l1_bias_offset + j] += d_h_j;
-
-        // L1 weight gradients for active board features (sparse, value = 1.0)
-        for &idx in active_board {
-            let feat = idx as usize;
-            grad[feat * h1 + j] += d_h_j;
-        }
-
-        // L1 weight gradients for bag features (dense)
-        for (i, &val) in bag.iter().enumerate() {
-            if val != 0.0 {
-                let feat = BOARD_FEATURES + i;
-                grad[feat * h1 + j] += d_h_j * val;
+        // Apply ReLU derivative: d_h[j] = d_next[j] * (pre_relu > 0 ? 1 : 0)
+        let mut d_h = vec![0.0f32; cur_size];
+        for j in 0..cur_size {
+            if fwd.pre_relu[layer_idx][j] > 0.0 {
+                d_h[j] = d_next[j];
             }
+        }
+
+        // Bias gradients
+        for j in 0..cur_size {
+            grad[bias_offset + j] += d_h[j];
+        }
+
+        // Weight gradients and propagate to previous layer
+        if layer_idx == 0 {
+            // First hidden layer: SPARSE weight update
+            let h1 = cur_size;
+            for j in 0..h1 {
+                if d_h[j] == 0.0 { continue; }
+
+                // Sparse board features (value = 1.0)
+                for &idx in active_board {
+                    let feat = idx as usize;
+                    grad[off + feat * h1 + j] += d_h[j];
+                }
+
+                // Dense bag features
+                for (i, &val) in bag.iter().enumerate() {
+                    if val != 0.0 {
+                        let feat = BOARD_FEATURES + i;
+                        grad[off + feat * h1 + j] += d_h[j] * val;
+                    }
+                }
+            }
+            // No need to propagate gradient to input layer
+        } else {
+            // Dense hidden layers: full weight update + propagate gradient
+            let prev_post = &fwd.post_relu[layer_idx - 1];
+            let lw = &weights[off..off + prev_size * cur_size];
+
+            // Propagate gradient to previous layer
+            let mut d_prev = vec![0.0f32; prev_size];
+            for i in 0..prev_size {
+                let w_row = &lw[i * cur_size..(i + 1) * cur_size];
+                let mut sum = 0.0f32;
+                for j in 0..cur_size {
+                    sum += w_row[j] * d_h[j];
+                }
+                d_prev[i] = sum;
+            }
+
+            // Weight gradients: d_W[i,j] = d_h[j] * prev_post[i]
+            for i in 0..prev_size {
+                let s = prev_post[i];
+                for j in 0..cur_size {
+                    grad[off + i * cur_size + j] += d_h[j] * s;
+                }
+            }
+
+            d_next = d_prev;
         }
     }
 }
@@ -386,7 +490,7 @@ fn main() {
     let input_path: String = parse_flag(&args, "--input")
         .unwrap_or_else(|| {
             eprintln!(
-                "Usage: supervised_train --input <path> [--hidden 128] [--lr 0.001] \
+                "Usage: supervised_train --input <path> [--hidden 256,128,64] [--lr 0.001] \
                  [--epochs 10] [--batch-size 256] [--label-scale 100] \
                  [--eval-interval 50000] [--eval-games 500] [--benchmark base,random] \
                  [--checkpoint-dir D:/temp/supervised_nn] [--seed 42]"
@@ -394,7 +498,15 @@ fn main() {
             std::process::exit(1);
         });
 
-    let hidden_size: usize = parse_flag(&args, "--hidden").unwrap_or(128);
+    let hidden_str: String = parse_flag(&args, "--hidden").unwrap_or_else(|| "128".to_string());
+    let hidden_layers: Vec<usize> = hidden_str
+        .split(',')
+        .map(|s| s.trim().parse::<usize>().expect("--hidden values must be comma-separated integers"))
+        .collect();
+    assert!(!hidden_layers.is_empty(), "--hidden must specify at least one layer size");
+    for &h in &hidden_layers {
+        assert!(h > 0 && h <= MAX_HIDDEN, "hidden layer size {} must be in 1..={}", h, MAX_HIDDEN);
+    }
     let lr: f32 = parse_flag(&args, "--lr").unwrap_or(0.001);
     let epochs: usize = parse_flag(&args, "--epochs").unwrap_or(10);
     let batch_size: usize = parse_flag(&args, "--batch-size").unwrap_or(256);
@@ -412,7 +524,12 @@ fn main() {
     // Print configuration
     eprintln!("=== Supervised Training ===");
     eprintln!("  Input:          {}", input_path);
-    eprintln!("  Architecture:   {} -> {} -> 1", TOTAL_FEATURES, hidden_size);
+    let arch_str = std::iter::once(TOTAL_FEATURES.to_string())
+        .chain(hidden_layers.iter().map(|h| h.to_string()))
+        .chain(std::iter::once("1".to_string()))
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    eprintln!("  Architecture:   {}", arch_str);
     eprintln!("  Learning rate:  {}", lr);
     eprintln!("  Epochs:         {}", epochs);
     eprintln!("  Batch size:     {}", batch_size);
@@ -475,7 +592,6 @@ fn main() {
     // Initialize network
     let mut rng = StdRng::seed_from_u64(seed);
     let input_size = TOTAL_FEATURES;
-    let hidden_layers = vec![hidden_size];
     let num_params = GenericMlp::param_count(input_size, &hidden_layers);
     eprintln!("Network: {} parameters", num_params);
 
@@ -520,7 +636,7 @@ fn main() {
                 let fwd = forward_with_intermediates(
                     &net.weights,
                     input_size,
-                    hidden_size,
+                    &hidden_layers,
                     &pos.active_indices,
                     &pos.bag_features,
                 );
@@ -531,7 +647,7 @@ fn main() {
                 backward(
                     &net.weights,
                     input_size,
-                    hidden_size,
+                    &hidden_layers,
                     &pos.active_indices,
                     &pos.bag_features,
                     &fwd,
