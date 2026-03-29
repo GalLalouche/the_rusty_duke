@@ -1334,5 +1334,73 @@ mod tests {
         // Last 26 are discard (all 0)
         assert_eq!(&combined[15..41], &[0.0; 26]);
     }
+
+    // ── Feature normalization regression tests ─────────────────────
+
+    /// Simulate the label_to_target mapping from the supervised trainer.
+    fn label_to_target(label: f32) -> f32 {
+        let clamped = label.clamp(-10.0, 10.0);
+        (clamped + 10.0) / 20.0
+    }
+
+    /// Simulate per-feature normalization: map [min, max] -> [-10, +10].
+    fn normalize_feature(value: f32, min_v: f32, max_v: f32) -> f32 {
+        let half_range = ((max_v - min_v) / 2.0).max(1e-6);
+        let mid = (min_v + max_v) / 2.0;
+        (value - mid) * (10.0 / half_range)
+    }
+
+    #[test]
+    fn raw_my_moves_crushed_by_clamp() {
+        // Regression: raw my_moves (0-42) without normalization gets crushed.
+        // Anything >= 10 maps to target 1.0 -- losing all distinction.
+        let target_10 = label_to_target(10.0);
+        let target_20 = label_to_target(20.0);
+        let target_42 = label_to_target(42.0);
+        assert_eq!(target_10, 1.0, "10 maps to 1.0");
+        assert_eq!(target_20, 1.0, "20 maps to 1.0 (crushed)");
+        assert_eq!(target_42, 1.0, "42 maps to 1.0 (crushed)");
+    }
+
+    #[test]
+    fn normalized_my_moves_has_full_spread() {
+        // After normalization [0, 42] -> [-10, +10], the full range is preserved.
+        let norm_0 = normalize_feature(0.0, 0.0, 42.0);
+        let norm_21 = normalize_feature(21.0, 0.0, 42.0);
+        let norm_42 = normalize_feature(42.0, 0.0, 42.0);
+        assert!((norm_0 - (-10.0)).abs() < 0.01, "min maps to -10");
+        assert!((norm_21 - 0.0).abs() < 0.01, "midpoint maps to 0");
+        assert!((norm_42 - 10.0).abs() < 0.01, "max maps to +10");
+
+        // After label_to_target, these map to distinct values across [0, 1]
+        let t_0 = label_to_target(norm_0);
+        let t_21 = label_to_target(norm_21);
+        let t_42 = label_to_target(norm_42);
+        assert!((t_0 - 0.0).abs() < 0.01, "min -> target ~0.0");
+        assert!((t_21 - 0.5).abs() < 0.01, "mid -> target ~0.5");
+        assert!((t_42 - 1.0).abs() < 0.01, "max -> target ~1.0");
+    }
+
+    #[test]
+    fn normalization_handles_constant_feature() {
+        // Features 9, 11 (defended) and all discards are always 0.
+        // Normalization should not crash (half_range clamped to 1e-6).
+        let norm = normalize_feature(0.0, 0.0, 0.0);
+        assert!(norm.is_finite(), "constant feature should produce finite result");
+    }
+
+    #[test]
+    fn normalization_preserves_relative_ordering() {
+        // For any feature, normalized values should preserve ordering.
+        let vals = [3.0, 7.0, 15.0, 25.0, 40.0];
+        let min_v = 0.0f32;
+        let max_v = 42.0f32;
+        let normed: Vec<f32> = vals.iter().map(|&v| normalize_feature(v, min_v, max_v)).collect();
+        for i in 1..normed.len() {
+            assert!(normed[i] > normed[i - 1],
+                "ordering violated: norm({}) = {} <= norm({}) = {}",
+                vals[i - 1], normed[i - 1], vals[i], normed[i]);
+        }
+    }
 }
 
