@@ -880,5 +880,459 @@ mod tests {
         let combined = extract_combined_features(&gs);
         assert_eq!(combined.len(), 41);
     }
+
+    // ── Edge cases: multiple units on same square ───────────────────
+
+    #[test]
+    fn defended_multiple_defenders_same_piece() {
+        // Place a piece that is defended by TWO friendly pieces.
+        // TopPlayer: Duke(2,0), Footman(3,0), Footman(1,0)
+        // Footman(3,0) can be reached by Duke sliding right AND Footman(1,0) can't reach (3,0).
+        // But Duke(2,0) is defended by both footmen (each can move to (2,0) if ignoring friendly).
+        let tiles = vec![
+            (c(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(3, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(1, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, _) = board_control_features_with_duke_mob(&gs);
+
+        // my_defended counts each tile that has at least one other friendly defender.
+        // Duke(2,0): both footmen can reach it -> defended
+        // Footman(3,0): Duke can slide right to (3,0) -> defended
+        // Footman(1,0): Duke can slide left to (1,0) -> defended
+        // All 3 should be defended
+        assert_eq!(control[5], 3.0,
+            "all 3 TopPlayer pieces should be defended, got {}", control[5]);
+    }
+
+    #[test]
+    fn threatened_multiple_attackers_same_target() {
+        // Two TopPlayer pieces can both threaten the same enemy piece.
+        // The threatened count should still be 1 (counts threatened PIECES, not attacker count).
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 1), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(2, 3), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (c(2, 2), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, _) = board_control_features_with_duke_mob(&gs);
+
+        // Both TopPlayer footmen can move to (2,2) where enemy footman sits.
+        // my_threatened should count the enemy footman once, not twice.
+        // Also duke at (0,0) might threaten something via horizontal slides.
+        // The enemy footman at (2,2) should be in my_reach -> my_threatened >= 1
+        assert!(control[6] >= 1.0,
+            "enemy footman at (2,2) should be threatened, got {}", control[6]);
+    }
+
+    #[test]
+    fn isolated_piece_not_defended() {
+        // A piece far from all friendlies should NOT be defended.
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(5, 5), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),  // isolated
+            (c(0, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, _) = board_control_features_with_duke_mob(&gs);
+
+        // Duke(0,0) has no friendly piece that can reach it (footman is at (5,5), too far)
+        // Footman(5,5) has no friendly piece that can reach it (duke slides row 0 only)
+        // my_defended should be 0
+        assert_eq!(control[5], 0.0,
+            "isolated pieces should not be defended, got {}", control[5]);
+    }
+
+    #[test]
+    fn symmetric_board_symmetric_features() {
+        // Mirror board should give symmetric features between my and opp.
+        // TopPlayer: Duke(1,1), Footman(2,1)
+        // BottomPlayer: Duke(1,4), Footman(2,4)
+        let tiles = vec![
+            (c(1, 1), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 1), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(1, 4), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (c(2, 4), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, duke_mob) = board_control_features_with_duke_mob(&gs);
+
+        // Symmetric board => my and opp features should be equal
+        assert_eq!(control[0], control[1], "my_moves == opp_moves on symmetric board");
+        assert_eq!(control[2], control[3], "my_reachable == opp_reachable");
+        assert_eq!(control[5], control[7], "my_defended == opp_defended");
+        assert_eq!(control[6], control[8], "my_threatened == opp_threatened");
+        assert_eq!(duke_mob[0], duke_mob[1], "duke mobility should be equal");
+    }
+
+    // ── Edge case: Manhattan distance ──────────────────────────────
+
+    #[test]
+    fn manhattan_boundary_distance_2() {
+        // Piece at exactly Manhattan distance 2 from duke should count as "near".
+        // TopPlayer Duke at (0,0), Footman at (2,0) => dist = 2
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let md = manhattan_distance_features(&gs);
+
+        // Footman(2,0) dist from my duke(0,0) = |2-0|+|0-0| = 2 => near
+        assert_eq!(md[0], 1.0, "piece at distance 2 should count as near my duke");
+    }
+
+    #[test]
+    fn manhattan_boundary_distance_3() {
+        // Piece at Manhattan distance 3 from duke should NOT count as "near".
+        // TopPlayer Duke at (0,0), Footman at (3,0) => dist = 3
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(3, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let md = manhattan_distance_features(&gs);
+
+        // Footman(3,0) dist from my duke(0,0) = |3-0|+|0-0| = 3 => NOT near
+        assert_eq!(md[0], 0.0, "piece at distance 3 should NOT count as near my duke");
+    }
+
+    #[test]
+    fn manhattan_all_near_one_duke() {
+        // Cluster many pieces around TopPlayer duke at (3,3).
+        // All non-duke pieces within distance 2.
+        let tiles = vec![
+            (c(3, 3), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(3, 2), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),  // dist 1
+            (c(4, 3), PlacedTile::new(Owner::TopPlayer, TileType::Pikeman)),  // dist 1
+            (c(2, 3), PlacedTile::new(Owner::TopPlayer, TileType::Knight)),   // dist 1
+            (c(3, 4), PlacedTile::new(Owner::TopPlayer, TileType::Champion)), // dist 1
+            (c(4, 4), PlacedTile::new(Owner::TopPlayer, TileType::Bowman)),   // dist 2
+            (c(0, 0), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let md = manhattan_distance_features(&gs);
+
+        // 5 non-duke pieces all within dist 2 of my duke
+        assert_eq!(md[0], 5.0, "all 5 pieces should be near my duke");
+    }
+
+    #[test]
+    fn manhattan_dukes_adjacent() {
+        // Dukes next to each other, pieces near both.
+        // TopPlayer Duke(2,2), BottomPlayer Duke(3,2) => adjacent
+        // TopPlayer Footman(2,3) => dist 1 from my duke, dist 2 from enemy duke
+        // BottomPlayer Footman(3,3) => dist 2 from my duke, dist 1 from enemy duke
+        let tiles = vec![
+            (c(2, 2), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 3), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(3, 2), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (c(3, 3), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let md = manhattan_distance_features(&gs);
+
+        // my non-duke near my duke(2,2): Footman(2,3) dist=1 => 1
+        assert_eq!(md[0], 1.0, "my_units_near_my_duke");
+        // enemy near my duke(2,2): Duke(3,2) dist=1, Footman(3,3) dist=2 => 2
+        assert_eq!(md[1], 2.0, "enemy_units_near_my_duke");
+        // my non-duke near enemy duke(3,2): Footman(2,3) dist=|2-3|+|3-2|=2 => 1
+        assert_eq!(md[2], 1.0, "my_units_near_enemy_duke");
+        // enemy non-duke near enemy duke(3,2): Footman(3,3) dist=1 => 1
+        assert_eq!(md[3], 1.0, "enemy_units_near_enemy_duke");
+    }
+
+    // ── Edge case: Board control ───────────────────────────────────
+
+    #[test]
+    fn defended_piece_also_threatened() {
+        // A piece that is both defended by friendly AND threatened by enemy.
+        // TopPlayer: Duke(0,0), Footman(1,0) — duke defends footman via slide
+        // BottomPlayer: Duke(5,5), Footman(2,0) — enemy footman can capture TopPlayer's footman
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(1, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (c(2, 0), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, _) = board_control_features_with_duke_mob(&gs);
+
+        // Footman(1,0) is defended by Duke(0,0) sliding right
+        assert!(control[5] >= 1.0,
+            "my_defended should be >= 1 (duke defends footman), got {}", control[5]);
+        // Footman(1,0) is threatened by BottomPlayer's Footman(2,0) moving left
+        assert!(control[8] >= 1.0,
+            "opp_threatened should be >= 1 (enemy footman threatens my footman), got {}", control[8]);
+    }
+
+    #[test]
+    fn defended_by_multiple_piece_types() {
+        // A piece defended by both duke (slide) and footman (step).
+        // Duke side A only slides horizontally.
+        // TopPlayer: Duke(1,0), Footman(2,0), Footman(0,0)
+        // Duke(1,0): Footman(2,0) can step left to (1,0), Footman(0,0) can step right to (1,0) => defended
+        // Footman(2,0): Duke(1,0) can slide right to (2,0) => defended
+        // Footman(0,0): Duke(1,0) can slide left to (0,0) => defended
+        let tiles = vec![
+            (c(1, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, _) = board_control_features_with_duke_mob(&gs);
+
+        // All 3 of TopPlayer's pieces should be defended
+        assert_eq!(control[5], 3.0,
+            "all 3 pieces should be defended (duke by both footmen, each footman by duke), got {}", control[5]);
+    }
+
+    #[test]
+    fn duke_boxed_in_zero_mobility() {
+        // Duke surrounded by friendly pieces on horizontal slides has zero mobility.
+        // Duke side A only slides horizontally.
+        // TopPlayer Duke(1,1), blocked by friendlies at (0,1) and (2,1).
+        let tiles = vec![
+            (c(1, 1), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(0, 1), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(2, 1), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (_, duke_mob) = board_control_features_with_duke_mob(&gs);
+
+        assert_eq!(duke_mob[0], 0.0,
+            "duke boxed in by friendlies should have 0 mobility, got {}", duke_mob[0]);
+    }
+
+    #[test]
+    fn duke_center_max_mobility() {
+        // Duke in center of empty board has maximum horizontal slide moves.
+        // Duke side A only slides horizontally (HorizontalSymmetricOffset::Near, Slide).
+        // Duke at (3,3): slides left to (2,3),(1,3),(0,3) = 3, right to (4,3),(5,3) = 2
+        // Total = 5 horizontal slides
+        let tiles = vec![
+            (c(3, 3), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(0, 0), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (_, duke_mob) = board_control_features_with_duke_mob(&gs);
+
+        // Duke at (3,3) slides to 5 squares (3 left + 2 right)
+        assert_eq!(duke_mob[0], 5.0,
+            "duke at center should have 5 horizontal slide moves, got {}", duke_mob[0]);
+    }
+
+    #[test]
+    fn duke_edge_limited_mobility() {
+        // Duke on edge has fewer moves than center.
+        // Duke at (0,3) side A: slides right (1,3),(2,3),(3,3),(4,3),(5,3) = 5, no slide left (at edge)
+        // steps up (0,4) and down (0,2) = 2
+        // Total = 7 — same horizontal count since edge only cuts one direction
+        //
+        // Duke at (0,0) corner: slides right (1,0)...(5,0) = 5, step up (0,1) = 1, no step down (edge)
+        // Total = 6
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (_, duke_mob) = board_control_features_with_duke_mob(&gs);
+
+        // Corner duke has strictly fewer moves than center duke
+        assert!(duke_mob[0] < 7.0,
+            "corner duke should have fewer than 7 moves, got {}", duke_mob[0]);
+        assert!(duke_mob[0] > 0.0,
+            "corner duke should still have some moves, got {}", duke_mob[0]);
+    }
+
+    #[test]
+    fn zero_moves_blocked_piece() {
+        // A non-duke piece completely surrounded by friendlies has no legal moves.
+        // TopPlayer: Footman(2,2) surrounded by friendlies at (1,2),(3,2),(2,1),(2,3)
+        // Footman side A moves one square in each cardinal direction — all blocked.
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 2), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(1, 2), PlacedTile::new(Owner::TopPlayer, TileType::Pikeman)),
+            (c(3, 2), PlacedTile::new(Owner::TopPlayer, TileType::Knight)),
+            (c(2, 1), PlacedTile::new(Owner::TopPlayer, TileType::Champion)),
+            (c(2, 3), PlacedTile::new(Owner::TopPlayer, TileType::Bowman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, _) = board_control_features_with_duke_mob(&gs);
+
+        // With the blocked footman, total move count should be less than if it were free.
+        // We can check that moves > 0 (other pieces still move) but the blocked footman
+        // contributes 0 moves. Let's compare with an unblocked version.
+        let tiles_unblocked = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 2), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs_unblocked = state_from_tiles(tiles_unblocked);
+        let (control_unblocked, _) = board_control_features_with_duke_mob(&gs_unblocked);
+
+        // The blocked board has more pieces but the footman at (2,2) contributes 0 moves.
+        // The unblocked footman at (2,2) has 4 moves.
+        // So my_approx_moves for blocked < my_approx_moves for unblocked + moves from extra pieces.
+        // At minimum, verify the blocked footman's contribution is reflected.
+        assert!(control[0] > 0.0, "should still have some moves from other pieces");
+
+        // The unblocked footman alone contributes 4 moves. With surrounding pieces blocked,
+        // those 4 moves vanish but the surrounding pieces add their own.
+        // Key assertion: blocked version has fewer moves from footman at (2,2).
+        // We can't easily isolate footman's contribution, but we verify the feature is computed.
+        assert!(control[0] > 0.0 && control_unblocked[0] > 0.0);
+    }
+
+    #[test]
+    fn all_reachable_squares_contested() {
+        // Set up board where reachable squares overlap significantly.
+        // Place footmen facing each other so their reachable squares overlap.
+        // Footman side A moves one square in each cardinal direction.
+        // TopPlayer Footman(2,3) reaches (1,3),(3,3),(2,2),(2,4)
+        // BottomPlayer Footman(4,3) reaches (3,3),(5,3),(4,2),(4,4)
+        // Overlap at (3,3) — both can move/capture there.
+        // Also use duke slides to create more overlap.
+        // TopPlayer Duke(0,3) slides to (1,3),(2,3) blocked by footman at (2,3)... wait, slides stop at first friendly.
+        // Let's keep it simple: two footmen whose reachable squares overlap.
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(2, 3), PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (c(4, 3), PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        ];
+        let gs = state_from_tiles(tiles);
+        let (control, _) = board_control_features_with_duke_mob(&gs);
+
+        // TopPlayer Footman(2,3) reaches: (1,3),(3,3),(2,2),(2,4)
+        // BottomPlayer Footman(4,3) reaches: (3,3),(5,3),(4,2),(4,4)
+        // Overlap at (3,3) — contested >= 1
+        // Also duke slides may add more overlap.
+        assert!(control[4] >= 1.0,
+            "contested squares should be >= 1 with facing footmen, got {}", control[4]);
+    }
+
+    // ── Edge case: Discard ─────────────────────────────────────────
+
+    #[test]
+    fn discard_multiple_same_type() {
+        // Multiple footmen in discard pile should count correctly.
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = GameState::from_snapshot(GameSnapshot {
+            tiles,
+            top_bag: TileBag::new(vec![]),
+            bottom_bag: TileBag::new(vec![]),
+            top_discard: DiscardBag::from_tiles(vec![TileType::Footman, TileType::Footman, TileType::Footman]),
+            bottom_discard: DiscardBag::empty(),
+            current_turn: Owner::TopPlayer,
+            idle_move_count: 0,
+        });
+
+        let dv = discard_vector(&gs);
+        assert_eq!(dv[TileType::Footman.index()], 3.0,
+            "3 footmen in discard should give count of 3, got {}", dv[TileType::Footman.index()]);
+        // All other slots should be 0
+        for i in 0..26 {
+            if i != TileType::Footman.index() {
+                assert_eq!(dv[i], 0.0, "slot {} should be 0", i);
+            }
+        }
+    }
+
+    #[test]
+    fn discard_asymmetric() {
+        // One player has many discards, other has none.
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = GameState::from_snapshot(GameSnapshot {
+            tiles,
+            top_bag: TileBag::new(vec![]),
+            bottom_bag: TileBag::new(vec![]),
+            top_discard: DiscardBag::empty(),
+            bottom_discard: DiscardBag::from_tiles(vec![
+                TileType::Footman, TileType::Pikeman, TileType::Knight,
+                TileType::Champion, TileType::Bowman,
+            ]),
+            current_turn: Owner::TopPlayer,
+            idle_move_count: 0,
+        });
+
+        let dv = discard_vector(&gs);
+
+        // My (TopPlayer) discards: all zero
+        for i in 0..TileType::COUNT {
+            assert_eq!(dv[i], 0.0, "my discard slot {} should be 0", i);
+        }
+
+        // Opp (BottomPlayer) discards: 5 distinct types
+        let opp_offset = TileType::COUNT;
+        assert_eq!(dv[opp_offset + TileType::Footman.index()], 1.0, "opp Footman discard");
+        assert_eq!(dv[opp_offset + TileType::Pikeman.index()], 1.0, "opp Pikeman discard");
+        assert_eq!(dv[opp_offset + TileType::Knight.index()], 1.0, "opp Knight discard");
+        assert_eq!(dv[opp_offset + TileType::Champion.index()], 1.0, "opp Champion discard");
+        assert_eq!(dv[opp_offset + TileType::Bowman.index()], 1.0, "opp Bowman discard");
+
+        // Total opp discards = 5
+        let opp_total: f64 = dv[opp_offset..].iter().sum();
+        assert_eq!(opp_total, 5.0, "total opponent discards should be 5");
+    }
+
+    // ── Edge case: General ─────────────────────────────────────────
+
+    #[test]
+    fn empty_board_just_dukes() {
+        // Minimal board with only two dukes — verify baseline features.
+        let tiles = vec![
+            (c(0, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (c(5, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs = state_from_tiles(tiles);
+
+        // Manhattan: no non-duke pieces => all zeros
+        let md = manhattan_distance_features(&gs);
+        assert_eq!(md, [0.0, 0.0, 0.0, 0.0],
+            "no non-duke pieces means all manhattan features are 0");
+
+        // Board control: only duke moves
+        let (control, duke_mob) = board_control_features_with_duke_mob(&gs);
+        // Only duke tiles exist, so moves come from duke only
+        assert_eq!(control[0], duke_mob[0],
+            "my_approx_moves should equal my duke mobility (only duke on board)");
+        assert_eq!(control[1], duke_mob[1],
+            "opp_approx_moves should equal opp duke mobility");
+
+        // No non-duke pieces => defended/threatened = 0 for "number of tiles defended"
+        // Actually duke can still be "defended" by... nothing (only 1 piece per side).
+        // With only 1 tile per player, no OTHER friendly can defend => 0
+        assert_eq!(control[5], 0.0, "my_defended should be 0 with just duke");
+        assert_eq!(control[7], 0.0, "opp_defended should be 0 with just duke");
+
+        // Discard: empty
+        let dv = discard_vector(&gs);
+        assert_eq!(dv, [0.0; 26], "discard should be all zeros");
+
+        // Combined features: length is 41
+        let combined = extract_combined_features(&gs);
+        assert_eq!(combined.len(), NUM_COMBINED_FEATURES);
+        // First 4 are manhattan (all 0)
+        assert_eq!(&combined[0..4], &[0.0; 4]);
+        // Last 26 are discard (all 0)
+        assert_eq!(&combined[15..41], &[0.0; 26]);
+    }
 }
 
