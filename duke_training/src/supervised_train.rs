@@ -304,10 +304,12 @@ fn batch_forward(
         // Sparse board features (binary, value = 1.0)
         for &idx in &pos.active_indices {
             let feat = idx as usize;
-            debug_assert!(feat < BOARD_FEATURES);
-            let col = &l1_w[feat * h1..(feat + 1) * h1];
+            let col_start = feat * h1;
+            let col = &l1_w[col_start..col_start + h1];
+            // Ensure the compiler sees matching lengths for auto-vectorization
+            let row_slice = &mut row[..h1];
             for j in 0..h1 {
-                row[j] += col[j];
+                row_slice[j] += col[j];
             }
         }
 
@@ -315,9 +317,11 @@ fn batch_forward(
         for (i, &val) in pos.bag_features.iter().enumerate() {
             if val != 0.0 {
                 let feat = BOARD_FEATURES + i;
-                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                let col_start = feat * h1;
+                let col = &l1_w[col_start..col_start + h1];
+                let row_slice = &mut row[..h1];
                 for j in 0..h1 {
-                    row[j] += col[j] * val;
+                    row_slice[j] += col[j] * val;
                 }
             }
         }
@@ -362,18 +366,15 @@ fn batch_forward(
             );
         }
 
-        // Add bias (broadcast across batch)
-        for bi in 0..batch_size {
-            let row = &mut pre[bi * cur_size..(bi + 1) * cur_size];
-            for j in 0..cur_size {
-                row[j] += lb[j];
-            }
-        }
-
-        // ReLU
+        // Fused bias + ReLU
         let act_l = &mut scratch.act[layer_idx];
-        for i in 0..batch_size * cur_size {
-            act_l[i] = scratch.pre_act[layer_idx][i].max(0.0);
+        for bi in 0..batch_size {
+            let row_pre = &mut pre[bi * cur_size..(bi + 1) * cur_size];
+            let row_act = &mut act_l[bi * cur_size..(bi + 1) * cur_size];
+            for j in 0..cur_size {
+                row_pre[j] += lb[j];
+                row_act[j] = row_pre[j].max(0.0);
+            }
         }
     }
 
@@ -545,21 +546,28 @@ fn batch_backward(
             let d_row = &d_l1[bi * h1..(bi + 1) * h1];
             let pos = positions[bi];
 
+            // Bias gradient: vectorizable contiguous add
+            let bias_grad = &mut scratch.grad[bias_offset..bias_offset + h1];
             for j in 0..h1 {
-                let dj = d_row[j];
-                if dj == 0.0 { continue; }
+                bias_grad[j] += d_row[j];
+            }
 
-                scratch.grad[bias_offset + j] += dj;
-
-                for &idx in &pos.active_indices {
-                    let feat = idx as usize;
-                    scratch.grad[off + feat * h1 + j] += dj;
+            // Sparse board features: iterate features in outer loop for contiguous grad writes
+            for &idx in &pos.active_indices {
+                let feat = idx as usize;
+                let grad_col = &mut scratch.grad[off + feat * h1..off + feat * h1 + h1];
+                for j in 0..h1 {
+                    grad_col[j] += d_row[j];
                 }
+            }
 
-                for (i, &val) in pos.bag_features.iter().enumerate() {
-                    if val != 0.0 {
-                        let feat = BOARD_FEATURES + i;
-                        scratch.grad[off + feat * h1 + j] += dj * val;
+            // Dense bag features
+            for (i, &val) in pos.bag_features.iter().enumerate() {
+                if val != 0.0 {
+                    let feat = BOARD_FEATURES + i;
+                    let grad_col = &mut scratch.grad[off + feat * h1..off + feat * h1 + h1];
+                    for j in 0..h1 {
+                        grad_col[j] += d_row[j] * val;
                     }
                 }
             }
@@ -608,11 +616,24 @@ impl AdamState {
         self.t += 1;
         let t = self.t as f32;
         let lr_t = self.lr * (1.0 - self.beta2.powf(t)).sqrt() / (1.0 - self.beta1.powf(t));
+        let beta1 = self.beta1;
+        let beta2 = self.beta2;
+        let one_minus_beta1 = 1.0 - beta1;
+        let one_minus_beta2 = 1.0 - beta2;
+        let eps = self.eps;
+        let n = weights.len();
 
-        for i in 0..weights.len() {
-            self.m[i] = self.beta1 * self.m[i] + (1.0 - self.beta1) * grad[i];
-            self.v[i] = self.beta2 * self.v[i] + (1.0 - self.beta2) * grad[i] * grad[i];
-            weights[i] -= lr_t * self.m[i] / (self.v[i].sqrt() + self.eps);
+        // Pass 1: update first moment
+        for i in 0..n {
+            self.m[i] = beta1 * self.m[i] + one_minus_beta1 * grad[i];
+        }
+        // Pass 2: update second moment
+        for i in 0..n {
+            self.v[i] = beta2 * self.v[i] + one_minus_beta2 * grad[i] * grad[i];
+        }
+        // Pass 3: update weights
+        for i in 0..n {
+            weights[i] -= lr_t * self.m[i] / (self.v[i].sqrt() + eps);
         }
     }
 }
@@ -686,7 +707,7 @@ fn main() {
     }
     let lr: f32 = parse_flag(&args, "--lr").unwrap_or(0.001);
     let epochs: usize = parse_flag(&args, "--epochs").unwrap_or(10);
-    let batch_size: usize = parse_flag(&args, "--batch-size").unwrap_or(256);
+    let batch_size: usize = parse_flag(&args, "--batch-size").unwrap_or(512);
     let eval_interval: usize = parse_flag(&args, "--eval-interval").unwrap_or(50000);
     let eval_games: u32 = parse_flag(&args, "--eval-games").unwrap_or(500);
     let checkpoint_dir: String = parse_flag(&args, "--checkpoint-dir")
@@ -700,7 +721,7 @@ fn main() {
     // Print configuration
     eprintln!("=== Supervised Training ===");
     // Load data first so we know label range
-    let (positions, _label_min, _label_max) = load_lpos(&input_path, label_index);
+    let (mut positions, _label_min, _label_max) = load_lpos(&input_path, label_index);
 
     eprintln!("  Input:          {}", input_path);
     let arch_str = std::iter::once(TOTAL_FEATURES.to_string())
@@ -720,8 +741,21 @@ fn main() {
     eprintln!("  Seed:           {}", seed);
     eprintln!();
 
+    let max_positions: Option<usize> = parse_flag(&args, "--max-positions");
+    if let Some(max) = max_positions {
+        eprintln!("  Max positions:  {}", max);
+    }
+
     // Create checkpoint directory
     std::fs::create_dir_all(&checkpoint_dir).expect("Failed to create checkpoint directory");
+
+    // Optionally truncate to --max-positions
+    if let Some(max) = max_positions {
+        if positions.len() > max {
+            eprintln!("Truncating {} positions to {} ...", positions.len(), max);
+            positions.truncate(max);
+        }
+    }
     let num_positions = positions.len();
 
     // Build expanded index array weighted by count.
@@ -774,6 +808,7 @@ fn main() {
     let mut net = GenericMlp::random(input_size, hidden_layers.clone(), &mut rng);
     let mut adam = AdamState::new(num_params, lr);
     let mut scratch = FcScratch::new(&hidden_layers, num_params, batch_size, input_size);
+    let mut batch_targets = vec![0.0f32; batch_size];
 
     // Initial evaluation
     eprintln!("\n--- Initial evaluation ---");
@@ -815,10 +850,9 @@ fn main() {
             let batch_positions: Vec<&LabeledPosition> = (batch_start..batch_end)
                 .map(|si| &positions[shuffled_indices[si] as usize])
                 .collect();
-            let batch_targets: Vec<f32> = batch_positions
-                .iter()
-                .map(|pos| label_to_target(pos.label))
-                .collect();
+            for (i, pos) in batch_positions.iter().enumerate() {
+                batch_targets[i] = label_to_target(pos.label);
+            }
 
             // Zero gradient accumulator (reused across batches)
             scratch.zero_grad();
@@ -832,7 +866,7 @@ fn main() {
                 &mut scratch,
             );
 
-            let batch_loss_val = batch_loss(&scratch, &batch_targets, actual_batch_size);
+            let batch_loss_val = batch_loss(&scratch, &batch_targets[..actual_batch_size], actual_batch_size);
 
             // Batched backward pass
             batch_backward(
@@ -840,7 +874,7 @@ fn main() {
                 input_size,
                 &hidden_layers,
                 &batch_positions,
-                &batch_targets,
+                &batch_targets[..actual_batch_size],
                 inv_batch,
                 &mut scratch,
             );
