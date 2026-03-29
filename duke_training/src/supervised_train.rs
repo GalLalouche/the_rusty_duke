@@ -41,13 +41,31 @@ struct LabeledPosition {
     count: u32,
 }
 
-/// Load labeled positions from an LPOS binary file.
+/// Label names for the 41 combined features (for display when loading FLPS).
+const COMBINED_FEATURE_NAMES: [&str; 41] = [
+    "near_my_duke_friendly", "near_my_duke_enemy",
+    "near_enemy_duke_friendly", "near_enemy_duke_enemy",
+    "my_moves", "opp_moves", "my_reachable", "opp_reachable", "contested",
+    "my_defended", "my_threatened", "opp_defended", "opp_threatened",
+    "my_duke_mob", "opp_duke_mob",
+    "my_duke_disc", "my_footman_disc", "my_pikeman_disc", "my_knight_disc",
+    "my_sergeant_disc", "my_ranger_disc", "my_champion_disc", "my_wizard_disc",
+    "my_general_disc", "my_marshall_disc", "my_assassin_disc", "my_longbowman_disc",
+    "my_dragoon_disc",
+    "opp_duke_disc", "opp_footman_disc", "opp_pikeman_disc", "opp_knight_disc",
+    "opp_sergeant_disc", "opp_ranger_disc", "opp_champion_disc", "opp_wizard_disc",
+    "opp_general_disc", "opp_marshall_disc", "opp_assassin_disc", "opp_longbowman_disc",
+    "opp_dragoon_disc",
+];
+
+/// Load labeled positions from an LPOS or FLPS binary file.
+/// For FLPS files, `label_index` selects which of the N labels to use.
 /// Returns (positions, min_label, max_label).
-fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
+fn load_lpos(path: &str, label_index: usize) -> (Vec<LabeledPosition>, f32, f32) {
     let t0 = Instant::now();
     eprintln!("Loading labeled positions from {} ...", path);
 
-    let data = std::fs::read(path).expect("Failed to read LPOS file");
+    let data = std::fs::read(path).expect("Failed to read labeled positions file");
     let mut cursor = 0usize;
 
     // Helper: read N bytes from the data buffer.
@@ -79,14 +97,36 @@ fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
         }};
     }
 
-    // Header
+    // Detect format by magic bytes
     let magic = read_bytes!(4);
-    assert_eq!(magic, b"LPOS", "Not an LPOS file (bad magic)");
+    let is_flps = magic == b"FLPS";
+    let is_lpos = magic == b"LPOS";
+    assert!(is_lpos || is_flps,
+        "Unknown file format (magic: {:?}), expected LPOS or FLPS", magic);
+
     let version = read_u32!();
-    assert_eq!(version, 1, "Unsupported LPOS version {}", version);
+    assert_eq!(version, 1, "Unsupported version {}", version);
     let num_positions = read_u32!() as usize;
 
-    eprintln!("  File header: {} positions, version {}", num_positions, version);
+    let num_labels = if is_flps {
+        let nl = read_u32!() as usize;
+        assert!(label_index < nl,
+            "--label-index {} out of range (file has {} labels)", label_index, nl);
+        let label_name = if nl == 41 && label_index < COMBINED_FEATURE_NAMES.len() {
+            COMBINED_FEATURE_NAMES[label_index]
+        } else {
+            "unknown"
+        };
+        eprintln!("  FLPS format: {} positions, {} labels, using label index {} ({})",
+            num_positions, nl, label_index, label_name);
+        nl
+    } else {
+        if label_index != 0 {
+            eprintln!("  Warning: --label-index {} ignored for LPOS format (single label)", label_index);
+        }
+        eprintln!("  LPOS format: {} positions, version {}", num_positions, version);
+        1
+    };
 
     let mut positions = Vec::with_capacity(num_positions);
     for _ in 0..num_positions {
@@ -99,7 +139,21 @@ fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
         for i in 0..BAG_FEATURES {
             bag_features[i] = read_f32!();
         }
-        let label = read_f32!();
+
+        let label = if is_flps {
+            // Read all labels, pick the one at label_index
+            let mut selected = 0.0f32;
+            for li in 0..num_labels {
+                let val = read_f32!();
+                if li == label_index {
+                    selected = val;
+                }
+            }
+            selected
+        } else {
+            read_f32!()
+        };
+
         let count = read_u32!();
         positions.push(LabeledPosition {
             active_indices,
@@ -137,6 +191,11 @@ fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
 #[inline]
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
+}
+
+/// Format a loss value: scientific notation if < 1e-5, otherwise 6 decimal places.
+fn fmt_loss(v: f64) -> String {
+    if v.abs() < 1e-5 { format!("{:.3e}", v) } else { format!("{:.6}", v) }
 }
 
 /// Clamp label to [-10, +10] then map linearly to [0, 1].
@@ -608,12 +667,13 @@ fn main() {
         .unwrap_or_else(|| {
             eprintln!(
                 "Usage: supervised_train --input <path> [--hidden 256,128,64] [--lr 0.001] \
-                 [--epochs 10] [--batch-size 256] \
+                 [--epochs 10] [--batch-size 256] [--label-index 0] \
                  [--eval-interval 50000] [--eval-games 500] [--benchmark base,random] \
                  [--checkpoint-dir D:/temp/supervised_nn] [--seed 42]"
             );
             std::process::exit(1);
         });
+    let label_index: usize = parse_flag(&args, "--label-index").unwrap_or(0);
 
     let hidden_str: String = parse_flag(&args, "--hidden").unwrap_or_else(|| "128".to_string());
     let hidden_layers: Vec<usize> = hidden_str
@@ -640,7 +700,7 @@ fn main() {
     // Print configuration
     eprintln!("=== Supervised Training ===");
     // Load data first so we know label range
-    let (positions, _label_min, _label_max) = load_lpos(&input_path);
+    let (positions, _label_min, _label_max) = load_lpos(&input_path, label_index);
 
     eprintln!("  Input:          {}", input_path);
     let arch_str = std::iter::once(TOTAL_FEATURES.to_string())
@@ -723,15 +783,15 @@ fn main() {
     let mut total_samples = 0usize;
     let mut shuffled_indices = indices.clone();
 
-    // Adaptive learning rate state
+    // Adaptive learning rate: halve on loss spike, increase on stall, with bounds.
     let mut best_loss: f64 = f64::INFINITY;
     let mut batches_since_improvement: usize = 0;
     let mut recent_loss_sum: f64 = 0.0;
     let mut recent_loss_count: usize = 0;
     let lr_check_interval: usize = 1000;
     let lr_stall_threshold: usize = 5000;
-    let lr_min: f32 = 1e-6;
-    let lr_max: f32 = 0.1;
+    let lr_min: f32 = lr / 10.0;  // Never drop below 10% of initial LR
+    let lr_max: f32 = lr * 3.0;   // Never exceed 3x initial LR (was 10x, too aggressive)
 
     for epoch in 0..epochs {
         let epoch_start = Instant::now();
@@ -800,14 +860,13 @@ fn main() {
             if recent_loss_count >= lr_check_interval {
                 let recent_avg = recent_loss_sum / recent_loss_count as f64;
                 if recent_avg < best_loss {
-                    // Improved
                     best_loss = recent_avg;
                     batches_since_improvement = 0;
                 } else {
                     batches_since_improvement += recent_loss_count;
 
                     if recent_avg > best_loss * 1.05 {
-                        // Loss increased significantly: slow down
+                        // Loss spiked: halve LR (with floor)
                         let old_lr = adam.lr;
                         adam.lr = (adam.lr * 0.5).max(lr_min);
                         if adam.lr != old_lr {
@@ -818,7 +877,7 @@ fn main() {
                         }
                         batches_since_improvement = 0;
                     } else if batches_since_improvement >= lr_stall_threshold {
-                        // Loss stalled: speed up
+                        // Stuck: bump LR to escape local minimum (with ceiling)
                         let old_lr = adam.lr;
                         adam.lr = (adam.lr * 1.5).min(lr_max);
                         if adam.lr != old_lr {
@@ -826,6 +885,8 @@ fn main() {
                                 "  LR adjusted: {} -> {} (loss stalled)",
                                 old_lr, adam.lr
                             );
+                            // Reset best_loss so higher LR gets a fair chance
+                            best_loss = recent_avg;
                         }
                         batches_since_improvement = 0;
                     }
@@ -840,10 +901,10 @@ fn main() {
                 let elapsed = epoch_start.elapsed().as_secs_f64();
                 let rate = epoch_samples as f64 / elapsed;
                 eprintln!(
-                    "  Batch {}/{}: loss={:.6}, samples={}, rate={:.0} pos/s",
+                    "  Batch {}/{}: loss={}, samples={}, rate={:.0} pos/s",
                     batch_idx + 1,
                     num_batches,
-                    avg_loss,
+                    fmt_loss(avg_loss),
                     epoch_samples,
                     rate,
                 );
@@ -861,9 +922,9 @@ fn main() {
         let epoch_avg_loss = epoch_loss / epoch_samples as f64;
         let epoch_elapsed = epoch_start.elapsed();
         eprintln!(
-            "Epoch {} complete: avg_loss={:.6}, {:.1}s ({:.0} pos/s)",
+            "Epoch {} complete: avg_loss={}, {:.1}s ({:.0} pos/s)",
             epoch + 1,
-            epoch_avg_loss,
+            fmt_loss(epoch_avg_loss),
             epoch_elapsed.as_secs_f64(),
             epoch_samples as f64 / epoch_elapsed.as_secs_f64(),
         );
