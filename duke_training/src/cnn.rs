@@ -2278,13 +2278,20 @@ pub struct CnnBatchScratch {
     pub fc_layer_offsets: Vec<usize>,
     /// FC input size (flattened conv + bag).
     pub fc_input_size: usize,
-    /// Per-position conv scratch (single-position, reused during backward).
+    /// Per-position conv scratch for forward pass (reused across positions).
     pub conv_scratch: CnnScratch,
-    /// Saved conv intermediates per position: [max_batch][layer][ch * spatial].
-    /// conv_pre_relu_batch[bi][layer] = pre-ReLU activations for position bi, conv layer.
-    /// conv_post_relu_batch[bi][layer] = post-ReLU activations.
-    conv_pre_relu_batch: Vec<Vec<Vec<f32>>>,
-    conv_post_relu_batch: Vec<Vec<Vec<f32>>>,
+    /// Flattened conv intermediates: contiguous buffer for all batch x layer data.
+    /// Layout: for each layer L, pre_relu data for all batch positions is at
+    ///   offset conv_batch_layer_offsets[L] .. conv_batch_layer_offsets[L] + max_batch * layer_size[L]
+    /// Within that: position bi is at conv_batch_layer_offsets[L] + bi * layer_size[L]
+    conv_pre_relu_flat: Vec<f32>,
+    conv_post_relu_flat: Vec<f32>,
+    /// Per-layer offset into conv_pre_relu_flat / conv_post_relu_flat.
+    conv_batch_layer_offsets: Vec<usize>,
+    /// Backward scratch: d_conv buffer (max conv layer size).
+    bk_d_conv: Vec<f32>,
+    /// Backward scratch: d_input buffer (max conv layer size, for dense layers).
+    bk_d_input: Vec<f32>,
     /// Max batch size (for bounds checking).
     pub max_batch: usize,
 }
@@ -2306,13 +2313,20 @@ impl CnnModel {
             .map(|&h| vec![0.0f32; max_batch * h])
             .collect();
 
-        // Per-position conv intermediate storage
-        let conv_pre_relu_batch: Vec<Vec<Vec<f32>>> = (0..max_batch)
-            .map(|_| self.conv_channels.iter().map(|&ch| vec![0.0f32; ch * spatial]).collect())
-            .collect();
-        let conv_post_relu_batch: Vec<Vec<Vec<f32>>> = (0..max_batch)
-            .map(|_| self.conv_channels.iter().map(|&ch| vec![0.0f32; ch * spatial]).collect())
-            .collect();
+        // Flattened conv intermediate storage: contiguous per-layer blocks
+        let mut conv_batch_layer_offsets = Vec::with_capacity(self.conv_channels.len());
+        let mut total_conv_size = 0usize;
+        for &ch in &self.conv_channels {
+            conv_batch_layer_offsets.push(total_conv_size);
+            let layer_size = ch * spatial;
+            total_conv_size += max_batch * layer_size;
+        }
+        let conv_pre_relu_flat = vec![0.0f32; total_conv_size];
+        let conv_post_relu_flat = vec![0.0f32; total_conv_size];
+
+        // Backward scratch buffers
+        let max_ch = *self.conv_channels.iter().max().unwrap();
+        let max_conv_buf = max_ch * spatial;
 
         CnnBatchScratch {
             fc_inputs: vec![0.0f32; max_batch * fc_input_size],
@@ -2326,8 +2340,11 @@ impl CnnModel {
             fc_layer_offsets,
             fc_input_size,
             conv_scratch: self.create_scratch(),
-            conv_pre_relu_batch,
-            conv_post_relu_batch,
+            conv_pre_relu_flat,
+            conv_post_relu_flat,
+            conv_batch_layer_offsets,
+            bk_d_conv: vec![0.0f32; max_conv_buf],
+            bk_d_input: vec![0.0f32; max_conv_buf],
             max_batch,
         }
     }
@@ -2335,8 +2352,7 @@ impl CnnModel {
     /// Run conv forward for a single position, writing the FC input (flattened conv + bag)
     /// into the appropriate row of `batch_scratch.fc_inputs`.
     ///
-    /// This fills `conv_scratch.conv_pre_relu` and `conv_post_relu` for later backward use,
-    /// but the caller must save them if needed for backward (since conv_scratch is reused).
+    /// Conv intermediates are saved directly into the flat batch buffers for backward use.
     pub fn conv_forward_into_batch(
         &self,
         active_board: &[usize],
@@ -2348,7 +2364,6 @@ impl CnnModel {
         let spatial = bs * bs;
         let conv_offsets = self.conv_layer_offsets();
         let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
-        let scratch = &mut batch_scratch.conv_scratch;
 
         // ── Conv layer 0: sparse input ──
         {
@@ -2358,12 +2373,15 @@ impl CnnModel {
             let bias = &self.weights[off + w_size..off + w_size + out_ch];
             let size = out_ch * spatial;
 
-            let pre = &mut scratch.conv_pre_relu[0];
-            for v in pre[..size].iter_mut() { *v = 0.0; }
+            // Write pre_relu directly into flat batch buffer
+            let layer_off = batch_scratch.conv_batch_layer_offsets[0];
+            let pre_start = layer_off + batch_idx * size;
+            let pre = &mut batch_scratch.conv_pre_relu_flat[pre_start..pre_start + size];
             for oc in 0..out_ch {
                 let b = bias[oc];
+                let base = oc * spatial;
                 for s in 0..spatial {
-                    pre[oc * spatial + s] = b;
+                    pre[base + s] = b;
                 }
             }
             self.sparse_conv_accumulate(
@@ -2371,11 +2389,14 @@ impl CnnModel {
                 active_board,
                 self.input_channels,
                 out_ch,
-                &mut pre[..size],
+                pre,
             );
-            let post = &mut scratch.conv_post_relu[0];
-            post[..size].copy_from_slice(&scratch.conv_pre_relu[0][..size]);
-            for v in post[..size].iter_mut() { *v = v.max(0.0); }
+            // Fused ReLU: write post_relu into flat batch buffer
+            let post_start = layer_off + batch_idx * size;
+            let post = &mut batch_scratch.conv_post_relu_flat[post_start..post_start + size];
+            for i in 0..size {
+                post[i] = batch_scratch.conv_pre_relu_flat[pre_start + i].max(0.0);
+            }
         }
 
         // ── Conv layers 1+ : dense ──
@@ -2385,51 +2406,54 @@ impl CnnModel {
             let off = conv_offsets[layer_idx];
             let w_size = out_ch * in_ch * kwpp;
             let bias = &self.weights[off + w_size..off + w_size + out_ch];
+            let in_size = in_ch * spatial;
             let out_size = out_ch * spatial;
 
-            let prev_ptr = scratch.conv_post_relu[layer_idx - 1].as_ptr();
-            let prev_len = in_ch * spatial;
+            // Read prev post_relu from flat batch buffer
+            let prev_layer_off = batch_scratch.conv_batch_layer_offsets[layer_idx - 1];
+            let prev_start = prev_layer_off + batch_idx * in_size;
+            let prev_ptr = batch_scratch.conv_post_relu_flat[prev_start..].as_ptr();
 
-            let pre = &mut scratch.conv_pre_relu[layer_idx];
-            for v in pre[..out_size].iter_mut() { *v = 0.0; }
+            // Write pre_relu directly into flat batch buffer
+            let layer_off = batch_scratch.conv_batch_layer_offsets[layer_idx];
+            let pre_start = layer_off + batch_idx * out_size;
+            let pre = &mut batch_scratch.conv_pre_relu_flat[pre_start..pre_start + out_size];
             for oc in 0..out_ch {
                 let b = bias[oc];
+                let base = oc * spatial;
                 for s in 0..spatial {
-                    pre[oc * spatial + s] = b;
+                    pre[base + s] = b;
                 }
             }
-            let prev_slice = unsafe { std::slice::from_raw_parts(prev_ptr, prev_len) };
+            // SAFETY: prev_ptr points into conv_post_relu_flat, pre points into conv_pre_relu_flat.
+            // These are separate Vec allocations so no aliasing.
+            let prev_slice = unsafe { std::slice::from_raw_parts(prev_ptr, in_size) };
             self.dense_conv_accumulate(
                 &self.weights[off..off + w_size],
                 prev_slice,
                 in_ch,
                 out_ch,
-                &mut pre[..out_size],
+                pre,
             );
 
-            let post = &mut scratch.conv_post_relu[layer_idx];
-            post[..out_size].copy_from_slice(&scratch.conv_pre_relu[layer_idx][..out_size]);
-            for v in post[..out_size].iter_mut() { *v = v.max(0.0); }
+            // Fused ReLU: write post_relu
+            let post_start = layer_off + batch_idx * out_size;
+            let post = &mut batch_scratch.conv_post_relu_flat[post_start..post_start + out_size];
+            for i in 0..out_size {
+                post[i] = batch_scratch.conv_pre_relu_flat[pre_start + i].max(0.0);
+            }
         }
 
-        // ── Save conv intermediates for backward pass ──
-        for layer_idx in 0..self.conv_channels.len() {
-            let ch = self.conv_channels[layer_idx];
-            let size = ch * spatial;
-            batch_scratch.conv_pre_relu_batch[batch_idx][layer_idx][..size]
-                .copy_from_slice(&scratch.conv_pre_relu[layer_idx][..size]);
-            batch_scratch.conv_post_relu_batch[batch_idx][layer_idx][..size]
-                .copy_from_slice(&scratch.conv_post_relu[layer_idx][..size]);
-        }
-
-        // ── Flatten + concat bag → write into fc_inputs row ──
+        // ── Flatten + concat bag → write into fc_inputs row ���─
         let fc_input_size = batch_scratch.fc_input_size;
         let last_ch = *self.conv_channels.last().unwrap();
         let conv_flat_size = last_ch * spatial;
         let last_idx = self.conv_channels.len() - 1;
+        let last_layer_off = batch_scratch.conv_batch_layer_offsets[last_idx];
+        let last_start = last_layer_off + batch_idx * conv_flat_size;
         let row_start = batch_idx * fc_input_size;
         batch_scratch.fc_inputs[row_start..row_start + conv_flat_size]
-            .copy_from_slice(&scratch.conv_post_relu[last_idx][..conv_flat_size]);
+            .copy_from_slice(&batch_scratch.conv_post_relu_flat[last_start..last_start + conv_flat_size]);
         batch_scratch.fc_inputs[row_start + conv_flat_size..row_start + fc_input_size]
             .copy_from_slice(bag);
     }
@@ -2776,8 +2800,8 @@ impl CnnModel {
 
     /// Per-position conv backward for one batch element.
     ///
-    /// Restores saved conv intermediates from batch storage, copies the d_fc_input
-    /// row into the conv scratch, and calls `backward_conv_layers_scratch`.
+    /// Reads saved conv intermediates directly from the flat batch buffers
+    /// (no copying), then runs conv backward in-place.
     pub fn conv_backward_from_batch(
         &self,
         batch_idx: usize,
@@ -2785,29 +2809,84 @@ impl CnnModel {
         batch_scratch: &mut CnnBatchScratch,
         grad: &mut [f32],
     ) {
-        let spatial = self.board_size * self.board_size;
+        let bs = self.board_size;
+        let spatial = bs * bs;
         let fc_input_size = batch_scratch.fc_input_size;
         let conv_flat_size = fc_input_size - self.bag_features;
         let conv_offsets = self.conv_layer_offsets();
-        let scratch = &mut batch_scratch.conv_scratch;
-
-        // Restore saved conv intermediates for this position
-        for layer_idx in 0..self.conv_channels.len() {
-            let ch = self.conv_channels[layer_idx];
-            let size = ch * spatial;
-            scratch.conv_pre_relu[layer_idx][..size]
-                .copy_from_slice(&batch_scratch.conv_pre_relu_batch[batch_idx][layer_idx][..size]);
-            scratch.conv_post_relu[layer_idx][..size]
-                .copy_from_slice(&batch_scratch.conv_post_relu_batch[batch_idx][layer_idx][..size]);
-        }
+        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+        let num_conv = self.conv_channels.len();
 
         // Copy d_fc_input (conv portion only) into bk_d_conv
         let row_start = batch_idx * fc_input_size;
-        scratch.bk_d_conv[..conv_flat_size]
+        batch_scratch.bk_d_conv[..conv_flat_size]
             .copy_from_slice(&batch_scratch.d_fc_inputs[row_start..row_start + conv_flat_size]);
 
-        // Run conv backward
-        backward_conv_layers_scratch(self, scratch, active_board, conv_flat_size, &conv_offsets, grad);
+        // Conv backward: iterate layers from last to first
+        for layer_idx in (0..num_conv).rev() {
+            let out_ch = self.conv_channels[layer_idx];
+            let in_ch = if layer_idx == 0 {
+                self.input_channels
+            } else {
+                self.conv_channels[layer_idx - 1]
+            };
+            let off = conv_offsets[layer_idx];
+            let w_size = out_ch * in_ch * kwpp;
+            let cur_size = out_ch * spatial;
+
+            // Read pre_relu directly from flat batch buffer for ReLU mask
+            let layer_off = batch_scratch.conv_batch_layer_offsets[layer_idx];
+            let pre_start = layer_off + batch_idx * cur_size;
+
+            // Fuse ReLU derivative with bias gradient
+            let bias_off = off + w_size;
+            let d_post = &mut batch_scratch.bk_d_conv;
+            for oc in 0..out_ch {
+                let base = oc * spatial;
+                let mut sum = 0.0f32;
+                for s in 0..spatial {
+                    let idx = base + s;
+                    let d = if batch_scratch.conv_pre_relu_flat[pre_start + idx] > 0.0 { d_post[idx] } else { 0.0 };
+                    d_post[idx] = d;
+                    sum += d;
+                }
+                grad[bias_off + oc] += sum;
+            }
+
+            if layer_idx == 0 {
+                backward_conv_sparse_weights(
+                    self,
+                    active_board,
+                    &batch_scratch.bk_d_conv[..cur_size],
+                    in_ch,
+                    out_ch,
+                    off,
+                    grad,
+                );
+            } else {
+                // Read input data (prev layer post_relu) directly from flat batch buffer
+                let prev_layer_off = batch_scratch.conv_batch_layer_offsets[layer_idx - 1];
+                let prev_size = in_ch * spatial;
+                let prev_start = prev_layer_off + batch_idx * prev_size;
+                let input_data = &batch_scratch.conv_post_relu_flat[prev_start..prev_start + prev_size];
+
+                // Zero d_input
+                for v in batch_scratch.bk_d_input[..prev_size].iter_mut() { *v = 0.0; }
+                backward_conv_dense(
+                    self,
+                    &self.weights[off..off + w_size],
+                    input_data,
+                    &batch_scratch.bk_d_conv[..cur_size],
+                    in_ch,
+                    out_ch,
+                    off,
+                    &mut batch_scratch.bk_d_input[..prev_size],
+                    grad,
+                );
+                // Copy d_input into d_conv for next iteration
+                batch_scratch.bk_d_conv[..prev_size].copy_from_slice(&batch_scratch.bk_d_input[..prev_size]);
+            }
+        }
     }
 }
 
