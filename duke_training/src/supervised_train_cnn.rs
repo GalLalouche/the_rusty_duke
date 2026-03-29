@@ -23,7 +23,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
-use duke_training::cnn::{backward_scratch, apply_diamond_mask, CnnEvaluator, CnnModel, KernelType};
+use duke_training::cnn::{apply_diamond_mask, CnnEvaluator, CnnModel, KernelType};
 use duke_training::encoding::BAG_FEATURES;
 use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::loaded_model::LoadedModel;
@@ -344,10 +344,14 @@ fn main() {
         &mut rng,
     );
     let mut adam = AdamState::new(num_params, lr);
-    let mut scratch = model.create_scratch();
+    let mut batch_scratch = model.create_batch_scratch(batch_size);
 
     // Pre-allocate usize active index buffer (avoids per-position Vec<usize> alloc)
     let mut active_buf: Vec<usize> = Vec::with_capacity(64);
+
+    // Per-position active indices saved for conv backward (need to replay per-position)
+    let mut batch_active_indices: Vec<Vec<usize>> = (0..batch_size).map(|_| Vec::with_capacity(64)).collect();
+    let mut batch_bag_features: Vec<[f32; BAG_FEATURES]> = vec![[0.0f32; BAG_FEATURES]; batch_size];
 
     // Initial evaluation
     eprintln!("\n--- Initial evaluation ---");
@@ -385,32 +389,44 @@ fn main() {
             let inv_batch = 1.0f32 / actual_batch_size as f32;
 
             let mut grad = vec![0.0f32; num_params];
-            let mut batch_loss = 0.0f64;
 
-            for si in batch_start..batch_end {
+            // Step 1: Per-position conv forward → write FC inputs into batch matrix
+            for (bi, si) in (batch_start..batch_end).enumerate() {
                 let pos_idx = shuffled_indices[si] as usize;
                 let pos = &positions[pos_idx];
-                let target = label_to_target(pos.label);
 
                 // Convert u16 indices to usize (reuse buffer)
                 active_buf.clear();
                 active_buf.extend(pos.active_indices.iter().map(|&i| i as usize));
 
-                let output = model.forward_with_intermediates_scratch(&active_buf, &pos.bag_features, &mut scratch);
+                // Save active indices and bag features for conv backward
+                batch_active_indices[bi].clear();
+                batch_active_indices[bi].extend_from_slice(&active_buf);
+                batch_bag_features[bi] = pos.bag_features;
 
-                let error = output - target;
+                model.conv_forward_into_batch(&active_buf, &pos.bag_features, bi, &mut batch_scratch);
+            }
+
+            // Step 2: Batched FC forward (sgemm)
+            model.batch_fc_forward(actual_batch_size, &mut batch_scratch);
+
+            // Compute batch targets and loss
+            let mut batch_targets: Vec<f32> = Vec::with_capacity(actual_batch_size);
+            let mut batch_loss = 0.0f64;
+            for (bi, si) in (batch_start..batch_end).enumerate() {
+                let pos_idx = shuffled_indices[si] as usize;
+                let target = label_to_target(positions[pos_idx].label);
+                batch_targets.push(target);
+                let error = batch_scratch.outputs[bi] - target;
                 batch_loss += (error * error) as f64;
+            }
 
-                backward_scratch(
-                    &model,
-                    &mut scratch,
-                    output,
-                    &active_buf,
-                    &pos.bag_features,
-                    target,
-                    inv_batch,
-                    &mut grad,
-                );
+            // Step 3: Batched FC backward (sgemm) → FC weight gradients + d_fc_inputs
+            model.batch_fc_backward(actual_batch_size, &batch_targets, inv_batch, &mut batch_scratch, &mut grad);
+
+            // Step 4: Per-position conv backward using saved intermediates
+            for bi in 0..actual_batch_size {
+                model.conv_backward_from_batch(bi, &batch_active_indices[bi], &mut batch_scratch, &mut grad);
             }
 
             // Adam update

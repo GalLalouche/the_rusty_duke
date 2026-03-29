@@ -1603,7 +1603,7 @@ pub fn backward_scratch(
 /// Backward pass through conv layers using scratch buffers.
 /// Expects scratch.bk_d_conv[..conv_flat_size] to already contain the gradient
 /// w.r.t. the flattened last conv layer output.
-fn backward_conv_layers_scratch(
+pub fn backward_conv_layers_scratch(
     model: &CnnModel,
     scratch: &mut CnnScratch,
     active_board: &[usize],
@@ -2247,7 +2247,571 @@ fn backward_conv_dense(
     }
 }
 
-// ── CnnEvaluator (for game playing) ──────────────────────────────────────
+// ── Batched FC forward/backward with sgemm ──────────────────────────────
+
+use matrixmultiply::sgemm;
+
+/// Pre-allocated scratch buffers for batched CNN training.
+///
+/// Conv layers are per-position (each position has a unique spatial input).
+/// FC layers after flatten+concat are batched across positions using sgemm.
+///
+/// All FC activation/gradient matrices are row-major: [batch_size x neurons].
+pub struct CnnBatchScratch {
+    /// FC inputs from all positions in the batch: [max_batch x fc_input_size], row-major.
+    pub fc_inputs: Vec<f32>,
+    /// Per FC hidden layer: pre-ReLU activations [max_batch x layer_size].
+    pub fc_pre_act: Vec<Vec<f32>>,
+    /// Per FC hidden layer: post-ReLU activations [max_batch x layer_size].
+    pub fc_act: Vec<Vec<f32>>,
+    /// Per FC hidden layer: gradient [max_batch x layer_size].
+    pub fc_d_act: Vec<Vec<f32>>,
+    /// Output logits (pre-sigmoid): [max_batch].
+    pub logits: Vec<f32>,
+    /// Sigmoid outputs: [max_batch].
+    pub outputs: Vec<f32>,
+    /// d_logit: [max_batch].
+    pub d_logits: Vec<f32>,
+    /// d_fc_input for backprop into conv: [max_batch x fc_input_size].
+    pub d_fc_inputs: Vec<f32>,
+    /// Precomputed FC layer weight offsets (within global weight vector).
+    pub fc_layer_offsets: Vec<usize>,
+    /// FC input size (flattened conv + bag).
+    pub fc_input_size: usize,
+    /// Per-position conv scratch (single-position, reused during backward).
+    pub conv_scratch: CnnScratch,
+    /// Saved conv intermediates per position: [max_batch][layer][ch * spatial].
+    /// conv_pre_relu_batch[bi][layer] = pre-ReLU activations for position bi, conv layer.
+    /// conv_post_relu_batch[bi][layer] = post-ReLU activations.
+    conv_pre_relu_batch: Vec<Vec<Vec<f32>>>,
+    conv_post_relu_batch: Vec<Vec<Vec<f32>>>,
+    /// Max batch size (for bounds checking).
+    pub max_batch: usize,
+}
+
+impl CnnModel {
+    /// Create a `CnnBatchScratch` for batched training with the given max batch size.
+    pub fn create_batch_scratch(&self, max_batch: usize) -> CnnBatchScratch {
+        let fc_input_size = self.fc_input_size();
+        let fc_layer_offsets = self.fc_layer_offsets();
+        let spatial = self.board_size * self.board_size;
+
+        let fc_pre_act: Vec<Vec<f32>> = self.fc_sizes.iter()
+            .map(|&h| vec![0.0f32; max_batch * h])
+            .collect();
+        let fc_act: Vec<Vec<f32>> = self.fc_sizes.iter()
+            .map(|&h| vec![0.0f32; max_batch * h])
+            .collect();
+        let fc_d_act: Vec<Vec<f32>> = self.fc_sizes.iter()
+            .map(|&h| vec![0.0f32; max_batch * h])
+            .collect();
+
+        // Per-position conv intermediate storage
+        let conv_pre_relu_batch: Vec<Vec<Vec<f32>>> = (0..max_batch)
+            .map(|_| self.conv_channels.iter().map(|&ch| vec![0.0f32; ch * spatial]).collect())
+            .collect();
+        let conv_post_relu_batch: Vec<Vec<Vec<f32>>> = (0..max_batch)
+            .map(|_| self.conv_channels.iter().map(|&ch| vec![0.0f32; ch * spatial]).collect())
+            .collect();
+
+        CnnBatchScratch {
+            fc_inputs: vec![0.0f32; max_batch * fc_input_size],
+            fc_pre_act,
+            fc_act,
+            fc_d_act,
+            logits: vec![0.0f32; max_batch],
+            outputs: vec![0.0f32; max_batch],
+            d_logits: vec![0.0f32; max_batch],
+            d_fc_inputs: vec![0.0f32; max_batch * fc_input_size],
+            fc_layer_offsets,
+            fc_input_size,
+            conv_scratch: self.create_scratch(),
+            conv_pre_relu_batch,
+            conv_post_relu_batch,
+            max_batch,
+        }
+    }
+
+    /// Run conv forward for a single position, writing the FC input (flattened conv + bag)
+    /// into the appropriate row of `batch_scratch.fc_inputs`.
+    ///
+    /// This fills `conv_scratch.conv_pre_relu` and `conv_post_relu` for later backward use,
+    /// but the caller must save them if needed for backward (since conv_scratch is reused).
+    pub fn conv_forward_into_batch(
+        &self,
+        active_board: &[usize],
+        bag: &[f32],
+        batch_idx: usize,
+        batch_scratch: &mut CnnBatchScratch,
+    ) {
+        let bs = self.board_size;
+        let spatial = bs * bs;
+        let conv_offsets = self.conv_layer_offsets();
+        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+        let scratch = &mut batch_scratch.conv_scratch;
+
+        // ── Conv layer 0: sparse input ──
+        {
+            let out_ch = self.conv_channels[0];
+            let off = conv_offsets[0];
+            let w_size = out_ch * self.input_channels * kwpp;
+            let bias = &self.weights[off + w_size..off + w_size + out_ch];
+            let size = out_ch * spatial;
+
+            let pre = &mut scratch.conv_pre_relu[0];
+            for v in pre[..size].iter_mut() { *v = 0.0; }
+            for oc in 0..out_ch {
+                let b = bias[oc];
+                for s in 0..spatial {
+                    pre[oc * spatial + s] = b;
+                }
+            }
+            self.sparse_conv_accumulate(
+                &self.weights[off..off + w_size],
+                active_board,
+                self.input_channels,
+                out_ch,
+                &mut pre[..size],
+            );
+            let post = &mut scratch.conv_post_relu[0];
+            post[..size].copy_from_slice(&scratch.conv_pre_relu[0][..size]);
+            for v in post[..size].iter_mut() { *v = v.max(0.0); }
+        }
+
+        // ── Conv layers 1+ : dense ──
+        for layer_idx in 1..self.conv_channels.len() {
+            let in_ch = self.conv_channels[layer_idx - 1];
+            let out_ch = self.conv_channels[layer_idx];
+            let off = conv_offsets[layer_idx];
+            let w_size = out_ch * in_ch * kwpp;
+            let bias = &self.weights[off + w_size..off + w_size + out_ch];
+            let out_size = out_ch * spatial;
+
+            let prev_ptr = scratch.conv_post_relu[layer_idx - 1].as_ptr();
+            let prev_len = in_ch * spatial;
+
+            let pre = &mut scratch.conv_pre_relu[layer_idx];
+            for v in pre[..out_size].iter_mut() { *v = 0.0; }
+            for oc in 0..out_ch {
+                let b = bias[oc];
+                for s in 0..spatial {
+                    pre[oc * spatial + s] = b;
+                }
+            }
+            let prev_slice = unsafe { std::slice::from_raw_parts(prev_ptr, prev_len) };
+            self.dense_conv_accumulate(
+                &self.weights[off..off + w_size],
+                prev_slice,
+                in_ch,
+                out_ch,
+                &mut pre[..out_size],
+            );
+
+            let post = &mut scratch.conv_post_relu[layer_idx];
+            post[..out_size].copy_from_slice(&scratch.conv_pre_relu[layer_idx][..out_size]);
+            for v in post[..out_size].iter_mut() { *v = v.max(0.0); }
+        }
+
+        // ── Save conv intermediates for backward pass ──
+        for layer_idx in 0..self.conv_channels.len() {
+            let ch = self.conv_channels[layer_idx];
+            let size = ch * spatial;
+            batch_scratch.conv_pre_relu_batch[batch_idx][layer_idx][..size]
+                .copy_from_slice(&scratch.conv_pre_relu[layer_idx][..size]);
+            batch_scratch.conv_post_relu_batch[batch_idx][layer_idx][..size]
+                .copy_from_slice(&scratch.conv_post_relu[layer_idx][..size]);
+        }
+
+        // ── Flatten + concat bag → write into fc_inputs row ──
+        let fc_input_size = batch_scratch.fc_input_size;
+        let last_ch = *self.conv_channels.last().unwrap();
+        let conv_flat_size = last_ch * spatial;
+        let last_idx = self.conv_channels.len() - 1;
+        let row_start = batch_idx * fc_input_size;
+        batch_scratch.fc_inputs[row_start..row_start + conv_flat_size]
+            .copy_from_slice(&scratch.conv_post_relu[last_idx][..conv_flat_size]);
+        batch_scratch.fc_inputs[row_start + conv_flat_size..row_start + fc_input_size]
+            .copy_from_slice(bag);
+    }
+
+    /// Batched FC forward pass using sgemm.
+    ///
+    /// Assumes `batch_scratch.fc_inputs` has been filled by `conv_forward_into_batch`
+    /// for all positions in the batch.
+    ///
+    /// FC layer 0 uses sgemm (input is dense after conv flatten).
+    /// Subsequent FC layers also use sgemm.
+    /// Output layer: manual dot product (Nx1 output not worth sgemm overhead).
+    pub fn batch_fc_forward(
+        &self,
+        batch_size: usize,
+        batch_scratch: &mut CnnBatchScratch,
+    ) {
+        let num_fc = self.fc_sizes.len();
+        let fc_input_size = batch_scratch.fc_input_size;
+
+        if num_fc == 0 {
+            // No hidden FC layers: output layer directly from fc_inputs
+            let out_off = *batch_scratch.fc_layer_offsets.last().unwrap();
+            let out_w = &self.weights[out_off..out_off + fc_input_size];
+            let out_b = self.weights[out_off + fc_input_size];
+
+            for bi in 0..batch_size {
+                let row = &batch_scratch.fc_inputs[bi * fc_input_size..(bi + 1) * fc_input_size];
+                let mut logit = out_b;
+                for j in 0..fc_input_size {
+                    logit += row[j] * out_w[j];
+                }
+                batch_scratch.logits[bi] = logit;
+                batch_scratch.outputs[bi] = sigmoid(logit);
+            }
+            return;
+        }
+
+        // ── FC layer 0: sgemm (fc_inputs is dense after conv) ���─
+        {
+            let h = self.fc_sizes[0];
+            let off = batch_scratch.fc_layer_offsets[0];
+            let lw = &self.weights[off..off + fc_input_size * h];
+            let lb = &self.weights[off + fc_input_size * h..off + fc_input_size * h + h];
+
+            // pre_act[0] = fc_inputs x W + bias
+            unsafe {
+                sgemm(
+                    batch_size,                                   // m
+                    fc_input_size,                                // k
+                    h,                                            // n
+                    1.0,                                          // alpha
+                    batch_scratch.fc_inputs.as_ptr(),             // A: [batch x fc_input_size]
+                    fc_input_size as isize,                       // rsa
+                    1,                                            // csa
+                    lw.as_ptr(),                                  // B: [fc_input_size x h]
+                    h as isize,                                   // rsb
+                    1,                                            // csb
+                    0.0,                                          // beta
+                    batch_scratch.fc_pre_act[0].as_mut_ptr(),     // C: [batch x h]
+                    h as isize,                                   // rsc
+                    1,                                            // csc
+                );
+            }
+
+            // Add bias and ReLU
+            for bi in 0..batch_size {
+                let row_pre = &mut batch_scratch.fc_pre_act[0][bi * h..(bi + 1) * h];
+                let row_act = &mut batch_scratch.fc_act[0][bi * h..(bi + 1) * h];
+                for j in 0..h {
+                    row_pre[j] += lb[j];
+                    row_act[j] = row_pre[j].max(0.0);
+                }
+            }
+        }
+
+        // ── Subsequent FC hidden layers: sgemm ──
+        for layer_idx in 1..num_fc {
+            let prev_size = self.fc_sizes[layer_idx - 1];
+            let cur_size = self.fc_sizes[layer_idx];
+            let off = batch_scratch.fc_layer_offsets[layer_idx];
+            let lw = &self.weights[off..off + prev_size * cur_size];
+            let lb = &self.weights[off + prev_size * cur_size..off + prev_size * cur_size + cur_size];
+
+            unsafe {
+                sgemm(
+                    batch_size,                                        // m
+                    prev_size,                                         // k
+                    cur_size,                                          // n
+                    1.0,                                               // alpha
+                    batch_scratch.fc_act[layer_idx - 1].as_ptr(),      // A
+                    prev_size as isize,                                // rsa
+                    1,                                                 // csa
+                    lw.as_ptr(),                                       // B
+                    cur_size as isize,                                 // rsb
+                    1,                                                 // csb
+                    0.0,                                               // beta
+                    batch_scratch.fc_pre_act[layer_idx].as_mut_ptr(),  // C
+                    cur_size as isize,                                 // rsc
+                    1,                                                 // csc
+                );
+            }
+
+            for bi in 0..batch_size {
+                let row_pre = &mut batch_scratch.fc_pre_act[layer_idx][bi * cur_size..(bi + 1) * cur_size];
+                let row_act = &mut batch_scratch.fc_act[layer_idx][bi * cur_size..(bi + 1) * cur_size];
+                for j in 0..cur_size {
+                    row_pre[j] += lb[j];
+                    row_act[j] = row_pre[j].max(0.0);
+                }
+            }
+        }
+
+        // ── Output layer: [batch_size x last_hidden] -> [batch_size x 1] ──
+        let last_h = self.fc_sizes[num_fc - 1];
+        let out_off = *batch_scratch.fc_layer_offsets.last().unwrap();
+        let out_w = &self.weights[out_off..out_off + last_h];
+        let out_b = self.weights[out_off + last_h];
+
+        let last_act = &batch_scratch.fc_act[num_fc - 1];
+        for bi in 0..batch_size {
+            let row = &last_act[bi * last_h..(bi + 1) * last_h];
+            let mut logit = out_b;
+            for j in 0..last_h {
+                logit += row[j] * out_w[j];
+            }
+            batch_scratch.logits[bi] = logit;
+            batch_scratch.outputs[bi] = sigmoid(logit);
+        }
+    }
+
+    /// Batched FC backward pass using sgemm.
+    ///
+    /// Computes weight gradients for all FC layers and the gradient w.r.t. fc_inputs
+    /// (stored in `batch_scratch.d_fc_inputs`) for backprop into conv layers.
+    ///
+    /// `targets`: [batch_size] target values.
+    /// `inv_batch`: 1.0 / batch_size (scaling factor for gradient averaging).
+    /// `grad`: weight gradient accumulator (same layout as model.weights).
+    pub fn batch_fc_backward(
+        &self,
+        batch_size: usize,
+        targets: &[f32],
+        inv_batch: f32,
+        batch_scratch: &mut CnnBatchScratch,
+        grad: &mut [f32],
+    ) {
+        let num_fc = self.fc_sizes.len();
+        let fc_input_size = batch_scratch.fc_input_size;
+
+        // ── Output gradient: d_logit = 2*(o - t) * o * (1-o) * inv_batch ──
+        for bi in 0..batch_size {
+            let o = batch_scratch.outputs[bi];
+            batch_scratch.d_logits[bi] = 2.0 * (o - targets[bi]) * o * (1.0 - o) * inv_batch;
+        }
+
+        if num_fc == 0 {
+            // No hidden FC layers: output layer directly from fc_inputs
+            let out_off = *batch_scratch.fc_layer_offsets.last().unwrap();
+
+            // Weight gradients
+            for bi in 0..batch_size {
+                let d = batch_scratch.d_logits[bi];
+                let row = &batch_scratch.fc_inputs[bi * fc_input_size..(bi + 1) * fc_input_size];
+                for j in 0..fc_input_size {
+                    grad[out_off + j] += d * row[j];
+                }
+                grad[out_off + fc_input_size] += d; // bias
+            }
+
+            // d_fc_inputs for conv backward
+            let out_w = &self.weights[out_off..out_off + fc_input_size];
+            for bi in 0..batch_size {
+                let d = batch_scratch.d_logits[bi];
+                let row = &mut batch_scratch.d_fc_inputs[bi * fc_input_size..(bi + 1) * fc_input_size];
+                for j in 0..fc_input_size {
+                    row[j] = d * out_w[j];
+                }
+            }
+            return;
+        }
+
+        let last_h = self.fc_sizes[num_fc - 1];
+        let out_off = *batch_scratch.fc_layer_offsets.last().unwrap();
+
+        // ── Output layer weight gradients ──
+        let last_act = &batch_scratch.fc_act[num_fc - 1];
+        let grad_out = &mut grad[out_off..out_off + last_h + 1];
+        for bi in 0..batch_size {
+            let d = batch_scratch.d_logits[bi];
+            let row = &last_act[bi * last_h..(bi + 1) * last_h];
+            for j in 0..last_h {
+                grad_out[j] += d * row[j];
+            }
+            grad_out[last_h] += d; // bias
+        }
+
+        // ── Backprop d_logit to last hidden layer ──
+        let out_w = &self.weights[out_off..out_off + last_h];
+        let d_last = &mut batch_scratch.fc_d_act[num_fc - 1];
+        for bi in 0..batch_size {
+            let d = batch_scratch.d_logits[bi];
+            let row = &mut d_last[bi * last_h..(bi + 1) * last_h];
+            for j in 0..last_h {
+                row[j] = d * out_w[j];
+            }
+        }
+
+        // Apply ReLU mask for last hidden layer
+        let pre_last = &batch_scratch.fc_pre_act[num_fc - 1];
+        for i in 0..batch_size * last_h {
+            if pre_last[i] <= 0.0 {
+                d_last[i] = 0.0;
+            }
+        }
+
+        // ── FC hidden layers backward (last to second) ──
+        for layer_idx in (1..num_fc).rev() {
+            let prev_size = self.fc_sizes[layer_idx - 1];
+            let cur_size = self.fc_sizes[layer_idx];
+            let off = batch_scratch.fc_layer_offsets[layer_idx];
+            let bias_offset = off + prev_size * cur_size;
+            let lw = &self.weights[off..off + prev_size * cur_size];
+
+            let (d_lower, d_upper) = batch_scratch.fc_d_act.split_at_mut(layer_idx);
+            let d_cur = &d_upper[0]; // d_act[layer_idx]
+            let d_prev = &mut d_lower[layer_idx - 1]; // d_act[layer_idx - 1]
+
+            // Weight gradient: act[layer-1]^T x d_act[layer]
+            let prev_act = &batch_scratch.fc_act[layer_idx - 1];
+            unsafe {
+                sgemm(
+                    prev_size,       // m
+                    batch_size,      // k
+                    cur_size,        // n
+                    1.0,             // alpha
+                    prev_act.as_ptr(),   // A (transposed: [batch x prev_size]^T)
+                    1,               // rsa
+                    prev_size as isize,  // csa
+                    d_cur.as_ptr(),      // B
+                    cur_size as isize,   // rsb
+                    1,               // csb
+                    1.0,             // beta: ACCUMULATE into grad
+                    grad[off..].as_mut_ptr(), // C
+                    cur_size as isize,   // rsc
+                    1,               // csc
+                );
+            }
+
+            // Bias gradient: column sum of d_act[layer]
+            for bi in 0..batch_size {
+                let row = &d_cur[bi * cur_size..(bi + 1) * cur_size];
+                for j in 0..cur_size {
+                    grad[bias_offset + j] += row[j];
+                }
+            }
+
+            // Input gradient: d_act[layer-1] = d_act[layer] x W^T
+            unsafe {
+                sgemm(
+                    batch_size,      // m
+                    cur_size,        // k
+                    prev_size,       // n
+                    1.0,             // alpha
+                    d_cur.as_ptr(),      // A
+                    cur_size as isize,   // rsa
+                    1,               // csa
+                    lw.as_ptr(),         // B (transposed)
+                    1,               // rsb
+                    cur_size as isize,   // csb
+                    0.0,             // beta
+                    d_prev.as_mut_ptr(), // C
+                    prev_size as isize,  // rsc
+                    1,               // csc
+                );
+            }
+
+            // Apply ReLU mask for previous layer
+            let pre_prev = &batch_scratch.fc_pre_act[layer_idx - 1];
+            for i in 0..batch_size * prev_size {
+                if pre_prev[i] <= 0.0 {
+                    d_prev[i] = 0.0;
+                }
+            }
+        }
+
+        // ── FC layer 0 backward: gradient w.r.t. fc_inputs ──
+        {
+            let cur_size = self.fc_sizes[0];
+            let off = batch_scratch.fc_layer_offsets[0];
+            let bias_offset = off + fc_input_size * cur_size;
+            let lw = &self.weights[off..off + fc_input_size * cur_size];
+            let d_cur = &batch_scratch.fc_d_act[0];
+
+            // Weight gradient: fc_inputs^T x d_act[0]
+            unsafe {
+                sgemm(
+                    fc_input_size,   // m
+                    batch_size,      // k
+                    cur_size,        // n
+                    1.0,             // alpha
+                    batch_scratch.fc_inputs.as_ptr(), // A (transposed)
+                    1,               // rsa
+                    fc_input_size as isize,           // csa
+                    d_cur.as_ptr(),      // B
+                    cur_size as isize,   // rsb
+                    1,               // csb
+                    1.0,             // beta: ACCUMULATE
+                    grad[off..].as_mut_ptr(), // C
+                    cur_size as isize,   // rsc
+                    1,               // csc
+                );
+            }
+
+            // Bias gradient
+            for bi in 0..batch_size {
+                let row = &d_cur[bi * cur_size..(bi + 1) * cur_size];
+                for j in 0..cur_size {
+                    grad[bias_offset + j] += row[j];
+                }
+            }
+
+            // Input gradient: d_fc_inputs = d_act[0] x W^T
+            unsafe {
+                sgemm(
+                    batch_size,          // m
+                    cur_size,            // k
+                    fc_input_size,       // n
+                    1.0,                 // alpha
+                    d_cur.as_ptr(),          // A
+                    cur_size as isize,       // rsa
+                    1,                   // csa
+                    lw.as_ptr(),             // B (transposed)
+                    1,                   // rsb
+                    cur_size as isize,       // csb
+                    0.0,                 // beta
+                    batch_scratch.d_fc_inputs.as_mut_ptr(), // C
+                    fc_input_size as isize,  // rsc
+                    1,                   // csc
+                );
+            }
+        }
+    }
+
+    /// Per-position conv backward for one batch element.
+    ///
+    /// Restores saved conv intermediates from batch storage, copies the d_fc_input
+    /// row into the conv scratch, and calls `backward_conv_layers_scratch`.
+    pub fn conv_backward_from_batch(
+        &self,
+        batch_idx: usize,
+        active_board: &[usize],
+        batch_scratch: &mut CnnBatchScratch,
+        grad: &mut [f32],
+    ) {
+        let spatial = self.board_size * self.board_size;
+        let fc_input_size = batch_scratch.fc_input_size;
+        let conv_flat_size = fc_input_size - self.bag_features;
+        let conv_offsets = self.conv_layer_offsets();
+        let scratch = &mut batch_scratch.conv_scratch;
+
+        // Restore saved conv intermediates for this position
+        for layer_idx in 0..self.conv_channels.len() {
+            let ch = self.conv_channels[layer_idx];
+            let size = ch * spatial;
+            scratch.conv_pre_relu[layer_idx][..size]
+                .copy_from_slice(&batch_scratch.conv_pre_relu_batch[batch_idx][layer_idx][..size]);
+            scratch.conv_post_relu[layer_idx][..size]
+                .copy_from_slice(&batch_scratch.conv_post_relu_batch[batch_idx][layer_idx][..size]);
+        }
+
+        // Copy d_fc_input (conv portion only) into bk_d_conv
+        let row_start = batch_idx * fc_input_size;
+        scratch.bk_d_conv[..conv_flat_size]
+            .copy_from_slice(&batch_scratch.d_fc_inputs[row_start..row_start + conv_flat_size]);
+
+        // Run conv backward
+        backward_conv_layers_scratch(self, scratch, active_board, conv_flat_size, &conv_offsets, grad);
+    }
+}
+
+// ── CnnEvaluator (for game playing) ─────────────────────────────────────
 
 /// Evaluator wrapper for CnnModel, implementing GameEvaluator.
 pub struct CnnEvaluator {
@@ -3192,5 +3756,148 @@ mod tests {
                 out_orig, out_scratch, diff
             );
         }
+    }
+
+    // ── Test: batched FC forward matches per-position forward ──
+
+    #[test]
+    fn test_batch_fc_forward_matches_per_position() {
+        test_batch_fc_matches_kernel(KernelType::Box);
+    }
+
+    #[test]
+    fn test_batch_fc_forward_matches_per_position_diamond() {
+        test_batch_fc_matches_kernel(KernelType::Diamond);
+    }
+
+    #[test]
+    fn test_batch_fc_forward_matches_per_position_cross() {
+        test_batch_fc_matches_kernel(KernelType::Cross);
+    }
+
+    fn test_batch_fc_matches_kernel(kernel: KernelType) {
+        let model = make_test_model(kernel, &[8, 4], &[16, 8]);
+        let boards = vec![
+            sample_active_board(),
+            vec![10, 50, 200, 500, 800, 1050],
+            vec![0, 36, 72, 108, 144, 180, 216, 360],
+        ];
+        let bags = vec![
+            sample_bag(),
+            {
+                let mut b = vec![0.0f32; BAG_FEATURES];
+                b[3] = 5.0; b[10] = 2.0;
+                b
+            },
+            vec![1.0f32; BAG_FEATURES],
+        ];
+        let batch_size = boards.len();
+
+        // Per-position forward using existing scratch-based method
+        let mut scratch = model.create_scratch();
+        let per_pos_outputs: Vec<f32> = boards.iter().zip(bags.iter())
+            .map(|(board, bag)| model.forward_with_intermediates_scratch(board, bag, &mut scratch))
+            .collect();
+
+        // Batched forward
+        let mut batch_scratch = model.create_batch_scratch(batch_size);
+        for (bi, (board, bag)) in boards.iter().zip(bags.iter()).enumerate() {
+            model.conv_forward_into_batch(board, bag, bi, &mut batch_scratch);
+        }
+        model.batch_fc_forward(batch_size, &mut batch_scratch);
+
+        // Compare outputs
+        for bi in 0..batch_size {
+            let diff = (per_pos_outputs[bi] - batch_scratch.outputs[bi]).abs();
+            assert!(
+                diff < 1e-5,
+                "Batch vs per-position output mismatch at position {}: per_pos={}, batch={}, diff={}",
+                bi, per_pos_outputs[bi], batch_scratch.outputs[bi], diff
+            );
+        }
+    }
+
+    // ── Test: batched FC backward matches per-position backward ──
+
+    #[test]
+    fn test_batch_fc_backward_matches_per_position() {
+        test_batch_backward_matches_kernel(KernelType::Box);
+    }
+
+    #[test]
+    fn test_batch_fc_backward_matches_per_position_diamond() {
+        test_batch_backward_matches_kernel(KernelType::Diamond);
+    }
+
+    #[test]
+    fn test_batch_fc_backward_matches_per_position_cross() {
+        test_batch_backward_matches_kernel(KernelType::Cross);
+    }
+
+    fn test_batch_backward_matches_kernel(kernel: KernelType) {
+        let model = make_test_model(kernel, &[8, 4], &[16, 8]);
+        let num_params = model.weights.len();
+        let boards = vec![
+            sample_active_board(),
+            vec![10, 50, 200, 500, 800, 1050],
+            vec![0, 36, 72, 108, 144, 180, 216, 360],
+        ];
+        let bags = vec![
+            sample_bag(),
+            {
+                let mut b = vec![0.0f32; BAG_FEATURES];
+                b[3] = 5.0; b[10] = 2.0;
+                b
+            },
+            vec![1.0f32; BAG_FEATURES],
+        ];
+        let targets = vec![0.3f32, 0.7, 0.5];
+        let batch_size = boards.len();
+        let inv_batch = 1.0 / batch_size as f32;
+
+        // Per-position forward+backward
+        let mut per_pos_grad = vec![0.0f32; num_params];
+        let mut scratch = model.create_scratch();
+        for ((board, bag), &target) in boards.iter().zip(bags.iter()).zip(targets.iter()) {
+            let output = model.forward_with_intermediates_scratch(board, bag, &mut scratch);
+            backward_scratch(
+                &model,
+                &mut scratch,
+                output,
+                board,
+                bag,
+                target,
+                inv_batch,
+                &mut per_pos_grad,
+            );
+        }
+
+        // Batched forward+backward
+        let mut batch_grad = vec![0.0f32; num_params];
+        let mut batch_scratch = model.create_batch_scratch(batch_size);
+        for (bi, (board, bag)) in boards.iter().zip(bags.iter()).enumerate() {
+            model.conv_forward_into_batch(board, bag, bi, &mut batch_scratch);
+        }
+        model.batch_fc_forward(batch_size, &mut batch_scratch);
+        model.batch_fc_backward(batch_size, &targets, inv_batch, &mut batch_scratch, &mut batch_grad);
+        for bi in 0..batch_size {
+            model.conv_backward_from_batch(bi, &boards[bi], &mut batch_scratch, &mut batch_grad);
+        }
+
+        // Compare gradients
+        let mut max_diff = 0.0f32;
+        let mut max_diff_idx = 0;
+        for i in 0..num_params {
+            let diff = (per_pos_grad[i] - batch_grad[i]).abs();
+            if diff > max_diff {
+                max_diff = diff;
+                max_diff_idx = i;
+            }
+        }
+        assert!(
+            max_diff < 1e-3,
+            "Gradient mismatch at index {}: per_pos={}, batch={}, diff={}",
+            max_diff_idx, per_pos_grad[max_diff_idx], batch_grad[max_diff_idx], max_diff
+        );
     }
 }
