@@ -338,6 +338,23 @@ fn main() {
                 fi, COMBINED_FEATURE_NAMES[fi], min, max, mean);
         }
 
+        // Normalize each feature independently to [-10, +10] range
+        // so the trainer's clamp-to-+-10 mapping preserves full dynamic range.
+        let mut labeled = labeled;
+        eprintln!("\nNormalizing features to [-10, +10]:");
+        for fi in 0..NUM_COMBINED_FEATURES {
+            let min_v = labeled.iter().map(|(_, f, _)| f[fi]).fold(f32::INFINITY, f32::min);
+            let max_v = labeled.iter().map(|(_, f, _)| f[fi]).fold(f32::NEG_INFINITY, f32::max);
+            let half_range = ((max_v - min_v) / 2.0).max(1e-6);
+            let mid = (min_v + max_v) / 2.0;
+            let scale = 10.0 / half_range;
+            for (_, features, _) in labeled.iter_mut() {
+                features[fi] = (features[fi] - mid) * scale;
+            }
+            eprintln!("  [{:2}] {:30} [{:.1}, {:.1}] -> [-10, +10] (scale={:.4})",
+                fi, COMBINED_FEATURE_NAMES[fi], min_v, max_v, scale);
+        }
+
         // --- Save as FLPS ---
         eprintln!("\nSaving {} feature-labeled positions to {} ...", labeled.len(), output_path);
         let t3 = Instant::now();
