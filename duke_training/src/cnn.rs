@@ -130,6 +130,10 @@ pub struct CnnScratch {
     /// Prev activation buffer for FC forward.
     fc_prev_act: Vec<f32>,
 
+    // ── im2col buffer for conv layers ──
+    /// im2col buffer: [max_channels * 9, spatial] for Box kernel im2col+sgemm.
+    im2col_buf: Vec<f32>,
+
     // ── Backward buffers ──
     /// d_next / d_prev for FC backward.
     bk_d_fc_a: Vec<f32>,
@@ -225,11 +229,15 @@ impl CnnModel {
         // For backward: max of all FC layer sizes and fc_input_size
         let bk_max_fc = self.fc_sizes.iter().copied().max().unwrap_or(0).max(fc_input_size);
 
+        // im2col buffer: max_channels * 9 rows x spatial columns (for Box 3x3)
+        let im2col_size = max_ch * 9 * spatial;
+
         CnnScratch {
             conv_buf_a: vec![0.0f32; max_conv_buf],
             conv_buf_b: vec![0.0f32; max_conv_buf],
             fc_buf_a: vec![0.0f32; max_fc],
             fc_buf_b: vec![0.0f32; max_fc],
+            im2col_buf: vec![0.0f32; im2col_size],
             conv_pre_relu,
             conv_post_relu,
             fc_input: vec![0.0f32; fc_input_size],
@@ -577,13 +585,25 @@ impl CnnModel {
                     next_slice[oc * spatial + s] = b;
                 }
             }
-            self.dense_conv_accumulate(
-                &self.weights[off..off + w_size],
-                prev_slice,
-                in_ch,
-                out_ch,
-                next_slice,
-            );
+            if self.kernel_type == KernelType::Box {
+                Self::dense_conv_im2col_forward(
+                    &self.weights[off..off + w_size],
+                    prev_slice,
+                    in_ch,
+                    out_ch,
+                    bs,
+                    &mut scratch.im2col_buf,
+                    next_slice,
+                );
+            } else {
+                self.dense_conv_accumulate(
+                    &self.weights[off..off + w_size],
+                    prev_slice,
+                    in_ch,
+                    out_ch,
+                    next_slice,
+                );
+            }
             // ReLU
             for v in next_slice.iter_mut() { *v = v.max(0.0); }
         }
@@ -844,13 +864,25 @@ impl CnnModel {
             // SAFETY: prev_ptr points to conv_post_relu[layer_idx-1] which is a different
             // Vec from conv_pre_relu[layer_idx]. We only read from prev_ptr.
             let prev_slice = unsafe { std::slice::from_raw_parts(prev_ptr, prev_len) };
-            self.dense_conv_accumulate(
-                &self.weights[off..off + w_size],
-                prev_slice,
-                in_ch,
-                out_ch,
-                &mut pre[..out_size],
-            );
+            if self.kernel_type == KernelType::Box {
+                Self::dense_conv_im2col_forward(
+                    &self.weights[off..off + w_size],
+                    prev_slice,
+                    in_ch,
+                    out_ch,
+                    bs,
+                    &mut scratch.im2col_buf,
+                    &mut pre[..out_size],
+                );
+            } else {
+                self.dense_conv_accumulate(
+                    &self.weights[off..off + w_size],
+                    prev_slice,
+                    in_ch,
+                    out_ch,
+                    &mut pre[..out_size],
+                );
+            }
 
             let post = &mut scratch.conv_post_relu[layer_idx];
             post[..out_size].copy_from_slice(&scratch.conv_pre_relu[layer_idx][..out_size]);
@@ -1036,6 +1068,205 @@ impl CnnModel {
                                 let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
                                 output[out_idx] += v_w[vw_base + ky as usize];
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dense conv forward via im2col + sgemm for Box kernel.
+    ///
+    /// Transforms input into im2col matrix, then uses sgemm for the actual convolution.
+    /// `im2col_buf` must have at least `in_ch * 9 * spatial` elements.
+    /// `output` is assumed to be pre-initialized with bias values.
+    fn dense_conv_im2col_forward(
+        layer_weights: &[f32],
+        input: &[f32],
+        in_ch: usize,
+        out_ch: usize,
+        bs: usize,
+        im2col_buf: &mut [f32],
+        output: &mut [f32],
+    ) {
+        let spatial = bs * bs;
+        let pbs = bs + 2; // padded board size
+        let k = in_ch * 9; // im2col rows = kernel unrolled size
+        let n = spatial; // im2col cols = output spatial positions
+
+        // Build im2col matrix: [in_ch * 9, spatial]
+        // Row-major: row r = ic * 9 + ky * 3 + kx, col c = oy * bs + ox
+        // Value = padded_input[ic, oy + ky, ox + kx] (with pad=1)
+        //
+        // Instead of materializing padded input, handle bounds inline:
+        // padded[ic, oy+ky, ox+kx] where oy+ky ranges [0, bs+2) and ox+kx ranges [0, bs+2)
+        // The actual input value is input[ic, oy+ky-1, ox+kx-1] when both are in [0, bs)
+
+        // Zero the im2col buffer
+        for v in im2col_buf[..k * n].iter_mut() { *v = 0.0; }
+
+        for ic in 0..in_ch {
+            let in_base = ic * spatial;
+            let col_ic_base = ic * 9;
+            for ky in 0..3usize {
+                for kx in 0..3usize {
+                    let row = col_ic_base + ky * 3 + kx;
+                    let row_base = row * n;
+                    // For output position (oy, ox), we need input at (oy + ky - 1, ox + kx - 1)
+                    // This is valid when oy + ky >= 1 and oy + ky <= bs, i.e. oy in [1-ky, bs-ky]
+                    let oy_start = if ky >= 1 { 0 } else { 1 };
+                    let oy_end = if ky <= 1 { bs } else { bs - 1 };
+                    let ox_start = if kx >= 1 { 0 } else { 1 };
+                    let ox_end = if kx <= 1 { bs } else { bs - 1 };
+                    for oy in oy_start..oy_end {
+                        let iy = oy + ky - 1;
+                        let in_row = in_base + iy * bs;
+                        let col_row = row_base + oy * bs;
+                        for ox in ox_start..ox_end {
+                            let ix = ox + kx - 1;
+                            im2col_buf[col_row + ox] = input[in_row + ix];
+                        }
+                    }
+                }
+            }
+        }
+
+        // sgemm: output[out_ch, spatial] += weights[out_ch, k] * im2col[k, spatial]
+        // output already contains bias, so beta = 1.0
+        unsafe {
+            sgemm(
+                out_ch,     // m = rows of A (and C)
+                k,          // k = cols of A = rows of B
+                n,          // n = cols of B (and C)
+                1.0,        // alpha
+                layer_weights.as_ptr(),  // A: [out_ch x k] row-major
+                k as isize, // rsa: row stride of A = k (row-major)
+                1,          // csa: col stride of A = 1
+                im2col_buf.as_ptr(),     // B: [k x n] row-major
+                n as isize, // rsb: row stride of B = n
+                1,          // csb: col stride of B = 1
+                1.0,        // beta: accumulate into existing output (bias)
+                output.as_mut_ptr(),     // C: [out_ch x n] row-major
+                n as isize, // rsc: row stride of C = n
+                1,          // csc: col stride of C = 1
+            );
+        }
+    }
+
+    /// Dense conv backward via im2col + sgemm for Box kernel.
+    ///
+    /// Computes weight gradients and input gradients using matrix multiplications.
+    fn dense_conv_im2col_backward(
+        layer_weights: &[f32],
+        input: &[f32],
+        d_pre: &[f32],
+        in_ch: usize,
+        out_ch: usize,
+        bs: usize,
+        weight_offset: usize,
+        im2col_buf: &mut [f32],
+        d_input: &mut [f32],
+        grad: &mut [f32],
+    ) {
+        let spatial = bs * bs;
+        let k = in_ch * 9;
+        let n = spatial;
+
+        // Step 1: Build im2col from input (same as forward)
+        for v in im2col_buf[..k * n].iter_mut() { *v = 0.0; }
+        for ic in 0..in_ch {
+            let in_base = ic * spatial;
+            let col_ic_base = ic * 9;
+            for ky in 0..3usize {
+                for kx in 0..3usize {
+                    let row = col_ic_base + ky * 3 + kx;
+                    let row_base = row * n;
+                    let oy_start = if ky >= 1 { 0 } else { 1 };
+                    let oy_end = if ky <= 1 { bs } else { bs - 1 };
+                    let ox_start = if kx >= 1 { 0 } else { 1 };
+                    let ox_end = if kx <= 1 { bs } else { bs - 1 };
+                    for oy in oy_start..oy_end {
+                        let iy = oy + ky - 1;
+                        let in_row = in_base + iy * bs;
+                        let col_row = row_base + oy * bs;
+                        for ox in ox_start..ox_end {
+                            let ix = ox + kx - 1;
+                            im2col_buf[col_row + ox] = input[in_row + ix];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Weight gradients
+        // d_weights[out_ch, k] += d_pre[out_ch, spatial] * im2col^T[spatial, k]
+        // i.e. d_W += d_output * col^T
+        // Using sgemm: C = alpha * A * B + beta * C
+        //   A = d_pre [out_ch x n], B = im2col^T [n x k], C = grad_weights [out_ch x k]
+        //   im2col^T is im2col with swapped strides
+        unsafe {
+            sgemm(
+                out_ch,     // m
+                n,          // k (inner dimension)
+                k,          // n (cols of result)
+                1.0,        // alpha
+                d_pre.as_ptr(),         // A: [out_ch x spatial]
+                n as isize, // rsa
+                1,          // csa
+                im2col_buf.as_ptr(),    // B^T: im2col is [k x n], we want [n x k] = transpose
+                1,          // rsb: transposed row stride = original col stride
+                n as isize, // csb: transposed col stride = original row stride
+                1.0,        // beta: accumulate
+                grad[weight_offset..].as_mut_ptr(), // C: weight grads [out_ch x k]
+                k as isize, // rsc
+                1,          // csc
+            );
+        }
+
+        // Step 3: Input gradients via col2im
+        // d_col[k, spatial] = weights^T[k, out_ch] * d_pre[out_ch, spatial]
+        // Then scatter d_col back to d_input via col2im
+        //
+        // We reuse im2col_buf to store d_col
+        // weights is [out_ch x k], weights^T is [k x out_ch]
+        unsafe {
+            sgemm(
+                k,          // m = rows of result
+                out_ch,     // k (inner dimension)
+                n,          // n = cols of result
+                1.0,        // alpha
+                layer_weights.as_ptr(), // A^T: weights is [out_ch x k], we want [k x out_ch]
+                1,          // rsa: transposed
+                k as isize, // csa: transposed
+                d_pre.as_ptr(),         // B: [out_ch x spatial]
+                n as isize, // rsb
+                1,          // csb
+                0.0,        // beta: overwrite
+                im2col_buf.as_mut_ptr(), // C: d_col [k x spatial]
+                n as isize, // rsc
+                1,          // csc
+            );
+        }
+
+        // col2im: scatter d_col back to d_input
+        for ic in 0..in_ch {
+            let in_base = ic * spatial;
+            let col_ic_base = ic * 9;
+            for ky in 0..3usize {
+                for kx in 0..3usize {
+                    let row = col_ic_base + ky * 3 + kx;
+                    let row_base = row * n;
+                    let oy_start = if ky >= 1 { 0 } else { 1 };
+                    let oy_end = if ky <= 1 { bs } else { bs - 1 };
+                    let ox_start = if kx >= 1 { 0 } else { 1 };
+                    let ox_end = if kx <= 1 { bs } else { bs - 1 };
+                    for oy in oy_start..oy_end {
+                        let iy = oy + ky - 1;
+                        let in_row = in_base + iy * bs;
+                        let col_row = row_base + oy * bs;
+                        for ox in ox_start..ox_end {
+                            let ix = ox + kx - 1;
+                            d_input[in_row + ix] += im2col_buf[col_row + ox];
                         }
                     }
                 }
@@ -1658,17 +1889,32 @@ pub fn backward_conv_layers_scratch(
             let in_size = in_ch * spatial;
             // Zero d_input
             for v in scratch.bk_d_input[..in_size].iter_mut() { *v = 0.0; }
-            backward_conv_dense(
-                model,
-                &model.weights[off..off + w_size],
-                input_data,
-                &scratch.bk_d_conv[..cur_size],
-                in_ch,
-                out_ch,
-                off,
-                &mut scratch.bk_d_input[..in_size],
-                grad,
-            );
+            if model.kernel_type == KernelType::Box {
+                CnnModel::dense_conv_im2col_backward(
+                    &model.weights[off..off + w_size],
+                    input_data,
+                    &scratch.bk_d_conv[..cur_size],
+                    in_ch,
+                    out_ch,
+                    bs,
+                    off,
+                    &mut scratch.im2col_buf,
+                    &mut scratch.bk_d_input[..in_size],
+                    grad,
+                );
+            } else {
+                backward_conv_dense(
+                    model,
+                    &model.weights[off..off + w_size],
+                    input_data,
+                    &scratch.bk_d_conv[..cur_size],
+                    in_ch,
+                    out_ch,
+                    off,
+                    &mut scratch.bk_d_input[..in_size],
+                    grad,
+                );
+            }
             // Copy d_input into d_conv for next iteration
             scratch.bk_d_conv[..in_size].copy_from_slice(&scratch.bk_d_input[..in_size]);
         }
@@ -2292,6 +2538,8 @@ pub struct CnnBatchScratch {
     bk_d_conv: Vec<f32>,
     /// Backward scratch: d_input buffer (max conv layer size, for dense layers).
     bk_d_input: Vec<f32>,
+    /// im2col buffer for conv layers: [max_channels * 9, spatial].
+    im2col_buf: Vec<f32>,
     /// Max batch size (for bounds checking).
     pub max_batch: usize,
 }
@@ -2345,6 +2593,7 @@ impl CnnModel {
             conv_batch_layer_offsets,
             bk_d_conv: vec![0.0f32; max_conv_buf],
             bk_d_input: vec![0.0f32; max_conv_buf],
+            im2col_buf: vec![0.0f32; max_ch * 9 * spatial],
             max_batch,
         }
     }
@@ -2428,13 +2677,25 @@ impl CnnModel {
             // SAFETY: prev_ptr points into conv_post_relu_flat, pre points into conv_pre_relu_flat.
             // These are separate Vec allocations so no aliasing.
             let prev_slice = unsafe { std::slice::from_raw_parts(prev_ptr, in_size) };
-            self.dense_conv_accumulate(
-                &self.weights[off..off + w_size],
-                prev_slice,
-                in_ch,
-                out_ch,
-                pre,
-            );
+            if self.kernel_type == KernelType::Box {
+                Self::dense_conv_im2col_forward(
+                    &self.weights[off..off + w_size],
+                    prev_slice,
+                    in_ch,
+                    out_ch,
+                    bs,
+                    &mut batch_scratch.im2col_buf,
+                    pre,
+                );
+            } else {
+                self.dense_conv_accumulate(
+                    &self.weights[off..off + w_size],
+                    prev_slice,
+                    in_ch,
+                    out_ch,
+                    pre,
+                );
+            }
 
             // Fused ReLU: write post_relu
             let post_start = layer_off + batch_idx * out_size;
@@ -2872,17 +3133,32 @@ impl CnnModel {
 
                 // Zero d_input
                 for v in batch_scratch.bk_d_input[..prev_size].iter_mut() { *v = 0.0; }
-                backward_conv_dense(
-                    self,
-                    &self.weights[off..off + w_size],
-                    input_data,
-                    &batch_scratch.bk_d_conv[..cur_size],
-                    in_ch,
-                    out_ch,
-                    off,
-                    &mut batch_scratch.bk_d_input[..prev_size],
-                    grad,
-                );
+                if self.kernel_type == KernelType::Box {
+                    Self::dense_conv_im2col_backward(
+                        &self.weights[off..off + w_size],
+                        input_data,
+                        &batch_scratch.bk_d_conv[..cur_size],
+                        in_ch,
+                        out_ch,
+                        bs,
+                        off,
+                        &mut batch_scratch.im2col_buf,
+                        &mut batch_scratch.bk_d_input[..prev_size],
+                        grad,
+                    );
+                } else {
+                    backward_conv_dense(
+                        self,
+                        &self.weights[off..off + w_size],
+                        input_data,
+                        &batch_scratch.bk_d_conv[..cur_size],
+                        in_ch,
+                        out_ch,
+                        off,
+                        &mut batch_scratch.bk_d_input[..prev_size],
+                        grad,
+                    );
+                }
                 // Copy d_input into d_conv for next iteration
                 batch_scratch.bk_d_conv[..prev_size].copy_from_slice(&batch_scratch.bk_d_input[..prev_size]);
             }
