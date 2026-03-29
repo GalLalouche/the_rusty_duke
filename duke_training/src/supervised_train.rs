@@ -150,39 +150,57 @@ fn label_to_target(label: f32) -> f32 {
     (clamped + LABEL_CLAMP) / (2.0 * LABEL_CLAMP)
 }
 
-// ── Forward pass with intermediates ────────────────────────────────────────
+// ── Batched forward + backward with sgemm ─────────────────────────────────
 
-/// Pre-allocated scratch buffers for forward/backward passes.
-/// Eliminates per-position heap allocations in the training loop.
+use matrixmultiply::sgemm;
+
+/// Pre-allocated scratch buffers for batched forward/backward passes.
+/// All activation/gradient matrices are row-major: [batch_size × neurons].
 struct FcScratch {
-    /// Pre-ReLU activations per hidden layer: pre_relu[layer_idx][..layer_size].
-    pre_relu: Vec<Vec<f32>>,
-    /// Post-ReLU activations per hidden layer: post_relu[layer_idx][..layer_size].
-    post_relu: Vec<Vec<f32>>,
-    /// Scratch buffer for backward pass gradient w.r.t. current layer activations.
-    /// Sized to the maximum hidden layer size.
-    d_h: Vec<f32>,
-    /// Scratch buffer for backward pass gradient propagated to previous layer.
-    /// Sized to the maximum hidden layer size.
-    d_prev: Vec<f32>,
+    /// Batch pre-ReLU activations per hidden layer: [batch_size × layer_size].
+    pre_act: Vec<Vec<f32>>,
+    /// Batch post-ReLU activations per hidden layer: [batch_size × layer_size].
+    act: Vec<Vec<f32>>,
+    /// Batch gradient matrices per hidden layer: [batch_size × layer_size].
+    d_act: Vec<Vec<f32>>,
     /// Gradient accumulator, sized to num_params. Reused across batches.
     grad: Vec<f32>,
-    /// Cached output from the most recent forward pass.
-    output: f32,
+    /// Batch outputs (sigmoid): [batch_size].
+    outputs: Vec<f32>,
+    /// Batch output logits (pre-sigmoid): [batch_size].
+    logits: Vec<f32>,
+    /// Batch d_logit: [batch_size × 1] used as matrix for output layer backward.
+    d_logits: Vec<f32>,
+    /// Precomputed weight offsets for each layer (including output layer at the end).
+    layer_offsets: Vec<usize>,
 }
 
 impl FcScratch {
-    fn new(hidden_layers: &[usize], num_params: usize) -> Self {
-        let max_hidden = *hidden_layers.iter().max().unwrap();
-        let pre_relu = hidden_layers.iter().map(|&h| vec![0.0f32; h]).collect();
-        let post_relu = hidden_layers.iter().map(|&h| vec![0.0f32; h]).collect();
+    fn new(hidden_layers: &[usize], num_params: usize, max_batch: usize, input_size: usize) -> Self {
+        let pre_act = hidden_layers.iter().map(|&h| vec![0.0f32; max_batch * h]).collect();
+        let act = hidden_layers.iter().map(|&h| vec![0.0f32; max_batch * h]).collect();
+        let d_act = hidden_layers.iter().map(|&h| vec![0.0f32; max_batch * h]).collect();
+
+        // Precompute weight offsets
+        let mut layer_offsets = Vec::with_capacity(hidden_layers.len() + 1);
+        let mut off = 0usize;
+        let mut prev = input_size;
+        for &h in hidden_layers {
+            layer_offsets.push(off);
+            off += prev * h + h;
+            prev = h;
+        }
+        layer_offsets.push(off); // output layer offset
+
         Self {
-            pre_relu,
-            post_relu,
-            d_h: vec![0.0f32; max_hidden],
-            d_prev: vec![0.0f32; max_hidden],
+            pre_act,
+            act,
+            d_act,
             grad: vec![0.0f32; num_params],
-            output: 0.0,
+            outputs: vec![0.0f32; max_batch],
+            logits: vec![0.0f32; max_batch],
+            d_logits: vec![0.0f32; max_batch],
+            layer_offsets,
         }
     }
 
@@ -193,250 +211,312 @@ impl FcScratch {
     }
 }
 
-/// Perform forward pass through an arbitrary-depth network, saving intermediates
-/// into pre-allocated scratch buffers.
+/// Batched forward pass: process `batch_size` positions at once.
+///
+/// L1 (sparse): per-position accumulation into act[0] rows.
+/// Subsequent layers: single sgemm call per layer.
+/// Output: sgemm for dot product, then per-element sigmoid.
 ///
 /// Weight layout (same as GenericMlp):
 ///   For each hidden layer i:
 ///     [W_i: prev_size * cur_size] [b_i: cur_size]
 ///   Output layer:
 ///     [W_out: last_hidden] [b_out: 1]
-fn forward_with_intermediates(
+fn batch_forward(
     weights: &[f32],
     input_size: usize,
     hidden_layers: &[usize],
-    active_board: &[u16],
-    bag: &[f32; BAG_FEATURES],
+    positions: &[&LabeledPosition],
     scratch: &mut FcScratch,
 ) {
+    let batch_size = positions.len();
     let num_layers = hidden_layers.len();
-    let mut offset = 0usize;
 
-    // ── First hidden layer: sparse input accumulation ──
+    // ── L1 (sparse): per-position accumulation ──
     let h1 = hidden_layers[0];
-    let l1_w = &weights[offset..offset + input_size * h1];
-    offset += input_size * h1;
-    let l1_b = &weights[offset..offset + h1];
-    offset += h1;
+    let l1_off = scratch.layer_offsets[0];
+    let l1_w = &weights[l1_off..l1_off + input_size * h1];
+    let l1_b = &weights[l1_off + input_size * h1..l1_off + input_size * h1 + h1];
 
-    let h_pre = &mut scratch.pre_relu[0];
-    h_pre.copy_from_slice(l1_b);
+    for (bi, pos) in positions.iter().enumerate() {
+        let row = &mut scratch.pre_act[0][bi * h1..(bi + 1) * h1];
+        row.copy_from_slice(l1_b);
 
-    // Sparse board features (binary, value = 1.0)
-    for &idx in active_board {
-        let feat = idx as usize;
-        debug_assert!(feat < BOARD_FEATURES, "board feature index {} >= {}", feat, BOARD_FEATURES);
-        let col = &l1_w[feat * h1..(feat + 1) * h1];
-        for j in 0..h1 {
-            h_pre[j] += col[j];
-        }
-    }
-
-    // Dense bag features (26 values starting at index 1080)
-    for (i, &val) in bag.iter().enumerate() {
-        if val != 0.0 {
-            let feat = BOARD_FEATURES + i;
+        // Sparse board features (binary, value = 1.0)
+        for &idx in &pos.active_indices {
+            let feat = idx as usize;
+            debug_assert!(feat < BOARD_FEATURES);
             let col = &l1_w[feat * h1..(feat + 1) * h1];
             for j in 0..h1 {
-                h_pre[j] += col[j] * val;
-            }
-        }
-    }
-
-    // ReLU
-    let h_post = &mut scratch.post_relu[0];
-    for j in 0..h1 {
-        h_post[j] = scratch.pre_relu[0][j].max(0.0);
-    }
-
-    // ── Subsequent hidden layers: dense ──
-    for layer_idx in 1..num_layers {
-        let prev_size = hidden_layers[layer_idx - 1];
-        let cur_size = hidden_layers[layer_idx];
-        let lw = &weights[offset..offset + prev_size * cur_size];
-        offset += prev_size * cur_size;
-        let lb = &weights[offset..offset + cur_size];
-        offset += cur_size;
-
-        let cur_pre = &mut scratch.pre_relu[layer_idx];
-        cur_pre.copy_from_slice(lb);
-        for i in 0..prev_size {
-            let w_row = &lw[i * cur_size..(i + 1) * cur_size];
-            let s = scratch.post_relu[layer_idx - 1][i];
-            for j in 0..cur_size {
-                cur_pre[j] += w_row[j] * s;
+                row[j] += col[j];
             }
         }
 
-        // ReLU into post_relu
-        let cur_post = &mut scratch.post_relu[layer_idx];
-        for j in 0..cur_size {
-            cur_post[j] = scratch.pre_relu[layer_idx][j].max(0.0);
-        }
-    }
-
-    // ── Output layer: dot product + sigmoid ──
-    let last_h = hidden_layers[num_layers - 1];
-    let out_w = &weights[offset..offset + last_h];
-    offset += last_h;
-    let out_b = weights[offset];
-
-    let last_post = &scratch.post_relu[num_layers - 1];
-    let mut logit = out_b;
-    for j in 0..last_h {
-        logit += out_w[j] * last_post[j];
-    }
-
-    scratch.output = sigmoid(logit);
-}
-
-// ── Backward pass ──────────────────────────────────────────────────────────
-
-/// Accumulate gradients for one sample into `scratch.grad`.
-/// Uses pre-allocated d_h / d_prev buffers from scratch to avoid per-position allocations.
-///
-/// Layout of `grad` matches `weights` (same as GenericMlp):
-///   For each hidden layer i:
-///     [W_i: prev_size * cur_size] [b_i: cur_size]
-///   Output layer:
-///     [W_out: last_hidden] [b_out: 1]
-fn backward(
-    weights: &[f32],
-    input_size: usize,
-    hidden_layers: &[usize],
-    active_board: &[u16],
-    bag: &[f32; BAG_FEATURES],
-    target: f32,
-    sample_weight: f32,
-    scratch: &mut FcScratch,
-) {
-    let num_layers = hidden_layers.len();
-
-    // Precompute weight offsets for each layer
-    // layer_offsets[i] = start of hidden layer i's weights in the flat vector
-    let mut layer_offsets = Vec::with_capacity(num_layers + 1);
-    {
-        let mut off = 0usize;
-        let mut prev = input_size;
-        for &h in hidden_layers {
-            layer_offsets.push(off);
-            off += prev * h + h; // weights + bias
-            prev = h;
-        }
-        layer_offsets.push(off); // output layer offset
-    }
-
-    let output = scratch.output;
-
-    // MSE loss: L = (output - target)^2
-    // dL/d_output = 2 * (output - target)
-    // d_output/d_logit = output * (1 - output)  [sigmoid derivative]
-    let d_logit = 2.0 * (output - target) * output * (1.0 - output) * sample_weight;
-
-    // ── Output layer gradients ──
-    let last_h = hidden_layers[num_layers - 1];
-    let out_offset = layer_offsets[num_layers];
-
-    for j in 0..last_h {
-        scratch.grad[out_offset + j] += d_logit * scratch.post_relu[num_layers - 1][j];
-    }
-    scratch.grad[out_offset + last_h] += d_logit; // output bias
-
-    // ── Backprop through hidden layers (last to first) ──
-    // Bootstrap d_h with d_logit * W_out for the last hidden layer.
-    let out_w = &weights[out_offset..out_offset + last_h];
-    for j in 0..last_h {
-        scratch.d_h[j] = d_logit * out_w[j];
-    }
-
-    // Track which buffer holds the current d_next via a flag.
-    // d_h starts as d_next for the last hidden layer.
-    // We apply ReLU derivative in-place, then propagate into the other buffer.
-    let mut d_next_is_d_h = true;
-
-    for layer_idx in (0..num_layers).rev() {
-        let cur_size = hidden_layers[layer_idx];
-        let prev_size = if layer_idx == 0 { input_size } else { hidden_layers[layer_idx - 1] };
-        let off = layer_offsets[layer_idx];
-        let bias_offset = off + prev_size * cur_size;
-
-        // Apply ReLU derivative in-place on the d_next buffer: d[j] *= (pre_relu > 0 ? 1 : 0)
-        {
-            let d_cur = if d_next_is_d_h { &mut scratch.d_h } else { &mut scratch.d_prev };
-            for j in 0..cur_size {
-                if scratch.pre_relu[layer_idx][j] <= 0.0 {
-                    d_cur[j] = 0.0;
+        // Dense bag features
+        for (i, &val) in pos.bag_features.iter().enumerate() {
+            if val != 0.0 {
+                let feat = BOARD_FEATURES + i;
+                let col = &l1_w[feat * h1..(feat + 1) * h1];
+                for j in 0..h1 {
+                    row[j] += col[j] * val;
                 }
             }
         }
+    }
 
-        if layer_idx == 0 {
-            // First hidden layer: SPARSE weight update, no propagation needed
-            let h1 = cur_size;
-            let d_cur = if d_next_is_d_h { &scratch.d_h } else { &scratch.d_prev };
+    // ReLU for L1
+    let pre0 = &scratch.pre_act[0];
+    let act0 = &mut scratch.act[0];
+    for i in 0..batch_size * h1 {
+        act0[i] = pre0[i].max(0.0);
+    }
+
+    // ── Subsequent hidden layers: batched sgemm ──
+    for layer_idx in 1..num_layers {
+        let prev_size = hidden_layers[layer_idx - 1];
+        let cur_size = hidden_layers[layer_idx];
+        let off = scratch.layer_offsets[layer_idx];
+        let lw = &weights[off..off + prev_size * cur_size];
+        let lb = &weights[off + prev_size * cur_size..off + prev_size * cur_size + cur_size];
+
+        // pre_act[layer] = act[layer-1] × W + bias (broadcast)
+        // act[layer-1]: [batch_size × prev_size], W: [prev_size × cur_size]
+        // result: [batch_size × cur_size]
+        let pre = &mut scratch.pre_act[layer_idx];
+
+        unsafe {
+            sgemm(
+                batch_size,                         // m
+                prev_size,                          // k
+                cur_size,                           // n
+                1.0,                                // alpha
+                scratch.act[layer_idx - 1].as_ptr(), // A
+                prev_size as isize,                 // rsa
+                1,                                  // csa
+                lw.as_ptr(),                        // B
+                cur_size as isize,                  // rsb
+                1,                                  // csb
+                0.0,                                // beta
+                pre.as_mut_ptr(),                   // C
+                cur_size as isize,                  // rsc
+                1,                                  // csc
+            );
+        }
+
+        // Add bias (broadcast across batch)
+        for bi in 0..batch_size {
+            let row = &mut pre[bi * cur_size..(bi + 1) * cur_size];
+            for j in 0..cur_size {
+                row[j] += lb[j];
+            }
+        }
+
+        // ReLU
+        let act_l = &mut scratch.act[layer_idx];
+        for i in 0..batch_size * cur_size {
+            act_l[i] = scratch.pre_act[layer_idx][i].max(0.0);
+        }
+    }
+
+    // ── Output layer: [batch_size × last_hidden] × [last_hidden × 1] ──
+    let last_h = hidden_layers[num_layers - 1];
+    let out_off = scratch.layer_offsets[num_layers];
+    let out_w = &weights[out_off..out_off + last_h];
+    let out_b = weights[out_off + last_h];
+
+    // Manual dot product per position (last_hidden × 1 -- sgemm overhead not worth it)
+    let last_act = &scratch.act[num_layers - 1];
+    for bi in 0..batch_size {
+        let row = &last_act[bi * last_h..(bi + 1) * last_h];
+        let mut logit = out_b;
+        for j in 0..last_h {
+            logit += row[j] * out_w[j];
+        }
+        scratch.logits[bi] = logit;
+        scratch.outputs[bi] = sigmoid(logit);
+    }
+}
+
+/// Batched backward pass: compute gradients for the entire batch at once.
+///
+/// Dense FC layers use sgemm for weight gradients and input gradients.
+/// L1 sparse layer uses per-position sparse accumulation.
+fn batch_backward(
+    weights: &[f32],
+    input_size: usize,
+    hidden_layers: &[usize],
+    positions: &[&LabeledPosition],
+    targets: &[f32],
+    inv_batch: f32,
+    scratch: &mut FcScratch,
+) {
+    let batch_size = positions.len();
+    let num_layers = hidden_layers.len();
+    let last_h = hidden_layers[num_layers - 1];
+    let out_off = scratch.layer_offsets[num_layers];
+
+    // ── Output gradient: d_logit for all positions ──
+    for bi in 0..batch_size {
+        let o = scratch.outputs[bi];
+        let d = 2.0 * (o - targets[bi]) * o * (1.0 - o) * inv_batch;
+        scratch.d_logits[bi] = d;
+    }
+
+    // ── Output layer weight gradients ──
+    // d_W_out[j] = sum_i(d_logit[i] * act_last[i, j])
+    // d_b_out = sum_i(d_logit[i])
+    let last_act = &scratch.act[num_layers - 1];
+    let grad_out = &mut scratch.grad[out_off..out_off + last_h + 1];
+    for bi in 0..batch_size {
+        let d = scratch.d_logits[bi];
+        let row = &last_act[bi * last_h..(bi + 1) * last_h];
+        for j in 0..last_h {
+            grad_out[j] += d * row[j];
+        }
+        grad_out[last_h] += d; // bias
+    }
+
+    // ── Backprop d_logit to last hidden layer ──
+    // d_act_last[i, j] = d_logit[i] * W_out[j]
+    let out_w = &weights[out_off..out_off + last_h];
+    let d_last = &mut scratch.d_act[num_layers - 1];
+    for bi in 0..batch_size {
+        let d = scratch.d_logits[bi];
+        let row = &mut d_last[bi * last_h..(bi + 1) * last_h];
+        for j in 0..last_h {
+            row[j] = d * out_w[j];
+        }
+    }
+
+    // Apply ReLU mask for last hidden layer
+    let pre_last = &scratch.pre_act[num_layers - 1];
+    for i in 0..batch_size * last_h {
+        if pre_last[i] <= 0.0 {
+            d_last[i] = 0.0;
+        }
+    }
+
+    // ── FC hidden layers (last to first) ──
+    for layer_idx in (1..num_layers).rev() {
+        let prev_size = hidden_layers[layer_idx - 1];
+        let cur_size = hidden_layers[layer_idx];
+        let off = scratch.layer_offsets[layer_idx];
+        let bias_offset = off + prev_size * cur_size;
+        let lw = &weights[off..off + prev_size * cur_size];
+
+        // Split d_act to get both d_cur and d_prev without borrow conflict
+        let (d_lower, d_upper) = scratch.d_act.split_at_mut(layer_idx);
+        let d_cur = &d_upper[0]; // d_act[layer_idx]
+        let d_prev = &mut d_lower[layer_idx - 1]; // d_act[layer_idx - 1]
+
+        // Weight gradient: d_W = act[layer-1]^T × d_act[layer]
+        // [prev_size × batch_size] × [batch_size × cur_size] = [prev_size × cur_size]
+        let prev_act = &scratch.act[layer_idx - 1];
+        unsafe {
+            sgemm(
+                prev_size,                          // m
+                batch_size,                         // k
+                cur_size,                           // n
+                1.0,                                // alpha
+                prev_act.as_ptr(),                  // A (treated as transposed)
+                1,                                  // rsa (col stride of original = row stride of transpose)
+                prev_size as isize,                 // csa (row stride of original = col stride of transpose)
+                d_cur.as_ptr(),                     // B
+                cur_size as isize,                  // rsb
+                1,                                  // csb
+                1.0,                                // beta: ACCUMULATE into grad
+                scratch.grad[off..].as_mut_ptr(),   // C
+                cur_size as isize,                  // rsc
+                1,                                  // csc
+            );
+        }
+
+        // Bias gradient: column sum of d_act[layer]
+        for bi in 0..batch_size {
+            let row = &d_cur[bi * cur_size..(bi + 1) * cur_size];
+            for j in 0..cur_size {
+                scratch.grad[bias_offset + j] += row[j];
+            }
+        }
+
+        // Input gradient: d_act[layer-1] = d_act[layer] × W^T
+        // [batch_size × cur_size] × [cur_size × prev_size] = [batch_size × prev_size]
+        unsafe {
+            sgemm(
+                batch_size,                         // m
+                cur_size,                           // k
+                prev_size,                          // n
+                1.0,                                // alpha
+                d_cur.as_ptr(),                     // A
+                cur_size as isize,                  // rsa
+                1,                                  // csa
+                lw.as_ptr(),                        // B (treated as transposed)
+                1,                                  // rsb (col stride of original = row stride of transpose)
+                cur_size as isize,                  // csb (row stride of original = col stride of transpose)
+                0.0,                                // beta
+                d_prev.as_mut_ptr(),                // C
+                prev_size as isize,                 // rsc
+                1,                                  // csc
+            );
+        }
+
+        // Apply ReLU mask for previous layer
+        let pre_prev = &scratch.pre_act[layer_idx - 1];
+        for i in 0..batch_size * prev_size {
+            if pre_prev[i] <= 0.0 {
+                d_prev[i] = 0.0;
+            }
+        }
+    }
+
+    // ── L1 gradient (sparse): per-position ──
+    if num_layers >= 1 {
+        let h1 = hidden_layers[0];
+        let off = scratch.layer_offsets[0];
+        let bias_offset = off + input_size * h1;
+
+        // d_act[0] already has ReLU mask applied (if num_layers > 1, it was done above;
+        // if num_layers == 1, we need to handle the case where layer_idx==0 is the last hidden)
+
+        // If num_layers == 1, d_act[0] was set from the output layer backprop and already
+        // has ReLU mask applied. For num_layers > 1, the loop above handled it.
+
+        let d_l1 = &scratch.d_act[0];
+        for bi in 0..batch_size {
+            let d_row = &d_l1[bi * h1..(bi + 1) * h1];
+            let pos = positions[bi];
+
             for j in 0..h1 {
-                let dj = d_cur[j];
+                let dj = d_row[j];
                 if dj == 0.0 { continue; }
 
                 scratch.grad[bias_offset + j] += dj;
 
-                for &idx in active_board {
+                for &idx in &pos.active_indices {
                     let feat = idx as usize;
                     scratch.grad[off + feat * h1 + j] += dj;
                 }
 
-                for (i, &val) in bag.iter().enumerate() {
+                for (i, &val) in pos.bag_features.iter().enumerate() {
                     if val != 0.0 {
                         let feat = BOARD_FEATURES + i;
                         scratch.grad[off + feat * h1 + j] += dj * val;
                     }
                 }
             }
-        } else {
-            // Dense hidden layers: full weight update + propagate gradient
-            let lw = &weights[off..off + prev_size * cur_size];
-
-            // Bias gradients
-            {
-                let d_cur = if d_next_is_d_h { &scratch.d_h } else { &scratch.d_prev };
-                for j in 0..cur_size {
-                    scratch.grad[bias_offset + j] += d_cur[j];
-                }
-            }
-
-            // Propagate gradient to previous layer into the OTHER buffer
-            {
-                let (d_cur, d_out) = if d_next_is_d_h {
-                    (&scratch.d_h as &Vec<f32>, &mut scratch.d_prev)
-                } else {
-                    (&scratch.d_prev as &Vec<f32>, &mut scratch.d_h)
-                };
-                for i in 0..prev_size {
-                    let w_row = &lw[i * cur_size..(i + 1) * cur_size];
-                    let mut sum = 0.0f32;
-                    for j in 0..cur_size {
-                        sum += w_row[j] * d_cur[j];
-                    }
-                    d_out[i] = sum;
-                }
-            }
-
-            // Weight gradients: d_W[i,j] = d_h[j] * prev_post[i]
-            {
-                let d_cur = if d_next_is_d_h { &scratch.d_h } else { &scratch.d_prev };
-                let prev_post = &scratch.post_relu[layer_idx - 1];
-                for i in 0..prev_size {
-                    let s = prev_post[i];
-                    for j in 0..cur_size {
-                        scratch.grad[off + i * cur_size + j] += d_cur[j] * s;
-                    }
-                }
-            }
-
-            // Swap: the "other" buffer now holds d_next for the next (earlier) layer
-            d_next_is_d_h = !d_next_is_d_h;
         }
     }
+}
+
+/// Compute batch MSE loss (sum of squared errors, not averaged).
+#[inline]
+fn batch_loss(scratch: &FcScratch, targets: &[f32], batch_size: usize) -> f64 {
+    let mut loss = 0.0f64;
+    for bi in 0..batch_size {
+        let e = scratch.outputs[bi] - targets[bi];
+        loss += (e * e) as f64;
+    }
+    loss
 }
 
 // ── Adam optimizer ─────────────────────────────────────────────────────────
@@ -633,7 +713,7 @@ fn main() {
 
     let mut net = GenericMlp::random(input_size, hidden_layers.clone(), &mut rng);
     let mut adam = AdamState::new(num_params, lr);
-    let mut scratch = FcScratch::new(&hidden_layers, num_params);
+    let mut scratch = FcScratch::new(&hidden_layers, num_params, batch_size, input_size);
 
     // Initial evaluation
     eprintln!("\n--- Initial evaluation ---");
@@ -671,48 +751,49 @@ fn main() {
             let actual_batch_size = batch_end - batch_start;
             let inv_batch = 1.0f32 / actual_batch_size as f32;
 
+            // Gather batch position refs and targets
+            let batch_positions: Vec<&LabeledPosition> = (batch_start..batch_end)
+                .map(|si| &positions[shuffled_indices[si] as usize])
+                .collect();
+            let batch_targets: Vec<f32> = batch_positions
+                .iter()
+                .map(|pos| label_to_target(pos.label))
+                .collect();
+
             // Zero gradient accumulator (reused across batches)
             scratch.zero_grad();
-            let mut batch_loss = 0.0f64;
 
-            for si in batch_start..batch_end {
-                let pos_idx = shuffled_indices[si] as usize;
-                let pos = &positions[pos_idx];
-                let target = label_to_target(pos.label);
+            // Batched forward pass
+            batch_forward(
+                &net.weights,
+                input_size,
+                &hidden_layers,
+                &batch_positions,
+                &mut scratch,
+            );
 
-                forward_with_intermediates(
-                    &net.weights,
-                    input_size,
-                    &hidden_layers,
-                    &pos.active_indices,
-                    &pos.bag_features,
-                    &mut scratch,
-                );
+            let batch_loss_val = batch_loss(&scratch, &batch_targets, actual_batch_size);
 
-                let error = scratch.output - target;
-                batch_loss += (error * error) as f64;
-
-                backward(
-                    &net.weights,
-                    input_size,
-                    &hidden_layers,
-                    &pos.active_indices,
-                    &pos.bag_features,
-                    target,
-                    inv_batch,
-                    &mut scratch,
-                );
-            }
+            // Batched backward pass
+            batch_backward(
+                &net.weights,
+                input_size,
+                &hidden_layers,
+                &batch_positions,
+                &batch_targets,
+                inv_batch,
+                &mut scratch,
+            );
 
             // Adam update
             adam.step(&mut net.weights, &scratch.grad);
 
-            epoch_loss += batch_loss;
+            epoch_loss += batch_loss_val;
             epoch_samples += actual_batch_size;
             total_samples += actual_batch_size;
 
             // Adaptive learning rate
-            let avg_batch_loss = batch_loss / actual_batch_size as f64;
+            let avg_batch_loss = batch_loss_val / actual_batch_size as f64;
             recent_loss_sum += avg_batch_loss;
             recent_loss_count += 1;
 
