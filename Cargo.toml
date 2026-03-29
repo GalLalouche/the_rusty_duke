@@ -26,3 +26,5 @@ tui = { version = "*", default-features = false, features = ['crossterm'] }
 
 [profile.release]
 debug = false
+lto = "fat"
+codegen-units = 1
