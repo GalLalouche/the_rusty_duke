@@ -16,6 +16,7 @@
 
 use std::time::Instant;
 
+use rand::Rng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -754,6 +755,7 @@ fn main() {
     let seed: u64 = parse_flag(&args, "--seed").unwrap_or(42);
 
     let residual_interval: usize = parse_flag(&args, "--residual").unwrap_or(0);
+    let sparse_init = args.contains(&"--sparse-init".to_string());
     let benchmark_str: String = parse_flag(&args, "--benchmark")
         .unwrap_or_else(|| "base,random".to_string());
     let benchmark_specs: Vec<String> = benchmark_str.split(',').map(|s| s.trim().to_string()).collect();
@@ -794,6 +796,9 @@ fn main() {
             else { residual_pairs.join(", ") });
     } else {
         eprintln!("  Residual:       off");
+    }
+    if sparse_init {
+        eprintln!("  Sparse init:    enabled (L1 uses effective fan_in)");
     }
     eprintln!();
 
@@ -862,6 +867,24 @@ fn main() {
     eprintln!("Network: {} parameters", num_params);
 
     let mut net = GenericMlp::random(input_size, hidden_layers.clone(), &mut rng);
+
+    // --sparse-init: re-initialize L1 weights using effective fan_in (avg active features)
+    // instead of full input_size. With ~24 active out of 1106, default Kaiming makes L1
+    // weights ~7x too small, weakening initial activations.
+    if sparse_init {
+        let avg_active: f64 = positions.iter()
+            .take(10000)
+            .map(|p| p.active_indices.len() as f64 + p.bag_features.iter().filter(|&&v| v != 0.0).count() as f64)
+            .sum::<f64>() / positions.len().min(10000) as f64;
+        let h1 = hidden_layers[0];
+        let scale = (6.0 / avg_active).sqrt() as f32;
+        let l1_weights = &mut net.weights[0..input_size * h1];
+        for w in l1_weights.iter_mut() {
+            *w = rng.gen::<f32>() * 2.0 * scale - scale;
+        }
+        eprintln!("  Sparse init:    L1 fan_in={:.0} (was {}), scale={:.4}", avg_active, input_size, scale);
+    }
+
     let mut adam = AdamState::new(num_params, lr);
     let mut scratch = FcScratch::new(&hidden_layers, num_params, batch_size, input_size);
     let mut batch_targets = vec![0.0f32; batch_size];
