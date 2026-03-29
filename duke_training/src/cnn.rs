@@ -101,6 +101,48 @@ pub struct CnnForwardResult {
     pub output: f32,
 }
 
+/// Pre-allocated scratch buffers for CNN forward/backward passes.
+///
+/// Create once via `CnnModel::create_scratch()` and reuse across all
+/// positions in a training loop to eliminate per-position heap allocations.
+pub struct CnnScratch {
+    // ── Forward (inference) ping-pong buffers ──
+    /// Conv buffer A (max_channels * spatial).
+    conv_buf_a: Vec<f32>,
+    /// Conv buffer B (max_channels * spatial).
+    conv_buf_b: Vec<f32>,
+    /// FC activation buffer A.
+    fc_buf_a: Vec<f32>,
+    /// FC activation buffer B.
+    fc_buf_b: Vec<f32>,
+
+    // ── Forward with intermediates ──
+    /// Pre-ReLU activations per conv layer.
+    conv_pre_relu: Vec<Vec<f32>>,
+    /// Post-ReLU activations per conv layer.
+    conv_post_relu: Vec<Vec<f32>>,
+    /// FC input (flattened conv + bag).
+    fc_input: Vec<f32>,
+    /// Pre-ReLU activations per FC hidden layer.
+    fc_pre_relu: Vec<Vec<f32>>,
+    /// Post-ReLU activations per FC hidden layer.
+    fc_post_relu: Vec<Vec<f32>>,
+    /// Prev activation buffer for FC forward.
+    fc_prev_act: Vec<f32>,
+
+    // ── Backward buffers ──
+    /// d_next / d_prev for FC backward.
+    bk_d_fc_a: Vec<f32>,
+    /// d_h for FC backward.
+    bk_d_fc_b: Vec<f32>,
+    /// d_post for conv backward.
+    bk_d_conv: Vec<f32>,
+    /// d_input for conv backward (propagated to previous layer).
+    bk_d_input: Vec<f32>,
+    /// fc_input reconstruction for backward.
+    bk_fc_input: Vec<f32>,
+}
+
 // ── Weight layout helpers ─────────────────────────────────────────────────
 
 impl CnnModel {
@@ -151,6 +193,55 @@ impl CnnModel {
     /// Compute the size of the FC input (flattened conv + bag).
     pub fn fc_input_size(&self) -> usize {
         self.conv_channels.last().unwrap() * self.board_size * self.board_size + self.bag_features
+    }
+
+    /// Create a `CnnScratch` with all buffers pre-allocated for this model's architecture.
+    /// Call once and reuse across the entire training loop.
+    pub fn create_scratch(&self) -> CnnScratch {
+        let spatial = self.board_size * self.board_size;
+        let max_ch = *self.conv_channels.iter().max().unwrap();
+        let max_conv_buf = max_ch * spatial;
+
+        // FC sizes
+        let fc_input_size = self.fc_input_size();
+        let max_fc = self.fc_sizes.iter().copied().max().unwrap_or(0).max(fc_input_size);
+
+        // Per-layer conv buffers
+        let conv_pre_relu: Vec<Vec<f32>> = self.conv_channels.iter()
+            .map(|&ch| vec![0.0f32; ch * spatial])
+            .collect();
+        let conv_post_relu: Vec<Vec<f32>> = self.conv_channels.iter()
+            .map(|&ch| vec![0.0f32; ch * spatial])
+            .collect();
+
+        // Per-layer FC buffers
+        let fc_pre_relu: Vec<Vec<f32>> = self.fc_sizes.iter()
+            .map(|&h| vec![0.0f32; h])
+            .collect();
+        let fc_post_relu: Vec<Vec<f32>> = self.fc_sizes.iter()
+            .map(|&h| vec![0.0f32; h])
+            .collect();
+
+        // For backward: max of all FC layer sizes and fc_input_size
+        let bk_max_fc = self.fc_sizes.iter().copied().max().unwrap_or(0).max(fc_input_size);
+
+        CnnScratch {
+            conv_buf_a: vec![0.0f32; max_conv_buf],
+            conv_buf_b: vec![0.0f32; max_conv_buf],
+            fc_buf_a: vec![0.0f32; max_fc],
+            fc_buf_b: vec![0.0f32; max_fc],
+            conv_pre_relu,
+            conv_post_relu,
+            fc_input: vec![0.0f32; fc_input_size],
+            fc_pre_relu,
+            fc_post_relu,
+            fc_prev_act: vec![0.0f32; max_fc],
+            bk_d_fc_a: vec![0.0f32; bk_max_fc],
+            bk_d_fc_b: vec![0.0f32; bk_max_fc],
+            bk_d_conv: vec![0.0f32; max_conv_buf],
+            bk_d_input: vec![0.0f32; max_conv_buf],
+            bk_fc_input: vec![0.0f32; fc_input_size],
+        }
     }
 
     /// Create a randomly initialized CNN model (Kaiming uniform).
@@ -416,6 +507,146 @@ impl CnnModel {
         sigmoid(logit)
     }
 
+    /// Fast forward pass using pre-allocated scratch buffers (zero heap allocation).
+    /// Uses ping-pong conv_buf_a / conv_buf_b for conv layers.
+    pub fn forward_sparse_scratch(&self, active_board: &[usize], bag: &[f32], scratch: &mut CnnScratch) -> f32 {
+        let bs = self.board_size;
+        let spatial = bs * bs;
+        let conv_offsets = self.conv_layer_offsets();
+        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+
+        // Ping-pong: start writing to buf_a
+        let (mut cur_buf, mut prev_buf) = (true, false); // true = buf_a, false = buf_b
+
+        // ── Conv layer 0: sparse input ──
+        let out_ch0 = self.conv_channels[0];
+        let off0 = conv_offsets[0];
+        let w0_size = out_ch0 * self.input_channels * kwpp;
+        let bias0 = &self.weights[off0 + w0_size..off0 + w0_size + out_ch0];
+        let size0 = out_ch0 * spatial;
+
+        {
+            let conv_out = if cur_buf { &mut scratch.conv_buf_a } else { &mut scratch.conv_buf_b };
+            // Zero and init with bias
+            for v in conv_out[..size0].iter_mut() { *v = 0.0; }
+            for oc in 0..out_ch0 {
+                let b = bias0[oc];
+                for s in 0..spatial {
+                    conv_out[oc * spatial + s] = b;
+                }
+            }
+            self.sparse_conv_accumulate(
+                &self.weights[off0..off0 + w0_size],
+                active_board,
+                self.input_channels,
+                out_ch0,
+                &mut conv_out[..size0],
+            );
+            // ReLU
+            for v in conv_out[..size0].iter_mut() { *v = v.max(0.0); }
+        }
+
+        // ── Conv layers 1+ : dense ──
+        for layer_idx in 1..self.conv_channels.len() {
+            let in_ch = self.conv_channels[layer_idx - 1];
+            let out_ch = self.conv_channels[layer_idx];
+            let off = conv_offsets[layer_idx];
+            let w_size = out_ch * in_ch * kwpp;
+            let bias = &self.weights[off + w_size..off + w_size + out_ch];
+            let in_size = in_ch * spatial;
+            let out_size = out_ch * spatial;
+
+            // Swap: previous output is in cur_buf, write new output to prev_buf
+            std::mem::swap(&mut cur_buf, &mut prev_buf);
+
+            // We need to split borrow: read from one, write to other
+            // Use unsafe pointer trick to avoid double borrow
+            let (prev_slice, next_slice) = if cur_buf {
+                let (a, b) = (&scratch.conv_buf_b as &Vec<f32>, &mut scratch.conv_buf_a);
+                (&a[..in_size], &mut b[..out_size])
+            } else {
+                let (a, b) = (&scratch.conv_buf_a as &Vec<f32>, &mut scratch.conv_buf_b);
+                (&a[..in_size], &mut b[..out_size])
+            };
+
+            // Zero and init with bias
+            for v in next_slice.iter_mut() { *v = 0.0; }
+            for oc in 0..out_ch {
+                let b = bias[oc];
+                for s in 0..spatial {
+                    next_slice[oc * spatial + s] = b;
+                }
+            }
+            self.dense_conv_accumulate(
+                &self.weights[off..off + w_size],
+                prev_slice,
+                in_ch,
+                out_ch,
+                next_slice,
+            );
+            // ReLU
+            for v in next_slice.iter_mut() { *v = v.max(0.0); }
+        }
+
+        // ── Flatten + concat bag into fc_buf_a ──
+        let fc_input_size = self.fc_input_size();
+        let last_ch = *self.conv_channels.last().unwrap();
+        let conv_flat_size = last_ch * spatial;
+        {
+            let conv_out = if cur_buf { &scratch.conv_buf_a } else { &scratch.conv_buf_b };
+            scratch.fc_buf_a[..conv_flat_size].copy_from_slice(&conv_out[..conv_flat_size]);
+        }
+        scratch.fc_buf_a[conv_flat_size..fc_input_size].copy_from_slice(bag);
+
+        // ── FC layers: ping-pong fc_buf_a / fc_buf_b ──
+        let fc_offsets = self.fc_layer_offsets();
+        let mut fc_cur = true; // true = fc_buf_a, false = fc_buf_b
+        let mut prev_size = fc_input_size;
+
+        for (i, &h) in self.fc_sizes.iter().enumerate() {
+            let off = fc_offsets[i];
+            let lw = &self.weights[off..off + prev_size * h];
+            let lb = &self.weights[off + prev_size * h..off + prev_size * h + h];
+
+            // Read from fc_cur, write to !fc_cur
+            let (prev_act, cur) = if fc_cur {
+                (&scratch.fc_buf_a[..prev_size], &mut scratch.fc_buf_b[..h])
+            } else {
+                (&scratch.fc_buf_b[..prev_size], &mut scratch.fc_buf_a[..h])
+            };
+
+            cur.copy_from_slice(lb);
+            for j in 0..prev_size {
+                let w_row = &lw[j * h..(j + 1) * h];
+                let s = prev_act[j];
+                if s != 0.0 {
+                    for k in 0..h {
+                        cur[k] += w_row[k] * s;
+                    }
+                }
+            }
+            // ReLU
+            for v in cur.iter_mut() { *v = v.max(0.0); }
+
+            fc_cur = !fc_cur;
+            prev_size = h;
+        }
+
+        // Output layer
+        let out_off = *fc_offsets.last().unwrap();
+        let last_h = prev_size;
+        let out_w = &self.weights[out_off..out_off + last_h];
+        let out_b = self.weights[out_off + last_h];
+        let prev_act = if fc_cur { &scratch.fc_buf_a[..last_h] } else { &scratch.fc_buf_b[..last_h] };
+
+        let mut logit = out_b;
+        for j in 0..last_h {
+            logit += out_w[j] * prev_act[j];
+        }
+
+        sigmoid(logit)
+    }
+
     // ── Forward pass with intermediates (for backprop) ────────────────────
 
     /// Forward pass saving all intermediate activations for backpropagation.
@@ -544,6 +775,140 @@ impl CnnModel {
             fc_post_relu,
             output,
         }
+    }
+
+    /// Forward pass with intermediates using pre-allocated scratch buffers.
+    /// Returns the output value; intermediate data is stored in `scratch` fields
+    /// (conv_pre_relu, conv_post_relu, fc_pre_relu, fc_post_relu).
+    pub fn forward_with_intermediates_scratch(
+        &self,
+        active_board: &[usize],
+        bag: &[f32],
+        scratch: &mut CnnScratch,
+    ) -> f32 {
+        let bs = self.board_size;
+        let spatial = bs * bs;
+        let conv_offsets = self.conv_layer_offsets();
+        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+
+        // ── Conv layer 0: sparse input ──
+        {
+            let out_ch = self.conv_channels[0];
+            let off = conv_offsets[0];
+            let w_size = out_ch * self.input_channels * kwpp;
+            let bias = &self.weights[off + w_size..off + w_size + out_ch];
+            let size = out_ch * spatial;
+
+            let pre = &mut scratch.conv_pre_relu[0];
+            for v in pre[..size].iter_mut() { *v = 0.0; }
+            for oc in 0..out_ch {
+                let b = bias[oc];
+                for s in 0..spatial {
+                    pre[oc * spatial + s] = b;
+                }
+            }
+            self.sparse_conv_accumulate(
+                &self.weights[off..off + w_size],
+                active_board,
+                self.input_channels,
+                out_ch,
+                &mut pre[..size],
+            );
+            let post = &mut scratch.conv_post_relu[0];
+            post[..size].copy_from_slice(&scratch.conv_pre_relu[0][..size]);
+            for v in post[..size].iter_mut() { *v = v.max(0.0); }
+        }
+
+        // ── Conv layers 1+ : dense ──
+        for layer_idx in 1..self.conv_channels.len() {
+            let in_ch = self.conv_channels[layer_idx - 1];
+            let out_ch = self.conv_channels[layer_idx];
+            let off = conv_offsets[layer_idx];
+            let w_size = out_ch * in_ch * kwpp;
+            let bias = &self.weights[off + w_size..off + w_size + out_ch];
+            let out_size = out_ch * spatial;
+
+            // We need to read conv_post_relu[layer_idx-1] and write conv_pre_relu[layer_idx].
+            // Use a pointer to avoid borrow conflicts (both live in scratch).
+            let prev_ptr = scratch.conv_post_relu[layer_idx - 1].as_ptr();
+            let prev_len = in_ch * spatial;
+
+            let pre = &mut scratch.conv_pre_relu[layer_idx];
+            for v in pre[..out_size].iter_mut() { *v = 0.0; }
+            for oc in 0..out_ch {
+                let b = bias[oc];
+                for s in 0..spatial {
+                    pre[oc * spatial + s] = b;
+                }
+            }
+            // SAFETY: prev_ptr points to conv_post_relu[layer_idx-1] which is a different
+            // Vec from conv_pre_relu[layer_idx]. We only read from prev_ptr.
+            let prev_slice = unsafe { std::slice::from_raw_parts(prev_ptr, prev_len) };
+            self.dense_conv_accumulate(
+                &self.weights[off..off + w_size],
+                prev_slice,
+                in_ch,
+                out_ch,
+                &mut pre[..out_size],
+            );
+
+            let post = &mut scratch.conv_post_relu[layer_idx];
+            post[..out_size].copy_from_slice(&scratch.conv_pre_relu[layer_idx][..out_size]);
+            for v in post[..out_size].iter_mut() { *v = v.max(0.0); }
+        }
+
+        // ── Flatten + concat bag → fc_input ──
+        let fc_input_size = self.fc_input_size();
+        let last_ch = *self.conv_channels.last().unwrap();
+        let conv_flat_size = last_ch * spatial;
+        let last_idx = self.conv_channels.len() - 1;
+        scratch.fc_input[..conv_flat_size].copy_from_slice(&scratch.conv_post_relu[last_idx][..conv_flat_size]);
+        scratch.fc_input[conv_flat_size..fc_input_size].copy_from_slice(bag);
+
+        // ── FC hidden layers ──
+        let fc_offsets = self.fc_layer_offsets();
+        // Copy fc_input into fc_prev_act for the first iteration
+        scratch.fc_prev_act[..fc_input_size].copy_from_slice(&scratch.fc_input[..fc_input_size]);
+        let mut prev_size = fc_input_size;
+
+        for (i, &h) in self.fc_sizes.iter().enumerate() {
+            let off = fc_offsets[i];
+            let lw = &self.weights[off..off + prev_size * h];
+            let lb = &self.weights[off + prev_size * h..off + prev_size * h + h];
+
+            let pre = &mut scratch.fc_pre_relu[i];
+            pre[..h].copy_from_slice(lb);
+            for j in 0..prev_size {
+                let w_row = &lw[j * h..(j + 1) * h];
+                let s = scratch.fc_prev_act[j];
+                if s != 0.0 {
+                    for k in 0..h {
+                        pre[k] += w_row[k] * s;
+                    }
+                }
+            }
+
+            let post = &mut scratch.fc_post_relu[i];
+            post[..h].copy_from_slice(&scratch.fc_pre_relu[i][..h]);
+            for v in post[..h].iter_mut() { *v = v.max(0.0); }
+
+            // Copy post into fc_prev_act for next iteration
+            scratch.fc_prev_act[..h].copy_from_slice(&post[..h]);
+            prev_size = h;
+        }
+
+        // ── Output layer ──
+        let out_off = *fc_offsets.last().unwrap();
+        let last_h = prev_size;
+        let out_w = &self.weights[out_off..out_off + last_h];
+        let out_b = self.weights[out_off + last_h];
+
+        let mut logit = out_b;
+        for j in 0..last_h {
+            logit += out_w[j] * scratch.fc_prev_act[j];
+        }
+
+        sigmoid(logit)
     }
 
     // ── Convolution helpers ───────────────────────────────────────────────
@@ -1100,6 +1465,213 @@ pub fn backward(
         let conv_flat_size = fc_input_size - model.bag_features;
         let d_conv_flat = &d_next[..conv_flat_size];
         backward_conv_layers(model, forward, active_board, d_conv_flat, &conv_offsets, grad);
+    }
+}
+
+/// Accumulate gradients for one sample using pre-allocated scratch buffers.
+///
+/// The scratch must have been filled by a prior call to
+/// `forward_with_intermediates_scratch`. `output` is the sigmoid output from that call.
+///
+/// MSE loss: L = (output - target)^2.
+/// grad layout matches `weights` layout in the model.
+pub fn backward_scratch(
+    model: &CnnModel,
+    scratch: &mut CnnScratch,
+    output: f32,
+    active_board: &[usize],
+    bag: &[f32],
+    target: f32,
+    sample_weight: f32,
+    grad: &mut [f32],
+) {
+    let conv_offsets = model.conv_layer_offsets();
+    let fc_offsets = model.fc_layer_offsets();
+
+    // ── Output gradient: MSE + sigmoid derivative ──
+    let o = output;
+    let d_logit = 2.0 * (o - target) * o * (1.0 - o) * sample_weight;
+
+    // ── FC backward ──
+    let num_fc = model.fc_sizes.len();
+
+    let out_off = *fc_offsets.last().unwrap();
+    let last_h = if num_fc > 0 {
+        model.fc_sizes[num_fc - 1]
+    } else {
+        model.fc_input_size()
+    };
+
+    // Build fc_input in scratch.bk_fc_input
+    let fc_input_size = model.fc_input_size();
+    let last_conv_idx = scratch.conv_post_relu.len() - 1;
+    let conv_flat_size = fc_input_size - model.bag_features;
+    scratch.bk_fc_input[..conv_flat_size].copy_from_slice(&scratch.conv_post_relu[last_conv_idx][..conv_flat_size]);
+    scratch.bk_fc_input[conv_flat_size..fc_input_size].copy_from_slice(bag);
+
+    if num_fc > 0 {
+        // Output layer: weights and bias gradients
+        let out_act = &scratch.fc_post_relu[num_fc - 1];
+        for j in 0..last_h {
+            grad[out_off + j] += d_logit * out_act[j];
+        }
+        grad[out_off + last_h] += d_logit;
+
+        // d_next = d_logit * out_w  (stored in bk_d_fc_a)
+        let out_w = &model.weights[out_off..out_off + last_h];
+        for j in 0..last_h {
+            scratch.bk_d_fc_a[j] = d_logit * out_w[j];
+        }
+
+        // FC hidden layers backward
+        for layer_idx in (0..num_fc).rev() {
+            let cur_size = model.fc_sizes[layer_idx];
+            let prev_size = if layer_idx == 0 {
+                fc_input_size
+            } else {
+                model.fc_sizes[layer_idx - 1]
+            };
+            let off = fc_offsets[layer_idx];
+            let bias_off = off + prev_size * cur_size;
+
+            // ReLU derivative: d_h in bk_d_fc_b
+            for j in 0..cur_size {
+                scratch.bk_d_fc_b[j] = if scratch.fc_pre_relu[layer_idx][j] > 0.0 {
+                    scratch.bk_d_fc_a[j]
+                } else {
+                    0.0
+                };
+            }
+
+            // Bias gradient
+            for j in 0..cur_size {
+                grad[bias_off + j] += scratch.bk_d_fc_b[j];
+            }
+
+            // Get previous layer activations
+            let prev_act: &[f32] = if layer_idx == 0 {
+                &scratch.bk_fc_input[..fc_input_size]
+            } else {
+                &scratch.fc_post_relu[layer_idx - 1][..prev_size]
+            };
+
+            // Weight gradients and propagate: compute d_prev in bk_d_fc_a
+            let lw = &model.weights[off..off + prev_size * cur_size];
+            // First compute d_prev, writing back into bk_d_fc_a
+            // But we're reading bk_d_fc_b (d_h) which is separate, so this is safe
+            for i in 0..prev_size {
+                let w_row = &lw[i * cur_size..(i + 1) * cur_size];
+                let mut sum = 0.0f32;
+                for j in 0..cur_size {
+                    sum += w_row[j] * scratch.bk_d_fc_b[j];
+                }
+                scratch.bk_d_fc_a[i] = sum;
+            }
+            for i in 0..prev_size {
+                let s = prev_act[i];
+                if s != 0.0 {
+                    for j in 0..cur_size {
+                        grad[off + i * cur_size + j] += scratch.bk_d_fc_b[j] * s;
+                    }
+                }
+            }
+            // bk_d_fc_a[..prev_size] now holds d_next for next iteration
+        }
+
+        // bk_d_fc_a[..fc_input_size] has gradient w.r.t. fc_input
+        // Copy into bk_d_conv before calling (avoids borrow conflict)
+        scratch.bk_d_conv[..conv_flat_size].copy_from_slice(&scratch.bk_d_fc_a[..conv_flat_size]);
+        backward_conv_layers_scratch(model, scratch, active_board, conv_flat_size, &conv_offsets, grad);
+    } else {
+        // No FC hidden layers
+        for j in 0..fc_input_size {
+            grad[out_off + j] += d_logit * scratch.bk_fc_input[j];
+        }
+        grad[out_off + fc_input_size] += d_logit;
+
+        let out_w = &model.weights[out_off..out_off + fc_input_size];
+        for j in 0..fc_input_size {
+            scratch.bk_d_fc_a[j] = d_logit * out_w[j];
+        }
+
+        // Copy into bk_d_conv before calling (avoids borrow conflict)
+        scratch.bk_d_conv[..conv_flat_size].copy_from_slice(&scratch.bk_d_fc_a[..conv_flat_size]);
+        backward_conv_layers_scratch(model, scratch, active_board, conv_flat_size, &conv_offsets, grad);
+    }
+}
+
+/// Backward pass through conv layers using scratch buffers.
+/// Expects scratch.bk_d_conv[..conv_flat_size] to already contain the gradient
+/// w.r.t. the flattened last conv layer output.
+fn backward_conv_layers_scratch(
+    model: &CnnModel,
+    scratch: &mut CnnScratch,
+    active_board: &[usize],
+    _conv_flat_size: usize,
+    conv_offsets: &[usize],
+    grad: &mut [f32],
+) {
+    let bs = model.board_size;
+    let spatial = bs * bs;
+    let kwpp = CnnModel::kernel_weights_per_pair(model.kernel_type);
+    let num_conv = model.conv_channels.len();
+
+    for layer_idx in (0..num_conv).rev() {
+        let out_ch = model.conv_channels[layer_idx];
+        let in_ch = if layer_idx == 0 {
+            model.input_channels
+        } else {
+            model.conv_channels[layer_idx - 1]
+        };
+        let off = conv_offsets[layer_idx];
+        let w_size = out_ch * in_ch * kwpp;
+        let cur_size = out_ch * spatial;
+
+        // Fuse ReLU derivative with bias gradient
+        let pre_relu = &scratch.conv_pre_relu[layer_idx];
+        let bias_off = off + w_size;
+        let d_post = &mut scratch.bk_d_conv;
+        for oc in 0..out_ch {
+            let base = oc * spatial;
+            let mut sum = 0.0f32;
+            for s in 0..spatial {
+                let idx = base + s;
+                let d = if pre_relu[idx] > 0.0 { d_post[idx] } else { 0.0 };
+                d_post[idx] = d;
+                sum += d;
+            }
+            grad[bias_off + oc] += sum;
+        }
+
+        if layer_idx == 0 {
+            backward_conv_sparse_weights(
+                model,
+                active_board,
+                &scratch.bk_d_conv[..cur_size],
+                in_ch,
+                out_ch,
+                off,
+                grad,
+            );
+        } else {
+            let input_data = &scratch.conv_post_relu[layer_idx - 1];
+            let in_size = in_ch * spatial;
+            // Zero d_input
+            for v in scratch.bk_d_input[..in_size].iter_mut() { *v = 0.0; }
+            backward_conv_dense(
+                model,
+                &model.weights[off..off + w_size],
+                input_data,
+                &scratch.bk_d_conv[..cur_size],
+                in_ch,
+                out_ch,
+                off,
+                &mut scratch.bk_d_input[..in_size],
+                grad,
+            );
+            // Copy d_input into d_conv for next iteration
+            scratch.bk_d_conv[..in_size].copy_from_slice(&scratch.bk_d_input[..in_size]);
+        }
     }
 }
 
@@ -2425,6 +2997,199 @@ mod tests {
                 diff < 1e-5,
                 "{:?}: forward_sparse ({}) != forward_with_intermediates ({}), diff={}",
                 kernel, out_sparse, fwd.output, diff
+            );
+        }
+    }
+
+    // ── Scratch buffer tests ──
+
+    #[test]
+    fn test_forward_sparse_scratch_matches_original() {
+        for kernel in [KernelType::Box, KernelType::Diamond, KernelType::Cross] {
+            let model = make_test_model(kernel, &[8, 4], &[16]);
+            let mut scratch = model.create_scratch();
+            let active = sample_active_board();
+            let bag = sample_bag();
+            let out_orig = model.forward_sparse(&active, &bag);
+            let out_scratch = model.forward_sparse_scratch(&active, &bag, &mut scratch);
+            let diff = (out_orig - out_scratch).abs();
+            assert!(
+                diff < 1e-5,
+                "{:?}: forward_sparse ({}) != forward_sparse_scratch ({}), diff={}",
+                kernel, out_orig, out_scratch, diff
+            );
+        }
+    }
+
+    #[test]
+    fn test_forward_with_intermediates_scratch_matches_original() {
+        for kernel in [KernelType::Box, KernelType::Diamond, KernelType::Cross] {
+            let model = make_test_model(kernel, &[8, 4], &[16]);
+            let mut scratch = model.create_scratch();
+            let active = sample_active_board();
+            let bag = sample_bag();
+            let fwd = model.forward_with_intermediates(&active, &bag);
+            let out_scratch = model.forward_with_intermediates_scratch(&active, &bag, &mut scratch);
+            let diff = (fwd.output - out_scratch).abs();
+            assert!(
+                diff < 1e-5,
+                "{:?}: forward_with_intermediates ({}) != scratch ({}), diff={}",
+                kernel, fwd.output, out_scratch, diff
+            );
+            // Also verify intermediate values match
+            for (layer_idx, (orig_pre, scratch_pre)) in fwd.conv_pre_relu.iter().zip(scratch.conv_pre_relu.iter()).enumerate() {
+                for (i, (&a, &b)) in orig_pre.iter().zip(scratch_pre.iter()).enumerate() {
+                    let d = (a - b).abs();
+                    assert!(d < 1e-5, "{:?} layer {} conv_pre_relu[{}]: {} != {}", kernel, layer_idx, i, a, b);
+                }
+            }
+            for (layer_idx, (orig_post, scratch_post)) in fwd.conv_post_relu.iter().zip(scratch.conv_post_relu.iter()).enumerate() {
+                for (i, (&a, &b)) in orig_post.iter().zip(scratch_post.iter()).enumerate() {
+                    let d = (a - b).abs();
+                    assert!(d < 1e-5, "{:?} layer {} conv_post_relu[{}]: {} != {}", kernel, layer_idx, i, a, b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_backward_scratch_matches_original() {
+        for kernel in [KernelType::Box, KernelType::Diamond, KernelType::Cross] {
+            let model = make_test_model(kernel, &[4], &[8]);
+            let mut scratch = model.create_scratch();
+            let active = sample_active_board();
+            let bag = sample_bag();
+            let target = 0.7f32;
+            let n = model.weights.len();
+
+            // Original backward
+            let fwd = model.forward_with_intermediates(&active, &bag);
+            let mut grad_orig = vec![0.0f32; n];
+            backward(&model, &fwd, &active, &bag, target, 1.0, &mut grad_orig);
+
+            // Scratch backward
+            let output = model.forward_with_intermediates_scratch(&active, &bag, &mut scratch);
+            let mut grad_scratch = vec![0.0f32; n];
+            backward_scratch(&model, &mut scratch, output, &active, &bag, target, 1.0, &mut grad_scratch);
+
+            for i in 0..n {
+                let diff = (grad_orig[i] - grad_scratch[i]).abs();
+                let scale = grad_orig[i].abs().max(grad_scratch[i].abs()).max(1e-7);
+                assert!(
+                    diff / scale < 1e-4 || diff < 1e-6,
+                    "{:?}: grad mismatch at param {}: orig={:.8}, scratch={:.8}, diff={:.8}",
+                    kernel, i, grad_orig[i], grad_scratch[i], diff
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_gradient_check_with_scratch_box() {
+        gradient_check_kernel_scratch(KernelType::Box);
+    }
+
+    #[test]
+    fn test_gradient_check_with_scratch_diamond() {
+        gradient_check_kernel_scratch(KernelType::Diamond);
+    }
+
+    #[test]
+    fn test_gradient_check_with_scratch_cross() {
+        gradient_check_kernel_scratch(KernelType::Cross);
+    }
+
+    fn gradient_check_kernel_scratch(kernel: KernelType) {
+        let mut model = make_test_model(kernel, &[4], &[8]);
+        let mut scratch = model.create_scratch();
+        let active = sample_active_board();
+        let bag = sample_bag();
+        let target = 0.7f32;
+        let n = model.weights.len();
+
+        // Analytical gradient via scratch
+        let output = model.forward_with_intermediates_scratch(&active, &bag, &mut scratch);
+        let mut analytical_grad = vec![0.0f32; n];
+        backward_scratch(&model, &mut scratch, output, &active, &bag, target, 1.0, &mut analytical_grad);
+
+        let eps = 5e-4f32;
+        let step = (n / 50).max(1);
+        let check_indices: Vec<usize> = (0..n).step_by(step).take(50).collect();
+
+        for &i in &check_indices {
+            if kernel == KernelType::Diamond {
+                let mask = diamond_mask_5x5();
+                let mut skip = false;
+                let mut off = 0;
+                let mut ic = model.input_channels;
+                for &oc in &model.conv_channels {
+                    let w_size = oc * ic * 25;
+                    if i >= off && i < off + w_size {
+                        let kpos = (i - off) % 25;
+                        if !mask[kpos] {
+                            skip = true;
+                        }
+                        break;
+                    }
+                    off += w_size + oc;
+                    ic = oc;
+                }
+                if skip { continue; }
+            }
+
+            let orig = model.weights[i];
+            model.weights[i] = orig + eps;
+            let out_plus = model.forward_sparse(&active, &bag);
+            let loss_plus = (out_plus - target).powi(2);
+            model.weights[i] = orig - eps;
+            let out_minus = model.forward_sparse(&active, &bag);
+            let loss_minus = (out_minus - target).powi(2);
+            model.weights[i] = orig;
+
+            let numerical = (loss_plus - loss_minus) / (2.0 * eps);
+            let analytical = analytical_grad[i];
+            let diff = (numerical - analytical).abs();
+            let scale = numerical.abs().max(analytical.abs()).max(1e-7);
+            let relative = diff / scale;
+
+            assert!(
+                relative < 0.05 || diff < 5e-4,
+                "Scratch gradient mismatch at param {}: numerical={:.6}, analytical={:.6}, diff={:.6}, relative={:.4}",
+                i, numerical, analytical, diff, relative
+            );
+        }
+    }
+
+    #[test]
+    fn test_scratch_reuse_across_positions() {
+        // Verify that reusing scratch produces correct results for different positions
+        let model = make_test_model(KernelType::Box, &[8, 4], &[16]);
+        let mut scratch = model.create_scratch();
+
+        let boards = vec![
+            vec![0, 37, 72],
+            vec![145, 216, 300, 400, 500],
+            vec![600, 700, 800, 900, 1000, 1050],
+        ];
+        let bags = vec![
+            sample_bag(),
+            {
+                let mut b = vec![0.0f32; BAG_FEATURES];
+                b[3] = 5.0;
+                b[10] = 2.0;
+                b
+            },
+            vec![1.0f32; BAG_FEATURES],
+        ];
+
+        for (board, bag) in boards.iter().zip(bags.iter()) {
+            let out_orig = model.forward_sparse(board, bag);
+            let out_scratch = model.forward_sparse_scratch(board, bag, &mut scratch);
+            let diff = (out_orig - out_scratch).abs();
+            assert!(
+                diff < 1e-5,
+                "Scratch reuse mismatch: orig={}, scratch={}, diff={}",
+                out_orig, out_scratch, diff
             );
         }
     }

@@ -23,7 +23,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
-use duke_training::cnn::{backward, apply_diamond_mask, CnnEvaluator, CnnModel, KernelType};
+use duke_training::cnn::{backward_scratch, apply_diamond_mask, CnnEvaluator, CnnModel, KernelType};
 use duke_training::encoding::BAG_FEATURES;
 use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::loaded_model::LoadedModel;
@@ -344,6 +344,10 @@ fn main() {
         &mut rng,
     );
     let mut adam = AdamState::new(num_params, lr);
+    let mut scratch = model.create_scratch();
+
+    // Pre-allocate usize active index buffer (avoids per-position Vec<usize> alloc)
+    let mut active_buf: Vec<usize> = Vec::with_capacity(64);
 
     // Initial evaluation
     eprintln!("\n--- Initial evaluation ---");
@@ -388,18 +392,20 @@ fn main() {
                 let pos = &positions[pos_idx];
                 let target = label_to_target(pos.label);
 
-                // Convert u16 indices to usize
-                let active: Vec<usize> = pos.active_indices.iter().map(|&i| i as usize).collect();
+                // Convert u16 indices to usize (reuse buffer)
+                active_buf.clear();
+                active_buf.extend(pos.active_indices.iter().map(|&i| i as usize));
 
-                let fwd = model.forward_with_intermediates(&active, &pos.bag_features);
+                let output = model.forward_with_intermediates_scratch(&active_buf, &pos.bag_features, &mut scratch);
 
-                let error = fwd.output - target;
+                let error = output - target;
                 batch_loss += (error * error) as f64;
 
-                backward(
+                backward_scratch(
                     &model,
-                    &fwd,
-                    &active,
+                    &mut scratch,
+                    output,
+                    &active_buf,
                     &pos.bag_features,
                     target,
                     inv_batch,
