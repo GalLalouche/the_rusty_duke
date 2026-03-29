@@ -69,6 +69,14 @@ impl DiscardBag {
         self.bag.push(t);
     }
 
+    /// Remove one instance of `t` from the discard pile (used when undoing a capture).
+    /// Panics if `t` is not present.
+    pub fn remove(&mut self, t: TileType) {
+        let idx = self.bag.iter().rposition(|x| *x == t)
+            .expect("Tried to remove a tile from discard that isn't there");
+        self.bag.swap_remove(idx);
+    }
+
     pub fn existing(&self) -> &Vec<TileType> {
         &self.bag
     }

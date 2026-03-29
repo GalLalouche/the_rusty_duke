@@ -41,7 +41,7 @@ impl Heuristic for Heuristics {
                 10.0 * gs.get_tiles_for_owner(o).len() as f64,
             Heuristics::TotalMovementOptions =>
                 gs.all_valid_game_moves_for(o).count() as f64,
-            Heuristics::DiscardedUnits => gs.discard_bag_for(o).len() as f64 * -15.0,
+            Heuristics::DiscardedUnits => gs.discard_bag_for(o).len() as f64 * 15.0,
         }
     }
 
