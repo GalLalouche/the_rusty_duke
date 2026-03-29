@@ -260,7 +260,8 @@ impl GameState {
         }
         let captured = self.board.make_a_move(self.game_move_to_board_move(&game_move));
         if let Some(captured_tile) = captured {
-            self.discard_bag_for_mut(self.current_player_turn)
+            // Captured tile goes to its owner's discard pile (not the captor's)
+            self.discard_bag_for_mut(captured_tile.owner)
                 .add(captured_tile.tile_type);
         }
         assert_not!(self.board.is_guard(self.current_player_turn));
@@ -495,11 +496,9 @@ impl GameState {
     }
     pub fn undo(&mut self, mv: PossibleMove) -> () {
         self.current_player_turn = self.current_player_turn.next_player();
-        // If the move was a capture, remove the captured tile from the captor's discard pile.
-        // current_player_turn has already been switched back, so it now points to the player
-        // who made the capture.
+        // If the move was a capture, remove the captured tile from its owner's discard pile.
         if let PossibleMove::ApplyNonCommandTileAction { capturing: Some(ref cap), .. } = mv {
-            self.discard_bag_for_mut(self.current_player_turn)
+            self.discard_bag_for_mut(cap.owner)
                 .remove(cap.tile_type);
         }
         match &mv {
@@ -955,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_by_move_adds_tile_to_captors_discard() {
+    fn capture_by_move_adds_tile_to_owners_discard() {
         // TopPlayer footman at (1,0) captures BottomPlayer footman at (1,1)
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
@@ -964,21 +963,21 @@ mod tests {
         board.place(Coordinates { x: 1, y: 1 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
 
         let mut gs = GameState::from_board(board, Owner::TopPlayer);
-        assert!(gs.player_1_discard().existing().is_empty());
+        assert!(gs.player_2_discard().existing().is_empty());
 
         gs.make_a_move(GameMove::ApplyNonCommandTileAction {
             src: Coordinates { x: 1, y: 0 },
             dst: Coordinates { x: 1, y: 1 },
         }, &mut test_rng());
 
-        // TopPlayer captured BottomPlayer's Footman -> goes to TopPlayer's discard
-        assert_eq!(gs.player_1_discard().existing(), &vec![TileType::Footman]);
-        // BottomPlayer's discard remains empty
-        assert!(gs.player_2_discard().existing().is_empty());
+        // BottomPlayer's Footman was captured -> goes to BottomPlayer's discard
+        assert_eq!(gs.player_2_discard().existing(), &vec![TileType::Footman]);
+        // TopPlayer's discard remains empty (they didn't lose any pieces)
+        assert!(gs.player_1_discard().existing().is_empty());
     }
 
     #[test]
-    fn capture_by_strike_adds_tile_to_captors_discard() {
+    fn capture_by_strike_adds_tile_to_owners_discard() {
         // Flipped Pikeman can strike diagonally at distance 2
         let mut board = GameBoard::empty();
         board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
@@ -994,9 +993,10 @@ mod tests {
             dst: Coordinates { x: 2, y: 2 },
         }, &mut test_rng());
 
-        // TopPlayer struck BottomPlayer's Footman -> TopPlayer's discard
-        assert_eq!(gs.player_1_discard().existing(), &vec![TileType::Footman]);
-        assert!(gs.player_2_discard().existing().is_empty());
+        // BottomPlayer's Footman was struck -> goes to BottomPlayer's discard
+        assert_eq!(gs.player_2_discard().existing(), &vec![TileType::Footman]);
+        // TopPlayer didn't lose any pieces
+        assert!(gs.player_1_discard().existing().is_empty());
     }
 
     #[test]
@@ -1018,7 +1018,9 @@ mod tests {
             src: Coordinates { x: 2, y: 0 },
             dst: Coordinates { x: 2, y: 1 },
         }, &mut test_rng());
-        assert_eq!(gs.player_1_discard().len(), 1);
+        // BottomPlayer lost a footman -> goes to BottomPlayer's discard
+        assert_eq!(gs.player_2_discard().len(), 1);
+        assert_eq!(gs.player_1_discard().len(), 0);
 
         // BottomPlayer makes a non-capture move (duke slides horizontally along row 5)
         gs.make_a_move(GameMove::ApplyNonCommandTileAction {
@@ -1032,9 +1034,12 @@ mod tests {
             dst: Coordinates { x: 3, y: 0 },
         }, &mut test_rng());
 
-        assert_eq!(gs.player_1_discard().len(), 2);
-        let discard = gs.player_1_discard().existing();
+        // BottomPlayer lost both a footman and a knight
+        assert_eq!(gs.player_2_discard().len(), 2);
+        let discard = gs.player_2_discard().existing();
         assert!(discard.contains(&TileType::Footman));
         assert!(discard.contains(&TileType::Knight));
+        // TopPlayer didn't lose any
+        assert_eq!(gs.player_1_discard().len(), 0);
     }
 }

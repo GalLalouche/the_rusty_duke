@@ -1320,20 +1320,20 @@ fn discarded_units_with_discards() {
     );
 
     let h = Heuristics::DiscardedUnits;
-    // TopPlayer has 2 discarded tiles: 2 * -15 = -30
+    // TopPlayer has 2 of their tiles in discard (lost to opponent): 2 * -15 = -30
     let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
     assert_eq!(top_val, -30.0,
-        "TopPlayer with 2 discards should score -30.0, got {}", top_val);
-    // BottomPlayer has 1 discarded tile: 1 * -15 = -15
+        "TopPlayer with 2 lost pieces should score -30.0, got {}", top_val);
+    // BottomPlayer has 1 of their tiles in discard (lost to opponent): 1 * -15 = -15
     let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
     assert_eq!(bottom_val, -15.0,
-        "BottomPlayer with 1 discard should score -15.0, got {}", bottom_val);
+        "BottomPlayer with 1 lost piece should score -15.0, got {}", bottom_val);
 
     // approx is identical for DiscardedUnits
     assert_eq!(h.approx_evaluate_for_owner(Owner::TopPlayer, &gs), -30.0);
     assert_eq!(h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs), -15.0);
 
-    // Difference for BottomPlayer: -15 - (-30) = 15 (advantage since fewer discards)
+    // Difference for BottomPlayer: -15 - (-30) = 15 (advantage since fewer losses)
     assert_eq!(h.difference(Owner::BottomPlayer, &gs), 15.0);
 }
 
@@ -1358,11 +1358,11 @@ fn discarded_units_three_tiles_discarded() {
 
     let h = Heuristics::DiscardedUnits;
     assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &gs), 0.0,
-        "TopPlayer with 0 discards should score 0.0");
+        "TopPlayer with 0 lost pieces should score 0.0");
     assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &gs), -45.0,
-        "BottomPlayer with 3 discards should score -45.0");
+        "BottomPlayer with 3 lost pieces should score -45.0");
 
-    // Difference for BottomPlayer: -45 - 0 = -45 (disadvantage)
+    // Difference for BottomPlayer: -45 - 0 = -45 (disadvantage from more losses)
     assert_eq!(h.difference(Owner::BottomPlayer, &gs), -45.0);
 }
 
