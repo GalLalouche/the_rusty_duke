@@ -396,23 +396,24 @@ impl GameBoard {
         }
     }
 
-    pub(super) fn make_a_move(&mut self, gm: BoardMove) -> () {
+    pub(super) fn make_a_move(&mut self, gm: BoardMove) -> Option<PlacedTile> {
         match gm {
             BoardMove::PlaceNewTile(tile_type, duke_offset, owner) => {
                 let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(owner))
                     .expect("Request duke location is out of bounds");
                 debug_assert!(self.is_valid_placement(owner, duke_offset));
                 self.place(c, PlacedTile::new(owner, tile_type));
+                None
             }
             BoardMove::ApplyNonCommandTileAction { src, dst } => {
                 match self.can_apply(src, dst) {
                     AppliedPubAction::Movement => {
                         self.flip(src);
-                        self.board.mv(src, dst);
+                        self.board.mv(src, dst)
                     }
                     AppliedPubAction::Strike => {
                         self.flip(src);
-                        self.board.remove(dst);
+                        self.board.remove(dst)
                     }
                     AppliedPubAction::Invalid =>
                         panic!("Cannot move unit in {:?} to {:?} (invalid action)", &src, &dst)
@@ -535,6 +536,79 @@ impl GameBoard {
             }
         }
         false
+    }
+
+    /// Like `can_attack_square`, but ignores whether `target` is occupied by a
+    /// friendly piece. Used by the training feature extractor to compute
+    /// "defended" counts: a friendly tile is defended if another friendly piece
+    /// could reach its square (i.e., could recapture if an enemy took it).
+    pub fn can_reach_square_ignoring_friendly(&self, src: Coordinates, target: Coordinates) -> bool {
+        let tile = match self.get(src) {
+            Some(t) => t,
+            None => return false,
+        };
+        let tile_side = tile.get_current_side();
+        let center_offset = tile_side.center_offset();
+
+        for (offset, action) in tile_side.actions().iter() {
+            match *action {
+                TileAction::Unit | TileAction::Command => continue,
+                TileAction::Move | TileAction::Jump | TileAction::Strike => {
+                    if let Some(dst) = self.to_absolute_coordinate(src, *offset, center_offset) {
+                        if dst == target && self.can_apply_action_ignoring_friendly(src, dst, *action) {
+                            return true;
+                        }
+                    }
+                }
+                TileAction::Slide => {
+                    if self.is_target_on_slide(src, *offset, target)
+                        && self.can_apply_action_ignoring_friendly(src, target, TileAction::Slide)
+                    {
+                        return true;
+                    }
+                }
+                TileAction::JumpSlide => {
+                    let near_offset = Offsets::new(offset.x.to_near(), offset.y.to_near());
+                    if self.is_target_on_slide(src, near_offset, target)
+                        && self.can_apply_action_ignoring_friendly(src, target, TileAction::JumpSlide)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Like `can_apply_action` but does not reject moves to friendly-occupied
+    /// squares. Path obstruction and straight-line checks still apply.
+    fn can_apply_action_ignoring_friendly(&self, src: Coordinates, dst: Coordinates, action: TileAction) -> bool {
+        match action {
+            TileAction::Unit => panic!("Cannot apply action Unit"),
+            TileAction::Move =>
+                src.is_straight_line_to(dst) && self.unobstructed(src, dst),
+            TileAction::Jump => true,
+            TileAction::Slide =>
+                src.is_straight_line_to(dst) && self.unobstructed(src, dst),
+            TileAction::Command => panic!("Commands shouldn't have been used here"),
+            TileAction::JumpSlide => {
+                if !src.is_straight_line_to(dst) {
+                    return false;
+                }
+                let skip = std::cell::Cell::new(true);
+                !src.on_the_linear_path_to(dst, |x, y| {
+                    if skip.get() {
+                        skip.set(false);
+                        false
+                    } else {
+                        self.board.is_occupied(Coordinates { x, y })
+                    }
+                })
+            }
+            // Strike can target any occupied or empty square in range; for
+            // "reachability" purposes we treat it as reachable.
+            TileAction::Strike => true,
+        }
     }
 
     /// Check if `target` lies on the slide line defined by `src` + direction `offset`.
