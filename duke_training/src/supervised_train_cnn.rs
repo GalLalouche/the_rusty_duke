@@ -38,11 +38,31 @@ struct LabeledPosition {
     count: u32,
 }
 
-fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
+/// Label names for the 41 combined features (for display when loading FLPS).
+const COMBINED_FEATURE_NAMES: [&str; 41] = [
+    "near_my_duke_friendly", "near_my_duke_enemy",
+    "near_enemy_duke_friendly", "near_enemy_duke_enemy",
+    "my_moves", "opp_moves", "my_reachable", "opp_reachable", "contested",
+    "my_defended", "my_threatened", "opp_defended", "opp_threatened",
+    "my_duke_mob", "opp_duke_mob",
+    "my_duke_disc", "my_footman_disc", "my_pikeman_disc", "my_knight_disc",
+    "my_sergeant_disc", "my_ranger_disc", "my_champion_disc", "my_wizard_disc",
+    "my_general_disc", "my_marshall_disc", "my_assassin_disc", "my_longbowman_disc",
+    "my_dragoon_disc",
+    "opp_duke_disc", "opp_footman_disc", "opp_pikeman_disc", "opp_knight_disc",
+    "opp_sergeant_disc", "opp_ranger_disc", "opp_champion_disc", "opp_wizard_disc",
+    "opp_general_disc", "opp_marshall_disc", "opp_assassin_disc", "opp_longbowman_disc",
+    "opp_dragoon_disc",
+];
+
+/// Load labeled positions from an LPOS or FLPS binary file.
+/// For FLPS files, `label_index` selects which of the N labels to use.
+/// Returns (positions, min_label, max_label).
+fn load_lpos(path: &str, label_index: usize) -> (Vec<LabeledPosition>, f32, f32) {
     let t0 = Instant::now();
     eprintln!("Loading labeled positions from {} ...", path);
 
-    let data = std::fs::read(path).expect("Failed to read LPOS file");
+    let data = std::fs::read(path).expect("Failed to read labeled positions file");
     let mut cursor = 0usize;
 
     macro_rules! read_bytes {
@@ -73,13 +93,36 @@ fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
         }};
     }
 
+    // Detect format by magic bytes
     let magic = read_bytes!(4);
-    assert_eq!(magic, b"LPOS", "Not an LPOS file (bad magic)");
+    let is_flps = magic == b"FLPS";
+    let is_lpos = magic == b"LPOS";
+    assert!(is_lpos || is_flps,
+        "Unknown file format (magic: {:?}), expected LPOS or FLPS", magic);
+
     let version = read_u32!();
-    assert_eq!(version, 1, "Unsupported LPOS version {}", version);
+    assert_eq!(version, 1, "Unsupported version {}", version);
     let num_positions = read_u32!() as usize;
 
-    eprintln!("  File header: {} positions, version {}", num_positions, version);
+    let num_labels = if is_flps {
+        let nl = read_u32!() as usize;
+        assert!(label_index < nl,
+            "--label-index {} out of range (file has {} labels)", label_index, nl);
+        let label_name = if nl == 41 && label_index < COMBINED_FEATURE_NAMES.len() {
+            COMBINED_FEATURE_NAMES[label_index]
+        } else {
+            "unknown"
+        };
+        eprintln!("  FLPS format: {} positions, {} labels, using label index {} ({})",
+            num_positions, nl, label_index, label_name);
+        nl
+    } else {
+        if label_index != 0 {
+            eprintln!("  Warning: --label-index {} ignored for LPOS format (single label)", label_index);
+        }
+        eprintln!("  LPOS format: {} positions, version {}", num_positions, version);
+        1
+    };
 
     let mut positions = Vec::with_capacity(num_positions);
     for _ in 0..num_positions {
@@ -92,7 +135,21 @@ fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
         for i in 0..BAG_FEATURES {
             bag_features[i] = read_f32!();
         }
-        let label = read_f32!();
+
+        let label = if is_flps {
+            // Read all labels, pick the one at label_index
+            let mut selected = 0.0f32;
+            for li in 0..num_labels {
+                let val = read_f32!();
+                if li == label_index {
+                    selected = val;
+                }
+            }
+            selected
+        } else {
+            read_f32!()
+        };
+
         let count = read_u32!();
         positions.push(LabeledPosition {
             active_indices,
@@ -226,7 +283,7 @@ fn main() {
             eprintln!(
                 "Usage: supervised_train_cnn --input <path> [--conv-channels 64,64,32] \
                  [--fc-sizes 128] [--kernel box|diamond|cross] [--lr 0.001] \
-                 [--epochs 10] [--batch-size 256] \
+                 [--epochs 10] [--batch-size 256] [--label-index 0] \
                  [--eval-interval 50000] [--eval-games 500] [--benchmark base,random] \
                  [--checkpoint-dir D:/temp/supervised_cnn] [--seed 42]"
             );
@@ -257,6 +314,7 @@ fn main() {
     let lr: f32 = parse_flag(&args, "--lr").unwrap_or(0.001);
     let epochs: usize = parse_flag(&args, "--epochs").unwrap_or(10);
     let batch_size: usize = parse_flag(&args, "--batch-size").unwrap_or(256);
+    let label_index: usize = parse_flag(&args, "--label-index").unwrap_or(0);
     let eval_interval: usize = parse_flag(&args, "--eval-interval").unwrap_or(50000);
     let eval_games: u32 = parse_flag(&args, "--eval-games").unwrap_or(500);
     let checkpoint_dir: String = parse_flag(&args, "--checkpoint-dir")
@@ -269,7 +327,7 @@ fn main() {
 
     // Print configuration
     eprintln!("=== Supervised CNN Training ===");
-    let (positions, _label_min, _label_max) = load_lpos(&input_path);
+    let (positions, _label_min, _label_max) = load_lpos(&input_path, label_index);
 
     let input_channels = duke_training::encoding::NUM_BOARD_PLANES;
     let board_size = duke_training::encoding::BOARD_SIZE;
