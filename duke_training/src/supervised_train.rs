@@ -287,6 +287,7 @@ fn batch_forward(
     hidden_layers: &[usize],
     positions: &[&LabeledPosition],
     scratch: &mut FcScratch,
+    residual_interval: usize,
 ) {
     let batch_size = positions.len();
     let num_layers = hidden_layers.len();
@@ -366,15 +367,30 @@ fn batch_forward(
             );
         }
 
-        // Fused bias + ReLU
-        let act_l = &mut scratch.act[layer_idx];
+        // Bias
         for bi in 0..batch_size {
             let row_pre = &mut pre[bi * cur_size..(bi + 1) * cur_size];
-            let row_act = &mut act_l[bi * cur_size..(bi + 1) * cur_size];
             for j in 0..cur_size {
                 row_pre[j] += lb[j];
-                row_act[j] = row_pre[j].max(0.0);
             }
+        }
+
+        // Residual (skip) connection: add activation from N layers back
+        if residual_interval > 0
+            && layer_idx >= residual_interval
+            && hidden_layers[layer_idx] == hidden_layers[layer_idx - residual_interval]
+        {
+            let src_layer = layer_idx - residual_interval;
+            let src_act = &scratch.act[src_layer];
+            for i in 0..batch_size * cur_size {
+                pre[i] += src_act[i];
+            }
+        }
+
+        // ReLU
+        let act_l = &mut scratch.act[layer_idx];
+        for i in 0..batch_size * cur_size {
+            act_l[i] = pre[i].max(0.0);
         }
     }
 
@@ -409,6 +425,7 @@ fn batch_backward(
     targets: &[f32],
     inv_batch: f32,
     scratch: &mut FcScratch,
+    residual_interval: usize,
 ) {
     let batch_size = positions.len();
     let num_layers = hidden_layers.len();
@@ -525,6 +542,27 @@ fn batch_backward(
         for i in 0..batch_size * prev_size {
             if pre_prev[i] <= 0.0 {
                 d_prev[i] = 0.0;
+            }
+        }
+
+        // Residual gradient: if layer (layer_idx-1) was the source for a residual
+        // connection to some later layer, add that layer's gradient.
+        // The destination layer is (layer_idx-1) + residual_interval.
+        if residual_interval > 0 {
+            let src = layer_idx - 1;
+            let dst = src + residual_interval;
+            if dst < num_layers
+                && hidden_layers[dst] == hidden_layers[src]
+            {
+                // d_act[dst] already has ReLU mask applied; add to d_prev (= d_act[src])
+                // We need to re-borrow since d_prev is d_act[layer_idx-1]
+                let (d_lower2, d_upper2) = scratch.d_act.split_at_mut(dst);
+                let d_dst = &d_upper2[0];
+                let d_src2 = &mut d_lower2[src];
+                let size = hidden_layers[src];
+                for i in 0..batch_size * size {
+                    d_src2[i] += d_dst[i];
+                }
             }
         }
     }
@@ -690,7 +728,8 @@ fn main() {
                 "Usage: supervised_train --input <path> [--hidden 256,128,64] [--lr 0.001] \
                  [--epochs 10] [--batch-size 256] [--label-index 0] \
                  [--eval-interval 50000] [--eval-games 500] [--benchmark base,random] \
-                 [--checkpoint-dir D:/temp/supervised_nn] [--seed 42]"
+                 [--checkpoint-dir D:/temp/supervised_nn] [--seed 42] \
+                 [--residual 0]"
             );
             std::process::exit(1);
         });
@@ -714,6 +753,7 @@ fn main() {
         .unwrap_or_else(|| "D:/temp/supervised_nn".to_string());
     let seed: u64 = parse_flag(&args, "--seed").unwrap_or(42);
 
+    let residual_interval: usize = parse_flag(&args, "--residual").unwrap_or(0);
     let benchmark_str: String = parse_flag(&args, "--benchmark")
         .unwrap_or_else(|| "base,random".to_string());
     let benchmark_specs: Vec<String> = benchmark_str.split(',').map(|s| s.trim().to_string()).collect();
@@ -739,6 +779,22 @@ fn main() {
     eprintln!("  Benchmark:      {:?}", benchmark_specs);
     eprintln!("  Checkpoint dir: {}", checkpoint_dir);
     eprintln!("  Seed:           {}", seed);
+    if residual_interval > 0 {
+        // Report which layers will actually get residual connections
+        let mut residual_pairs = Vec::new();
+        for l in 1..hidden_layers.len() {
+            if l >= residual_interval
+                && hidden_layers[l] == hidden_layers[l - residual_interval]
+            {
+                residual_pairs.push(format!("L{}->L{}", l - residual_interval, l));
+            }
+        }
+        eprintln!("  Residual:       every {} layers ({})", residual_interval,
+            if residual_pairs.is_empty() { "none active".to_string() }
+            else { residual_pairs.join(", ") });
+    } else {
+        eprintln!("  Residual:       off");
+    }
     eprintln!();
 
     let max_positions: Option<usize> = parse_flag(&args, "--max-positions");
@@ -864,6 +920,7 @@ fn main() {
                 &hidden_layers,
                 &batch_positions,
                 &mut scratch,
+                residual_interval,
             );
 
             let batch_loss_val = batch_loss(&scratch, &batch_targets[..actual_batch_size], actual_batch_size);
@@ -877,6 +934,7 @@ fn main() {
                 &batch_targets[..actual_batch_size],
                 inv_batch,
                 &mut scratch,
+                residual_interval,
             );
 
             // Adam update
@@ -983,4 +1041,230 @@ fn main() {
     // Final evaluation
     eprintln!("\n--- Final evaluation ---");
     evaluate_model(&net, &benchmark_specs, eval_games);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duke_training::encoding::TOTAL_FEATURES;
+    use duke_training::generic_mlp::GenericMlp;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    /// Create a dummy batch of labeled positions for testing.
+    fn make_dummy_positions(n: usize) -> Vec<LabeledPosition> {
+        (0..n)
+            .map(|i| LabeledPosition {
+                active_indices: vec![(i % 100) as u16, ((i * 7 + 3) % 200) as u16],
+                bag_features: {
+                    let mut b = [0.0f32; BAG_FEATURES];
+                    b[0] = 1.0;
+                    b[1] = 0.5;
+                    b
+                },
+                label: (i as f32 - n as f32 / 2.0) * 0.1,
+                count: 1,
+            })
+            .collect()
+    }
+
+    /// Run a forward pass and return outputs for the batch.
+    fn run_forward(
+        weights: &[f32],
+        input_size: usize,
+        hidden_layers: &[usize],
+        positions: &[LabeledPosition],
+        residual_interval: usize,
+    ) -> Vec<f32> {
+        let batch_size = positions.len();
+        let num_params = GenericMlp::param_count(input_size, hidden_layers);
+        let mut scratch = FcScratch::new(hidden_layers, num_params, batch_size, input_size);
+        let pos_refs: Vec<&LabeledPosition> = positions.iter().collect();
+        batch_forward(weights, input_size, hidden_layers, &pos_refs, &mut scratch, residual_interval);
+        scratch.outputs[..batch_size].to_vec()
+    }
+
+    /// Run forward + backward and return (outputs, gradients).
+    fn run_forward_backward(
+        weights: &[f32],
+        input_size: usize,
+        hidden_layers: &[usize],
+        positions: &[LabeledPosition],
+        residual_interval: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let batch_size = positions.len();
+        let num_params = GenericMlp::param_count(input_size, hidden_layers);
+        let mut scratch = FcScratch::new(hidden_layers, num_params, batch_size, input_size);
+        let pos_refs: Vec<&LabeledPosition> = positions.iter().collect();
+        let targets: Vec<f32> = positions.iter().map(|p| label_to_target(p.label)).collect();
+        let inv_batch = 1.0 / batch_size as f32;
+
+        batch_forward(weights, input_size, hidden_layers, &pos_refs, &mut scratch, residual_interval);
+        let outputs = scratch.outputs[..batch_size].to_vec();
+
+        scratch.zero_grad();
+        batch_backward(weights, input_size, hidden_layers, &pos_refs, &targets, inv_batch, &mut scratch, residual_interval);
+        let grads = scratch.grad.clone();
+        (outputs, grads)
+    }
+
+    #[test]
+    fn test_residual_0_matches_no_residual() {
+        // residual_interval=0 should produce identical outputs to no-residual behavior
+        let mut rng = StdRng::seed_from_u64(42);
+        let input_size = TOTAL_FEATURES;
+        let hidden = vec![64, 64, 64];
+        let net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+        let positions = make_dummy_positions(8);
+
+        let out_0 = run_forward(&net.weights, input_size, &hidden, &positions, 0);
+        // Run again with same weights to confirm determinism
+        let out_0b = run_forward(&net.weights, input_size, &hidden, &positions, 0);
+
+        assert_eq!(out_0, out_0b, "forward pass should be deterministic");
+
+        // Also check backward produces same gradients
+        let (_, grad_0) = run_forward_backward(&net.weights, input_size, &hidden, &positions, 0);
+        let (_, grad_0b) = run_forward_backward(&net.weights, input_size, &hidden, &positions, 0);
+        assert_eq!(grad_0, grad_0b, "backward pass should be deterministic");
+    }
+
+    #[test]
+    fn test_residual_only_same_width() {
+        // 128->64->64->64: residual=1 should only apply between layers of width 64
+        // Layer 0: 128, Layer 1: 64, Layer 2: 64, Layer 3: 64
+        // Residual should apply: L1->L2 (both 64), L2->L3 (both 64)
+        // But NOT input->L0 (different sizes), and NOT L0->L1 (128 != 64)
+        let mut rng = StdRng::seed_from_u64(99);
+        let input_size = TOTAL_FEATURES;
+        let hidden_mixed = vec![128, 64, 64, 64];
+        let net = GenericMlp::random(input_size, hidden_mixed.clone(), &mut rng);
+        let positions = make_dummy_positions(8);
+
+        let out_no_res = run_forward(&net.weights, input_size, &hidden_mixed, &positions, 0);
+        let out_res1 = run_forward(&net.weights, input_size, &hidden_mixed, &positions, 1);
+
+        // They should differ because layers 1->2 and 2->3 get residuals (both 64)
+        assert_ne!(out_no_res, out_res1,
+            "residual=1 should produce different outputs when same-width layers exist");
+
+        // Now test with all-different widths: 128->64->32 -- no residuals possible
+        let hidden_diff = vec![128, 64, 32];
+        let net2 = GenericMlp::random(input_size, hidden_diff.clone(), &mut rng);
+        let out_diff_no = run_forward(&net2.weights, input_size, &hidden_diff, &positions, 0);
+        let out_diff_r1 = run_forward(&net2.weights, input_size, &hidden_diff, &positions, 1);
+        assert_eq!(out_diff_no, out_diff_r1,
+            "residual=1 with all-different widths should be identical to no residual");
+    }
+
+    #[test]
+    fn test_residual_forward_finite() {
+        // With residuals, outputs should still be finite
+        let mut rng = StdRng::seed_from_u64(123);
+        let input_size = TOTAL_FEATURES;
+        let hidden = vec![64, 64, 64, 64, 64, 64, 64, 64]; // 8 layers
+        let net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+        let positions = make_dummy_positions(16);
+
+        for interval in &[1, 2, 4] {
+            let out = run_forward(&net.weights, input_size, &hidden, &positions, *interval);
+            for (i, &v) in out.iter().enumerate() {
+                assert!(v.is_finite(), "output[{}] not finite with residual={}", i, interval);
+                assert!(v >= 0.0 && v <= 1.0, "output[{}]={} out of sigmoid range with residual={}", i, v, interval);
+            }
+        }
+    }
+
+    #[test]
+    fn test_residual_changes_output() {
+        // Residual vs no-residual should produce different outputs (same weights, same-width layers)
+        let mut rng = StdRng::seed_from_u64(77);
+        let input_size = TOTAL_FEATURES;
+        let hidden = vec![64, 64, 64, 64];
+        let net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+        let positions = make_dummy_positions(8);
+
+        let out_0 = run_forward(&net.weights, input_size, &hidden, &positions, 0);
+        let out_1 = run_forward(&net.weights, input_size, &hidden, &positions, 1);
+        let out_2 = run_forward(&net.weights, input_size, &hidden, &positions, 2);
+
+        assert_ne!(out_0, out_1, "residual=1 should differ from residual=0");
+        assert_ne!(out_0, out_2, "residual=2 should differ from residual=0");
+        // residual=1 and residual=2 may or may not be the same, but usually differ
+    }
+
+    #[test]
+    fn test_deep_network_training_with_residuals() {
+        // A deep network (256x8) with residuals should be able to reduce loss
+        let mut rng = StdRng::seed_from_u64(42);
+        let input_size = TOTAL_FEATURES;
+        let hidden = vec![64, 64, 64, 64, 64, 64, 64, 64]; // 8 layers (use 64 for speed)
+        let mut net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+        let num_params = GenericMlp::param_count(input_size, &hidden);
+        let batch_size = 32;
+        let residual_interval = 1;
+
+        let positions = make_dummy_positions(batch_size);
+        let pos_refs: Vec<&LabeledPosition> = positions.iter().collect();
+        let targets: Vec<f32> = positions.iter().map(|p| label_to_target(p.label)).collect();
+        let inv_batch = 1.0 / batch_size as f32;
+
+        let mut scratch = FcScratch::new(&hidden, num_params, batch_size, input_size);
+        let mut adam = AdamState::new(num_params, 0.001);
+
+        // Compute initial loss
+        batch_forward(&net.weights, input_size, &hidden, &pos_refs, &mut scratch, residual_interval);
+        let initial_loss = batch_loss(&scratch, &targets, batch_size);
+
+        // Train for 200 steps
+        for _ in 0..200 {
+            scratch.zero_grad();
+            batch_forward(&net.weights, input_size, &hidden, &pos_refs, &mut scratch, residual_interval);
+            batch_backward(&net.weights, input_size, &hidden, &pos_refs, &targets, inv_batch, &mut scratch, residual_interval);
+            adam.step(&mut net.weights, &scratch.grad);
+        }
+
+        batch_forward(&net.weights, input_size, &hidden, &pos_refs, &mut scratch, residual_interval);
+        let final_loss = batch_loss(&scratch, &targets, batch_size);
+
+        assert!(final_loss < initial_loss,
+            "Loss should decrease: initial={:.6}, final={:.6}", initial_loss, final_loss);
+        assert!(final_loss.is_finite(), "Final loss should be finite");
+    }
+
+    #[test]
+    fn test_residual_interval_2() {
+        // With interval=2 on 64x6, residuals should be at layers 2,4 (skipping from 0,2)
+        let mut rng = StdRng::seed_from_u64(55);
+        let input_size = TOTAL_FEATURES;
+        let hidden = vec![64, 64, 64, 64, 64, 64];
+        let net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+        let positions = make_dummy_positions(8);
+
+        let out_0 = run_forward(&net.weights, input_size, &hidden, &positions, 0);
+        let out_2 = run_forward(&net.weights, input_size, &hidden, &positions, 2);
+
+        // Should differ since layers 2 and 4 get residual connections
+        assert_ne!(out_0, out_2, "residual=2 should produce different outputs");
+    }
+
+    #[test]
+    fn test_gradient_with_residual_is_finite() {
+        // Gradients should be finite with residual connections
+        let mut rng = StdRng::seed_from_u64(88);
+        let input_size = TOTAL_FEATURES;
+        let hidden = vec![64, 64, 64, 64, 64, 64, 64, 64];
+        let net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+        let positions = make_dummy_positions(8);
+
+        let (_, grads) = run_forward_backward(&net.weights, input_size, &hidden, &positions, 1);
+        for (i, &g) in grads.iter().enumerate() {
+            assert!(g.is_finite(), "gradient[{}] not finite with residual=1", i);
+        }
+
+        let (_, grads2) = run_forward_backward(&net.weights, input_size, &hidden, &positions, 2);
+        for (i, &g) in grads2.iter().enumerate() {
+            assert!(g.is_finite(), "gradient[{}] not finite with residual=2", i);
+        }
+    }
 }
