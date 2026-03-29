@@ -50,6 +50,24 @@ pub fn diamond_mask_5x5() -> [bool; 25] {
     mask
 }
 
+/// Precomputed list of (ky, kx, flat_index) for the 13 active diamond positions.
+/// Avoids checking the mask in inner loops.
+const DIAMOND_OFFSETS: [(i32, i32, usize); 13] = [
+    (0, 2, 2),
+    (1, 1, 6),
+    (1, 2, 7),
+    (1, 3, 8),
+    (2, 0, 10),
+    (2, 1, 11),
+    (2, 2, 12),
+    (2, 3, 13),
+    (2, 4, 14),
+    (3, 1, 16),
+    (3, 2, 17),
+    (3, 3, 18),
+    (4, 2, 22),
+];
+
 // ── CnnModel ──────────────────────────────────────────────────────────────
 
 /// Manual CNN value network. All parameters stored in a single flat vector.
@@ -435,7 +453,8 @@ impl CnnModel {
                 out_ch,
                 &mut pre,
             );
-            let post: Vec<f32> = pre.iter().map(|&v| v.max(0.0)).collect();
+            let mut post = pre.clone();
+            for v in post.iter_mut() { *v = v.max(0.0); }
             conv_pre_relu.push(pre);
             conv_post_relu.push(post);
         }
@@ -463,7 +482,8 @@ impl CnnModel {
                 out_ch,
                 &mut pre,
             );
-            let post: Vec<f32> = pre.iter().map(|&v| v.max(0.0)).collect();
+            let mut post = pre.clone();
+            for v in post.iter_mut() { *v = v.max(0.0); }
             conv_pre_relu.push(pre);
             conv_post_relu.push(post);
         }
@@ -498,10 +518,11 @@ impl CnnModel {
                     }
                 }
             }
-            let post: Vec<f32> = pre.iter().map(|&v| v.max(0.0)).collect();
+            let mut post = pre.clone();
+            for v in post.iter_mut() { *v = v.max(0.0); }
             fc_pre_relu.push(pre);
-            fc_post_relu.push(post.clone());
-            prev_act = post;
+            prev_act = post.clone();
+            fc_post_relu.push(post);
         }
 
         // ── Output layer ──
@@ -577,7 +598,6 @@ impl CnnModel {
                 }
             }
             KernelType::Diamond => {
-                let mask = diamond_mask_5x5();
                 for &feat_idx in active_board {
                     let plane = feat_idx / spatial;
                     let pos = feat_idx % spatial;
@@ -586,19 +606,12 @@ impl CnnModel {
 
                     for oc in 0..out_ch {
                         let w_base = (oc * in_ch + plane) * 25;
-                        for ky in 0..5i32 {
-                            for kx in 0..5i32 {
-                                let k_idx = (ky * 5 + kx) as usize;
-                                if !mask[k_idx] {
-                                    continue;
-                                }
-                                // pad=2
-                                let oy = iy - ky + 2;
-                                let ox = ix - kx + 2;
-                                if oy >= 0 && oy < bs && ox >= 0 && ox < bs {
-                                    let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
-                                    output[out_idx] += layer_weights[w_base + k_idx];
-                                }
+                        for &(ky, kx, k_idx) in &DIAMOND_OFFSETS {
+                            let oy = iy - ky + 2;
+                            let ox = ix - kx + 2;
+                            if oy >= 0 && oy < bs && ox >= 0 && ox < bs {
+                                let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
+                                output[out_idx] += layer_weights[w_base + k_idx];
                             }
                         }
                     }
@@ -666,6 +679,7 @@ impl CnnModel {
     }
 
     /// Dense conv accumulation for layers 2+.
+    /// Uses pre-padded buffers to eliminate bounds checking from inner loops.
     fn dense_conv_accumulate(
         &self,
         layer_weights: &[f32],
@@ -674,58 +688,80 @@ impl CnnModel {
         out_ch: usize,
         output: &mut [f32],
     ) {
-        let bs = self.board_size as i32;
-        let spatial = (bs * bs) as usize;
+        let bs = self.board_size;
+        let spatial = bs * bs;
 
         match self.kernel_type {
             KernelType::Box => {
+                // Pre-pad input: 6x6 -> 8x8 with pad=1
+                let pbs = bs + 2; // padded board size = 8
+                let pspatial = pbs * pbs; // 64
+                // Stack-allocate padded buffer: max 128 channels * 64 = 8192 f32
+                let mut padded = [0.0f32; 128 * 64]; // 128 ch * 8*8
+                debug_assert!(in_ch <= 128);
+                for ic in 0..in_ch {
+                    for y in 0..bs {
+                        for x in 0..bs {
+                            padded[ic * pspatial + (y + 1) * pbs + (x + 1)] =
+                                input[ic * spatial + y * bs + x];
+                        }
+                    }
+                }
                 for oc in 0..out_ch {
                     for ic in 0..in_ch {
                         let w_base = (oc * in_ch + ic) * 9;
+                        let w = &layer_weights[w_base..w_base + 9];
+                        let pad_base = ic * pspatial;
                         for oy in 0..bs {
+                            let out_row = oc * spatial + oy * bs;
+                            let pad_row0 = pad_base + oy * pbs;
+                            let pad_row1 = pad_base + (oy + 1) * pbs;
+                            let pad_row2 = pad_base + (oy + 2) * pbs;
                             for ox in 0..bs {
-                                let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
-                                let mut sum = 0.0f32;
-                                for ky in 0..3i32 {
-                                    for kx in 0..3i32 {
-                                        let iy = oy + ky - 1; // pad=1
-                                        let ix = ox + kx - 1;
-                                        if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                            let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                            sum += input[in_idx] * layer_weights[w_base + (ky * 3 + kx) as usize];
-                                        }
-                                    }
-                                }
-                                output[out_idx] += sum;
+                                let sum = padded[pad_row0 + ox] * w[0]
+                                    + padded[pad_row0 + ox + 1] * w[1]
+                                    + padded[pad_row0 + ox + 2] * w[2]
+                                    + padded[pad_row1 + ox] * w[3]
+                                    + padded[pad_row1 + ox + 1] * w[4]
+                                    + padded[pad_row1 + ox + 2] * w[5]
+                                    + padded[pad_row2 + ox] * w[6]
+                                    + padded[pad_row2 + ox + 1] * w[7]
+                                    + padded[pad_row2 + ox + 2] * w[8];
+                                output[out_row + ox] += sum;
                             }
                         }
                     }
                 }
             }
             KernelType::Diamond => {
-                let mask = diamond_mask_5x5();
+                // Pre-pad input: 6x6 -> 10x10 with pad=2
+                let pbs = bs + 4; // 10
+                let pspatial = pbs * pbs; // 100
+                let mut padded = [0.0f32; 128 * 100]; // 128 ch * 10*10
+                debug_assert!(in_ch <= 128);
+                for ic in 0..in_ch {
+                    for y in 0..bs {
+                        for x in 0..bs {
+                            padded[ic * pspatial + (y + 2) * pbs + (x + 2)] =
+                                input[ic * spatial + y * bs + x];
+                        }
+                    }
+                }
                 for oc in 0..out_ch {
                     for ic in 0..in_ch {
                         let w_base = (oc * in_ch + ic) * 25;
+                        let pad_base = ic * pspatial;
                         for oy in 0..bs {
+                            let out_row = oc * spatial + oy * bs;
                             for ox in 0..bs {
-                                let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
                                 let mut sum = 0.0f32;
-                                for ky in 0..5i32 {
-                                    for kx in 0..5i32 {
-                                        let k_idx = (ky * 5 + kx) as usize;
-                                        if !mask[k_idx] {
-                                            continue;
-                                        }
-                                        let iy = oy + ky - 2; // pad=2
-                                        let ix = ox + kx - 2;
-                                        if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                            let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                            sum += input[in_idx] * layer_weights[w_base + k_idx];
-                                        }
-                                    }
+                                for &(ky, kx, k_idx) in &DIAMOND_OFFSETS {
+                                    let py = oy as i32 + ky;
+                                    let px = ox as i32 + kx;
+                                    sum += padded[pad_base + py as usize * pbs + px as usize]
+                                        * layer_weights[w_base + k_idx];
                                 }
-                                output[out_idx] += sum;
+                                output[out_row + ox] += sum;
                             }
                         }
                     }
@@ -738,54 +774,87 @@ impl CnnModel {
                 let h_w = &layer_weights[box_size..box_size + h_size];
                 let v_w = &layer_weights[box_size + h_size..box_size + h_size + h_size];
 
+                // Pre-pad for box (pad=1): 8x8
+                let pbs_box = bs + 2;
+                let pspatial_box = pbs_box * pbs_box;
+                // Pre-pad for horizontal (pad=(0,2)): 6x10
+                let ph_w = bs + 4; // width padded to 10
+                let ph_spatial = bs * ph_w; // 6*10=60
+                // Pre-pad for vertical (pad=(2,0)): 10x6
+                let pv_h = bs + 4; // height padded to 10
+                let pv_spatial = pv_h * bs; // 10*6=60
+
+                let mut pad_box = [0.0f32; 128 * 64];
+                let mut pad_h = [0.0f32; 128 * 60];
+                let mut pad_v = [0.0f32; 128 * 60];
+                debug_assert!(in_ch <= 128);
+
+                for ic in 0..in_ch {
+                    for y in 0..bs {
+                        for x in 0..bs {
+                            let val = input[ic * spatial + y * bs + x];
+                            pad_box[ic * pspatial_box + (y + 1) * pbs_box + (x + 1)] = val;
+                            pad_h[ic * ph_spatial + y * ph_w + (x + 2)] = val;
+                            pad_v[ic * pv_spatial + (y + 2) * bs + x] = val;
+                        }
+                    }
+                }
+
                 for oc in 0..out_ch {
                     for ic in 0..in_ch {
                         let bw_base = (oc * in_ch + ic) * 9;
                         let hw_base = (oc * in_ch + ic) * 5;
                         let vw_base = (oc * in_ch + ic) * 5;
+                        let bw = &box_w[bw_base..bw_base + 9];
+                        let hw = &h_w[hw_base..hw_base + 5];
+                        let vw = &v_w[vw_base..vw_base + 5];
+
+                        let pb = ic * pspatial_box;
+                        let phb = ic * ph_spatial;
+                        let pvb = ic * pv_spatial;
 
                         for oy in 0..bs {
+                            let out_row = oc * spatial + oy * bs;
+                            // Box padded rows
+                            let br0 = pb + oy * pbs_box;
+                            let br1 = pb + (oy + 1) * pbs_box;
+                            let br2 = pb + (oy + 2) * pbs_box;
+                            // Horizontal padded row
+                            let hr = phb + oy * ph_w;
+                            // Vertical padded rows
+                            let vr0 = pvb + oy * bs;
+                            let vr1 = pvb + (oy + 1) * bs;
+                            let vr2 = pvb + (oy + 2) * bs;
+                            let vr3 = pvb + (oy + 3) * bs;
+                            let vr4 = pvb + (oy + 4) * bs;
+
                             for ox in 0..bs {
-                                let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
-                                let mut sum = 0.0f32;
+                                // Box 3x3
+                                let sum_box = pad_box[br0 + ox] * bw[0]
+                                    + pad_box[br0 + ox + 1] * bw[1]
+                                    + pad_box[br0 + ox + 2] * bw[2]
+                                    + pad_box[br1 + ox] * bw[3]
+                                    + pad_box[br1 + ox + 1] * bw[4]
+                                    + pad_box[br1 + ox + 2] * bw[5]
+                                    + pad_box[br2 + ox] * bw[6]
+                                    + pad_box[br2 + ox + 1] * bw[7]
+                                    + pad_box[br2 + ox + 2] * bw[8];
 
-                                // Box 3x3, pad=1
-                                for ky in 0..3i32 {
-                                    for kx in 0..3i32 {
-                                        let iy = oy + ky - 1;
-                                        let ix = ox + kx - 1;
-                                        if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                            let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                            sum += input[in_idx] * box_w[bw_base + (ky * 3 + kx) as usize];
-                                        }
-                                    }
-                                }
+                                // Horizontal 1x5
+                                let sum_h = pad_h[hr + ox] * hw[0]
+                                    + pad_h[hr + ox + 1] * hw[1]
+                                    + pad_h[hr + ox + 2] * hw[2]
+                                    + pad_h[hr + ox + 3] * hw[3]
+                                    + pad_h[hr + ox + 4] * hw[4];
 
-                                // Horizontal 1x5, pad=(0,2)
-                                {
-                                    let iy = oy; // pad_h = 0, ky=0
-                                    if iy >= 0 && iy < bs {
-                                        for kx in 0..5i32 {
-                                            let ix = ox + kx - 2;
-                                            if ix >= 0 && ix < bs {
-                                                let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                                sum += input[in_idx] * h_w[hw_base + kx as usize];
-                                            }
-                                        }
-                                    }
-                                }
+                                // Vertical 5x1
+                                let sum_v = pad_v[vr0 + ox] * vw[0]
+                                    + pad_v[vr1 + ox] * vw[1]
+                                    + pad_v[vr2 + ox] * vw[2]
+                                    + pad_v[vr3 + ox] * vw[3]
+                                    + pad_v[vr4 + ox] * vw[4];
 
-                                // Vertical 5x1, pad=(2,0)
-                                for ky in 0..5i32 {
-                                    let iy = oy + ky - 2;
-                                    let ix = ox; // pad_w = 0, kx=0
-                                    if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                        let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                        sum += input[in_idx] * v_w[vw_base + ky as usize];
-                                    }
-                                }
-
-                                output[out_idx] += sum;
+                                output[out_row + ox] += sum_box + sum_h + sum_v;
                             }
                         }
                     }
@@ -1044,8 +1113,8 @@ fn backward_conv_layers(
     conv_offsets: &[usize],
     grad: &mut [f32],
 ) {
-    let bs = model.board_size as i32;
-    let spatial = (bs * bs) as usize;
+    let bs = model.board_size;
+    let spatial = bs * bs;
     let kwpp = CnnModel::kernel_weights_per_pair(model.kernel_type);
     let num_conv = model.conv_channels.len();
 
@@ -1062,37 +1131,30 @@ fn backward_conv_layers(
         let off = conv_offsets[layer_idx];
         let w_size = out_ch * in_ch * kwpp;
 
-        // Apply ReLU derivative
-        let mut d_pre = vec![0.0f32; out_ch * spatial];
-        for i in 0..out_ch * spatial {
-            if forward.conv_pre_relu[layer_idx][i] > 0.0 {
-                d_pre[i] = d_post[i];
-            }
-        }
-
-        // Bias gradient: sum over spatial dimensions for each output channel
+        // Fuse ReLU derivative with bias gradient computation in a single pass
+        // Apply ReLU mask in-place on d_post, then sum for bias
+        let pre_relu = &forward.conv_pre_relu[layer_idx];
         let bias_off = off + w_size;
         for oc in 0..out_ch {
+            let base = oc * spatial;
             let mut sum = 0.0f32;
             for s in 0..spatial {
-                sum += d_pre[oc * spatial + s];
+                let idx = base + s;
+                // Fuse: zero out where pre_relu <= 0 (ReLU derivative), accumulate bias grad
+                let d = if pre_relu[idx] > 0.0 { d_post[idx] } else { 0.0 };
+                d_post[idx] = d;
+                sum += d;
             }
             grad[bias_off + oc] += sum;
         }
-
-        // Get input to this layer
-        let input_data: &[f32] = if layer_idx > 0 {
-            &forward.conv_post_relu[layer_idx - 1]
-        } else {
-            &[] // sparse — handled differently
-        };
+        // d_post now contains d_pre (gradient after ReLU derivative applied)
 
         if layer_idx == 0 {
             // Sparse weight gradient for first layer
             backward_conv_sparse_weights(
                 model,
                 active_board,
-                &d_pre,
+                &d_post,
                 in_ch,
                 out_ch,
                 off,
@@ -1101,12 +1163,13 @@ fn backward_conv_layers(
             // No need to propagate gradient to input
         } else {
             // Dense: compute weight gradients and propagate to previous layer
+            let input_data = &forward.conv_post_relu[layer_idx - 1];
             let mut d_input = vec![0.0f32; in_ch * spatial];
             backward_conv_dense(
                 model,
                 &model.weights[off..off + w_size],
                 input_data,
-                &d_pre,
+                &d_post,
                 in_ch,
                 out_ch,
                 off,
@@ -1159,7 +1222,6 @@ fn backward_conv_sparse_weights(
             }
         }
         KernelType::Diamond => {
-            let mask = diamond_mask_5x5();
             for &feat_idx in active_board {
                 let plane = feat_idx / spatial;
                 let pos = feat_idx % spatial;
@@ -1168,18 +1230,12 @@ fn backward_conv_sparse_weights(
 
                 for oc in 0..out_ch {
                     let w_base = weight_offset + (oc * in_ch + plane) * 25;
-                    for ky in 0..5i32 {
-                        for kx in 0..5i32 {
-                            let k_idx = (ky * 5 + kx) as usize;
-                            if !mask[k_idx] {
-                                continue;
-                            }
-                            let oy = iy - ky + 2;
-                            let ox = ix - kx + 2;
-                            if oy >= 0 && oy < bs && ox >= 0 && ox < bs {
-                                let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
-                                grad[w_base + k_idx] += d_pre[out_idx];
-                            }
+                    for &(ky, kx, k_idx) in &DIAMOND_OFFSETS {
+                        let oy = iy - ky + 2;
+                        let ox = ix - kx + 2;
+                        if oy >= 0 && oy < bs && ox >= 0 && ox < bs {
+                            let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
+                            grad[w_base + k_idx] += d_pre[out_idx];
                         }
                     }
                 }
@@ -1242,6 +1298,12 @@ fn backward_conv_sparse_weights(
 }
 
 /// Dense conv backward: compute weight gradients and input gradients.
+///
+/// Two-pass approach for cache friendliness:
+/// 1. Weight gradients: iterate (oy, ox) outer, (oc, ic, kernel) inner — d_pre access is sequential
+/// 2. Input gradients: iterate (oc) outer, (oy, ox, kernel) inner — d_input is cache-resident (only 6x6xC)
+///
+/// Both passes use pre-padded buffers to eliminate bounds checks.
 fn backward_conv_dense(
     model: &CnnModel,
     layer_weights: &[f32],
@@ -1253,73 +1315,175 @@ fn backward_conv_dense(
     d_input: &mut [f32],
     grad: &mut [f32],
 ) {
-    let bs = model.board_size as i32;
-    let spatial = (bs * bs) as usize;
+    let bs = model.board_size;
+    let spatial = bs * bs;
 
     match model.kernel_type {
         KernelType::Box => {
+            // Pre-pad input: 6x6 -> 8x8
+            let pbs = bs + 2;
+            let pspatial = pbs * pbs;
+            let mut padded_in = [0.0f32; 128 * 64];
+            debug_assert!(in_ch <= 128);
+            for ic in 0..in_ch {
+                for y in 0..bs {
+                    for x in 0..bs {
+                        padded_in[ic * pspatial + (y + 1) * pbs + (x + 1)] =
+                            input[ic * spatial + y * bs + x];
+                    }
+                }
+            }
+
+            // Pass 1: weight gradients
+            // Iterate (oy, ox) as outer to keep d_pre access sequential
+            for oc in 0..out_ch {
+                for ic in 0..in_ch {
+                    let w_base_grad = weight_offset + (oc * in_ch + ic) * 9;
+                    let pad_base = ic * pspatial;
+                    let mut wg = [0.0f32; 9];
+                    for oy in 0..bs {
+                        let out_row = oc * spatial + oy * bs;
+                        let pr0 = pad_base + oy * pbs;
+                        let pr1 = pad_base + (oy + 1) * pbs;
+                        let pr2 = pad_base + (oy + 2) * pbs;
+                        for ox in 0..bs {
+                            let d = d_pre[out_row + ox];
+                            if d == 0.0 { continue; }
+                            wg[0] += d * padded_in[pr0 + ox];
+                            wg[1] += d * padded_in[pr0 + ox + 1];
+                            wg[2] += d * padded_in[pr0 + ox + 2];
+                            wg[3] += d * padded_in[pr1 + ox];
+                            wg[4] += d * padded_in[pr1 + ox + 1];
+                            wg[5] += d * padded_in[pr1 + ox + 2];
+                            wg[6] += d * padded_in[pr2 + ox];
+                            wg[7] += d * padded_in[pr2 + ox + 1];
+                            wg[8] += d * padded_in[pr2 + ox + 2];
+                        }
+                    }
+                    for k in 0..9 {
+                        grad[w_base_grad + k] += wg[k];
+                    }
+                }
+            }
+
+            // Pass 2: input gradients
+            // Pre-pad d_pre: 6x6 -> 8x8
+            let mut padded_d = [0.0f32; 128 * 64];
+            debug_assert!(out_ch <= 128);
+            for oc_idx in 0..out_ch {
+                for y in 0..bs {
+                    for x in 0..bs {
+                        padded_d[oc_idx * pspatial + (y + 1) * pbs + (x + 1)] =
+                            d_pre[oc_idx * spatial + y * bs + x];
+                    }
+                }
+            }
             for oc in 0..out_ch {
                 for ic in 0..in_ch {
                     let w_base_local = (oc * in_ch + ic) * 9;
-                    let w_base_grad = weight_offset + w_base_local;
-
-                    for oy in 0..bs {
-                        for ox in 0..bs {
-                            let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
-                            let d = d_pre[out_idx];
-                            if d == 0.0 {
-                                continue;
-                            }
-
-                            for ky in 0..3i32 {
-                                for kx in 0..3i32 {
-                                    let iy = oy + ky - 1;
-                                    let ix = ox + kx - 1;
-                                    if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                        let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                        let k_idx = (ky * 3 + kx) as usize;
-                                        // Weight gradient
-                                        grad[w_base_grad + k_idx] += d * input[in_idx];
-                                        // Input gradient
-                                        d_input[in_idx] += d * layer_weights[w_base_local + k_idx];
-                                    }
-                                }
-                            }
+                    let w = &layer_weights[w_base_local..w_base_local + 9];
+                    // For input gradient: iy = oy + ky - 1 => oy = iy - ky + 1
+                    // Transposed conv: for each input position (iy, ix), sum over kernel
+                    // d_input[ic][iy][ix] += sum_ky_kx d_pre[oc][iy-ky+1][ix-kx+1] * w[ky][kx]
+                    // With padded d_pre (pad=1), d_pre_pad[iy-ky+1+1][ix-kx+1+1] = d_pre_pad[iy-ky+2][ix-kx+2]
+                    // Equivalently: flip kernel and convolve d_pre with flipped kernel
+                    let dpad_base = oc * pspatial;
+                    for iy in 0..bs {
+                        let di_row = ic * spatial + iy * bs;
+                        // d_pre_pad rows: iy-0+1=iy+1 down to iy-2+1=iy-1
+                        // But we need oy = iy-ky+1, padded_oy = oy+1 = iy-ky+2
+                        let dr0 = dpad_base + iy * pbs;       // ky=2: oy=iy-1, pad_oy=iy
+                        let dr1 = dpad_base + (iy + 1) * pbs; // ky=1: oy=iy, pad_oy=iy+1
+                        let dr2 = dpad_base + (iy + 2) * pbs; // ky=0: oy=iy+1, pad_oy=iy+2
+                        for ix in 0..bs {
+                            // Transposed convolution = correlation with flipped kernel
+                            // d_input[iy][ix] += d_pre[iy+1-ky][ix+1-kx] * w[ky][kx]
+                            // With padding shift, padded_d[iy+2-ky][ix+2-kx]
+                            let sum = padded_d[dr2 + ix] * w[0]       // ky=0,kx=0
+                                + padded_d[dr2 + ix + 1] * w[1]   // ky=0,kx=1
+                                + padded_d[dr2 + ix + 2] * w[2]   // ky=0,kx=2
+                                + padded_d[dr1 + ix] * w[3]       // ky=1,kx=0
+                                + padded_d[dr1 + ix + 1] * w[4]   // ky=1,kx=1
+                                + padded_d[dr1 + ix + 2] * w[5]   // ky=1,kx=2
+                                + padded_d[dr0 + ix] * w[6]       // ky=2,kx=0
+                                + padded_d[dr0 + ix + 1] * w[7]   // ky=2,kx=1
+                                + padded_d[dr0 + ix + 2] * w[8];  // ky=2,kx=2
+                            d_input[di_row + ix] += sum;
                         }
                     }
                 }
             }
         }
         KernelType::Diamond => {
-            let mask = diamond_mask_5x5();
+            // Pre-pad input: 6x6 -> 10x10 (pad=2)
+            let pbs = bs + 4;
+            let pspatial = pbs * pbs;
+            let mut padded_in = [0.0f32; 128 * 100];
+            debug_assert!(in_ch <= 128);
+            for ic in 0..in_ch {
+                for y in 0..bs {
+                    for x in 0..bs {
+                        padded_in[ic * pspatial + (y + 2) * pbs + (x + 2)] =
+                            input[ic * spatial + y * bs + x];
+                    }
+                }
+            }
+
+            // Pass 1: weight gradients
+            for oc in 0..out_ch {
+                for ic in 0..in_ch {
+                    let w_base_grad = weight_offset + (oc * in_ch + ic) * 25;
+                    let pad_base = ic * pspatial;
+                    let mut wg = [0.0f32; 25]; // only 13 will be nonzero
+                    for oy in 0..bs {
+                        let out_row = oc * spatial + oy * bs;
+                        for ox in 0..bs {
+                            let d = d_pre[out_row + ox];
+                            if d == 0.0 { continue; }
+                            for &(ky, kx, k_idx) in &DIAMOND_OFFSETS {
+                                let py = oy as i32 + ky;
+                                let px = ox as i32 + kx;
+                                wg[k_idx] += d * padded_in[pad_base + py as usize * pbs + px as usize];
+                            }
+                        }
+                    }
+                    for &(_, _, k_idx) in &DIAMOND_OFFSETS {
+                        grad[w_base_grad + k_idx] += wg[k_idx];
+                    }
+                }
+            }
+
+            // Pass 2: input gradients
+            // Pre-pad d_pre: 6x6 -> 10x10
+            let mut padded_d = [0.0f32; 128 * 100];
+            debug_assert!(out_ch <= 128);
+            for oc_idx in 0..out_ch {
+                for y in 0..bs {
+                    for x in 0..bs {
+                        padded_d[oc_idx * pspatial + (y + 2) * pbs + (x + 2)] =
+                            d_pre[oc_idx * spatial + y * bs + x];
+                    }
+                }
+            }
+            // Transposed diamond: for input position (iy,ix), sum over kernel
+            // d_input[ic][iy][ix] += sum_{ky,kx in diamond} d_pre[oc][iy-ky+2][ix-kx+2] * w[ky][kx]
+            // With padded d_pre (pad=2): d_pre_pad[iy-ky+4][ix-kx+4]
             for oc in 0..out_ch {
                 for ic in 0..in_ch {
                     let w_base_local = (oc * in_ch + ic) * 25;
-                    let w_base_grad = weight_offset + w_base_local;
-
-                    for oy in 0..bs {
-                        for ox in 0..bs {
-                            let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
-                            let d = d_pre[out_idx];
-                            if d == 0.0 {
-                                continue;
+                    let dpad_base = oc * pspatial;
+                    for iy in 0..bs {
+                        let di_row = ic * spatial + iy * bs;
+                        for ix in 0..bs {
+                            let mut sum = 0.0f32;
+                            for &(ky, kx, k_idx) in &DIAMOND_OFFSETS {
+                                // padded position = (iy - ky + 2 + 2, ix - kx + 2 + 2) = (iy - ky + 4, ix - kx + 4)
+                                let py = iy as i32 - ky + 4;
+                                let px = ix as i32 - kx + 4;
+                                sum += padded_d[dpad_base + py as usize * pbs + px as usize]
+                                    * layer_weights[w_base_local + k_idx];
                             }
-
-                            for ky in 0..5i32 {
-                                for kx in 0..5i32 {
-                                    let k_idx = (ky * 5 + kx) as usize;
-                                    if !mask[k_idx] {
-                                        continue;
-                                    }
-                                    let iy = oy + ky - 2;
-                                    let ix = ox + kx - 2;
-                                    if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                        let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                        grad[w_base_grad + k_idx] += d * input[in_idx];
-                                        d_input[in_idx] += d * layer_weights[w_base_local + k_idx];
-                                    }
-                                }
-                            }
+                            d_input[di_row + ix] += sum;
                         }
                     }
                 }
@@ -1336,59 +1500,173 @@ fn backward_conv_dense(
             let h_grad_off = weight_offset + box_size;
             let v_grad_off = h_grad_off + h_size;
 
+            // Pre-pad input for box (pad=1): 8x8
+            let pbs_box = bs + 2;
+            let pspatial_box = pbs_box * pbs_box;
+            // Pre-pad input for h (pad=(0,2)): 6x10
+            let ph_w = bs + 4;
+            let ph_spatial = bs * ph_w;
+            // Pre-pad input for v (pad=(2,0)): 10x6
+            let pv_h = bs + 4;
+            let pv_spatial = pv_h * bs;
+
+            let mut pad_in_box = [0.0f32; 128 * 64];
+            let mut pad_in_h = [0.0f32; 128 * 60];
+            let mut pad_in_v = [0.0f32; 128 * 60];
+            debug_assert!(in_ch <= 128);
+
+            for ic in 0..in_ch {
+                for y in 0..bs {
+                    for x in 0..bs {
+                        let val = input[ic * spatial + y * bs + x];
+                        pad_in_box[ic * pspatial_box + (y + 1) * pbs_box + (x + 1)] = val;
+                        pad_in_h[ic * ph_spatial + y * ph_w + (x + 2)] = val;
+                        pad_in_v[ic * pv_spatial + (y + 2) * bs + x] = val;
+                    }
+                }
+            }
+
+            // Pass 1: weight gradients
             for oc in 0..out_ch {
                 for ic in 0..in_ch {
                     let bw_base = (oc * in_ch + ic) * 9;
                     let hw_base = (oc * in_ch + ic) * 5;
                     let vw_base = (oc * in_ch + ic) * 5;
 
+                    let pb = ic * pspatial_box;
+                    let phb = ic * ph_spatial;
+                    let pvb = ic * pv_spatial;
+
+                    let mut wg_box = [0.0f32; 9];
+                    let mut wg_h = [0.0f32; 5];
+                    let mut wg_v = [0.0f32; 5];
+
                     for oy in 0..bs {
+                        let out_row = oc * spatial + oy * bs;
+                        let br0 = pb + oy * pbs_box;
+                        let br1 = pb + (oy + 1) * pbs_box;
+                        let br2 = pb + (oy + 2) * pbs_box;
+                        let hr = phb + oy * ph_w;
+                        let vr0 = pvb + oy * bs;
+                        let vr1 = pvb + (oy + 1) * bs;
+                        let vr2 = pvb + (oy + 2) * bs;
+                        let vr3 = pvb + (oy + 3) * bs;
+                        let vr4 = pvb + (oy + 4) * bs;
+
                         for ox in 0..bs {
-                            let out_idx = oc * spatial + (oy as usize) * bs as usize + ox as usize;
-                            let d = d_pre[out_idx];
-                            if d == 0.0 {
-                                continue;
-                            }
+                            let d = d_pre[out_row + ox];
+                            if d == 0.0 { continue; }
 
-                            // Box 3x3
-                            for ky in 0..3i32 {
-                                for kx in 0..3i32 {
-                                    let iy = oy + ky - 1;
-                                    let ix = ox + kx - 1;
-                                    if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                        let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                        let k_idx = (ky * 3 + kx) as usize;
-                                        grad[box_grad_off + bw_base + k_idx] += d * input[in_idx];
-                                        d_input[in_idx] += d * box_w[bw_base + k_idx];
-                                    }
-                                }
-                            }
+                            // Box 3x3 weight grads
+                            wg_box[0] += d * pad_in_box[br0 + ox];
+                            wg_box[1] += d * pad_in_box[br0 + ox + 1];
+                            wg_box[2] += d * pad_in_box[br0 + ox + 2];
+                            wg_box[3] += d * pad_in_box[br1 + ox];
+                            wg_box[4] += d * pad_in_box[br1 + ox + 1];
+                            wg_box[5] += d * pad_in_box[br1 + ox + 2];
+                            wg_box[6] += d * pad_in_box[br2 + ox];
+                            wg_box[7] += d * pad_in_box[br2 + ox + 1];
+                            wg_box[8] += d * pad_in_box[br2 + ox + 2];
 
-                            // Horizontal 1x5
-                            {
-                                let iy = oy;
-                                if iy >= 0 && iy < bs {
-                                    for kx in 0..5i32 {
-                                        let ix = ox + kx - 2;
-                                        if ix >= 0 && ix < bs {
-                                            let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                            grad[h_grad_off + hw_base + kx as usize] += d * input[in_idx];
-                                            d_input[in_idx] += d * h_w[hw_base + kx as usize];
-                                        }
-                                    }
-                                }
-                            }
+                            // Horizontal 1x5 weight grads
+                            wg_h[0] += d * pad_in_h[hr + ox];
+                            wg_h[1] += d * pad_in_h[hr + ox + 1];
+                            wg_h[2] += d * pad_in_h[hr + ox + 2];
+                            wg_h[3] += d * pad_in_h[hr + ox + 3];
+                            wg_h[4] += d * pad_in_h[hr + ox + 4];
 
-                            // Vertical 5x1
-                            for ky in 0..5i32 {
-                                let iy = oy + ky - 2;
-                                let ix = ox;
-                                if iy >= 0 && iy < bs && ix >= 0 && ix < bs {
-                                    let in_idx = ic * spatial + (iy as usize) * bs as usize + ix as usize;
-                                    grad[v_grad_off + vw_base + ky as usize] += d * input[in_idx];
-                                    d_input[in_idx] += d * v_w[vw_base + ky as usize];
-                                }
-                            }
+                            // Vertical 5x1 weight grads
+                            wg_v[0] += d * pad_in_v[vr0 + ox];
+                            wg_v[1] += d * pad_in_v[vr1 + ox];
+                            wg_v[2] += d * pad_in_v[vr2 + ox];
+                            wg_v[3] += d * pad_in_v[vr3 + ox];
+                            wg_v[4] += d * pad_in_v[vr4 + ox];
+                        }
+                    }
+                    for k in 0..9 { grad[box_grad_off + bw_base + k] += wg_box[k]; }
+                    for k in 0..5 { grad[h_grad_off + hw_base + k] += wg_h[k]; }
+                    for k in 0..5 { grad[v_grad_off + vw_base + k] += wg_v[k]; }
+                }
+            }
+
+            // Pass 2: input gradients using pre-padded d_pre
+            // Box: pad d_pre with pad=1
+            let mut pad_d_box = [0.0f32; 128 * 64];
+            // Horizontal: pad d_pre with pad=(0,2)
+            let mut pad_d_h = [0.0f32; 128 * 60];
+            // Vertical: pad d_pre with pad=(2,0)
+            let mut pad_d_v = [0.0f32; 128 * 60];
+            debug_assert!(out_ch <= 128);
+
+            for oc_idx in 0..out_ch {
+                for y in 0..bs {
+                    for x in 0..bs {
+                        let val = d_pre[oc_idx * spatial + y * bs + x];
+                        pad_d_box[oc_idx * pspatial_box + (y + 1) * pbs_box + (x + 1)] = val;
+                        pad_d_h[oc_idx * ph_spatial + y * ph_w + (x + 2)] = val;
+                        pad_d_v[oc_idx * pv_spatial + (y + 2) * bs + x] = val;
+                    }
+                }
+            }
+
+            for oc in 0..out_ch {
+                for ic in 0..in_ch {
+                    let bw_base = (oc * in_ch + ic) * 9;
+                    let hw_base = (oc * in_ch + ic) * 5;
+                    let vw_base = (oc * in_ch + ic) * 5;
+                    let bw = &box_w[bw_base..bw_base + 9];
+                    let hw = &h_w[hw_base..hw_base + 5];
+                    let vw = &v_w[vw_base..vw_base + 5];
+
+                    let db = oc * pspatial_box;
+                    let dhb = oc * ph_spatial;
+                    let dvb = oc * pv_spatial;
+
+                    for iy in 0..bs {
+                        let di_row = ic * spatial + iy * bs;
+                        // Box transposed: padded_d[iy-ky+2][ix-kx+2]
+                        let dbr0 = db + iy * pbs_box;
+                        let dbr1 = db + (iy + 1) * pbs_box;
+                        let dbr2 = db + (iy + 2) * pbs_box;
+                        // Horizontal transposed: padded_d_h[iy][ix-kx+2+2]=padded_d_h[iy][ix-kx+4]
+                        // d_input[iy][ix] += sum_kx d_pre[iy][ix-kx+2] * hw[kx]
+                        // padded: pad_d_h[iy*(bs+4) + ix-kx+2+2] = pad_d_h[iy*(bs+4) + ix-kx+4]
+                        let dhr = dhb + iy * ph_w;
+                        // Vertical transposed: d_input[iy][ix] += sum_ky d_pre[iy-ky+2][ix] * vw[ky]
+                        // padded: pad_d_v[(iy-ky+2+2)*bs + ix] = pad_d_v[(iy-ky+4)*bs + ix]
+                        let dvr0 = dvb + iy * bs;
+                        let dvr1 = dvb + (iy + 1) * bs;
+                        let dvr2 = dvb + (iy + 2) * bs;
+                        let dvr3 = dvb + (iy + 3) * bs;
+                        let dvr4 = dvb + (iy + 4) * bs;
+
+                        for ix in 0..bs {
+                            // Box transposed
+                            let sum_box = pad_d_box[dbr2 + ix] * bw[0]
+                                + pad_d_box[dbr2 + ix + 1] * bw[1]
+                                + pad_d_box[dbr2 + ix + 2] * bw[2]
+                                + pad_d_box[dbr1 + ix] * bw[3]
+                                + pad_d_box[dbr1 + ix + 1] * bw[4]
+                                + pad_d_box[dbr1 + ix + 2] * bw[5]
+                                + pad_d_box[dbr0 + ix] * bw[6]
+                                + pad_d_box[dbr0 + ix + 1] * bw[7]
+                                + pad_d_box[dbr0 + ix + 2] * bw[8];
+
+                            // Horizontal transposed
+                            let sum_h = pad_d_h[dhr + ix] * hw[0]
+                                + pad_d_h[dhr + ix + 1] * hw[1]
+                                + pad_d_h[dhr + ix + 2] * hw[2]
+                                + pad_d_h[dhr + ix + 3] * hw[3]
+                                + pad_d_h[dhr + ix + 4] * hw[4];
+
+                            // Vertical transposed
+                            let sum_v = pad_d_v[dvr4 + ix] * vw[0]
+                                + pad_d_v[dvr3 + ix] * vw[1]
+                                + pad_d_v[dvr2 + ix] * vw[2]
+                                + pad_d_v[dvr1 + ix] * vw[3]
+                                + pad_d_v[dvr0 + ix] * vw[4];
+
+                            d_input[di_row + ix] += sum_box + sum_h + sum_v;
                         }
                     }
                 }
