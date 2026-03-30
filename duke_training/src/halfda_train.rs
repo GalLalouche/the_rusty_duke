@@ -43,14 +43,12 @@ use duke_rust::game::tile::Owner;
 
 // ── Backend selection ────────────────────────────────────────────────────
 //
-// Use LibTorch (tch) backend for native CUDA performance.
-// LibTorch is auto-downloaded by tch-rs if not installed.
-// To use CUDA, set TORCH_CUDA_VERSION=cu121 (or appropriate version) before building.
-// Falls back to CPU if no CUDA device is available.
+// Wgpu backend (Vulkan/DX12 -- works on all GPUs without libtorch).
+// For native CUDA: switch to LibTorch and set TORCH_CUDA_VERSION=cu121.
 
-type TrainBackend = Autodiff<burn::backend::LibTorch>;
+type TrainBackend = Autodiff<burn::backend::wgpu::Wgpu>;
 #[allow(dead_code)]
-type InferBackend = burn::backend::LibTorch;
+type InferBackend = burn::backend::wgpu::Wgpu;
 
 // ── Model ─────────────────────────────────────────────────────────────────
 
