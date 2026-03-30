@@ -258,7 +258,8 @@ impl GameState {
             );
             assert!(self.board.can_move(src, dst), "Can't move from {} to {}", src, dst)
         }
-        let captured = self.board.make_a_move(self.game_move_to_board_move(&game_move));
+        let board_move = self.game_move_to_board_move(&game_move);
+        let captured = self.board.make_a_move(board_move);
         if let Some(captured_tile) = captured {
             // Captured tile goes to its owner's discard pile (not the captor's)
             self.discard_bag_for_mut(captured_tile.owner)
@@ -351,7 +352,10 @@ impl GameState {
             &MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT
     }
     pub fn is_over(&self) -> bool {
-        self.all_valid_game_moves_for_current_player().next().is_none() || self.is_tie()
+        !self.board.has_valid_moves(
+            self.current_player_turn,
+            WithNewTiles(self.bag_for_current_player().non_empty()),
+        ) || self.is_tie()
     }
 
     pub fn game_result(&self) -> GameResult {
@@ -423,7 +427,7 @@ impl GameState {
         self.board.all_valid_moves(
             o,
             WithNewTiles(self.bag_for_owner(o).non_empty()),
-        )
+        ).into_iter()
     }
 
     pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {

@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
@@ -46,25 +47,92 @@ impl Display for PossibleMove {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Interior-mutable game board. Wraps the actual board data in `UnsafeCell`
+/// so that `does_not_put_in_guard` and `is_valid_placement_aux` can
+/// temporarily mutate the board (apply + check + undo) while holding `&self`.
+///
+/// All normal field access goes through `Deref`/`DerefMut` and is transparent.
+///
+/// SAFETY: `GameBoard` is `!Sync` (inherited from `UnsafeCell`). The interior
+/// mutation only occurs in guard-checking methods that provably restore the
+/// original board state before returning.
 pub(super) struct GameBoard {
+    inner: UnsafeCell<GameBoardInner>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GameBoardInner {
     board: Board<PlacedTile>,
     /// Cached duke positions per player. Updated on place/remove/mv to avoid O(36) scans.
     /// None if the duke for that player hasn't been placed yet (only during initial setup).
     duke_cache: [Option<Coordinates>; 2],
 }
 
+// --- Trait impls delegated to GameBoardInner ---
+
+impl std::fmt::Debug for GameBoard {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { self.i().fmt(f) }
+}
+
+impl Clone for GameBoard {
+    fn clone(&self) -> Self { GameBoard::wrap(self.i().clone()) }
+}
+
+impl PartialEq for GameBoard {
+    fn eq(&self, other: &Self) -> bool { self.i() == other.i() }
+}
+
+impl Eq for GameBoard {}
+
+// SAFETY: The UnsafeCell interior mutation in guard-checking methods is
+// confined to a single call frame (apply + check + undo) and never races
+// with another thread. Threads that share a &GameBoard only read it;
+// each thread clones before mutating.
+unsafe impl Sync for GameBoard {}
+
+impl GameBoard {
+    #[inline(always)]
+    fn i(&self) -> &GameBoardInner { unsafe { &*self.inner.get() } }
+
+    #[inline(always)]
+    fn i_mut(&mut self) -> &mut GameBoardInner { self.inner.get_mut() }
+
+    /// Obtain a mutable reference for apply+check+undo from a shared reference.
+    /// SAFETY: caller must restore original state before returning.
+    #[inline(always)]
+    unsafe fn i_mut_unchecked(&self) -> &mut GameBoardInner { &mut *self.inner.get() }
+
+    fn wrap(inner: GameBoardInner) -> Self { GameBoard { inner: UnsafeCell::new(inner) } }
+}
+
+// Transparent field access.
+impl std::ops::Deref for GameBoard {
+    type Target = GameBoardInner;
+    #[inline(always)]
+    fn deref(&self) -> &GameBoardInner { self.i() }
+}
+
+impl std::ops::DerefMut for GameBoard {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut GameBoardInner { self.i_mut() }
+}
+
+// Forwarding constructors and constants so external code can use GameBoard::*.
+impl GameBoard {
+    pub const BOARD_SIZE: u8 = GameBoardInner::BOARD_SIZE;
+
+    pub(super) fn new(board: Board<PlacedTile>) -> Self {
+        GameBoard::wrap(GameBoardInner::new(board))
+    }
+
+    pub fn empty() -> Self {
+        GameBoard::wrap(GameBoardInner::empty())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct WithNewTiles(pub bool);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CheckForGuard(pub bool);
-
-impl CheckForGuard {
-    pub fn if_check(&self, f: impl FnOnce() -> bool) -> bool {
-        !self.0 || f()
-    }
-}
 
 /// Stack-allocated coordinate buffer for target_coordinates results.
 /// Max slide length on a 6x6 board is 5 squares; capacity 6 provides margin.
@@ -164,14 +232,13 @@ impl DukeNeighbors {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
 
-impl GameBoard {
+impl GameBoardInner {
     pub const BOARD_SIZE: u8 = 6;
 
-    pub(super) fn new(board: Board<PlacedTile>) -> Self {
-        // Scan for duke positions when constructing from an existing board.
+    fn new(board: Board<PlacedTile>) -> Self {
         let top = board.find(|a| a.owner == Owner::TopPlayer && a.tile_type.is_duke());
         let bottom = board.find(|a| a.owner == Owner::BottomPlayer && a.tile_type.is_duke());
-        GameBoard { board, duke_cache: [top, bottom] }
+        GameBoardInner { board, duke_cache: [top, bottom] }
     }
 
     #[inline(always)]
@@ -201,8 +268,8 @@ impl GameBoard {
         &self.board
     }
 
-    pub fn empty() -> GameBoard {
-        GameBoard { board: Board::square(GameBoard::BOARD_SIZE), duke_cache: [None, None] }
+    fn empty() -> GameBoardInner {
+        GameBoardInner { board: Board::square(GameBoardInner::BOARD_SIZE), duke_cache: [None, None] }
     }
     pub fn place(&mut self, c: Coordinates, t: PlacedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
@@ -423,25 +490,83 @@ impl GameBoard {
         self.can_apply(src, dst) != AppliedPubAction::Invalid
     }
 
-    pub fn is_valid_placement(&self, owner: Owner, offset: DukeOffset) -> bool {
-        self.is_valid_placement_aux(owner, offset, CheckForGuard(true))
+    /// Check if the offset is a valid placement (ignoring guard).
+    fn is_valid_placement_space(&self, owner: Owner, offset: DukeOffset) -> Option<Coordinates> {
+        match self.absolute_duke_offset(offset, self.duke_coordinates(owner)) {
+            None => None,
+            Some(c) => if self.board.is_occupied(c) { None } else { Some(c) }
+        }
     }
 
-    fn is_valid_placement_aux(&self, owner: Owner, offset: DukeOffset, cfg: CheckForGuard) -> bool {
-        match self.absolute_duke_offset(offset, self.duke_coordinates(owner)) {
-            None => false,
-            Some(c) =>
-                if self.board.is_occupied(c) {
-                    false
-                } else {
-                    cfg.if_check(|| {
-                        // Clone is still needed here since is_valid_placement_aux takes &self.
-                        // The duke cache makes is_guard inside the clone much cheaper (O(1) duke lookup).
-                        let mut clone = self.clone();
-                        clone.place(c, PlacedTile::new(owner, TileType::Footman));
-                        !clone.is_guard(owner)
-                    })
+    /// Apply-check-undo guard check for a placement. Takes `&mut self`.
+    fn placement_does_not_put_in_guard(&mut self, c: Coordinates, owner: Owner) -> bool {
+        self.place(c, PlacedTile::new(owner, TileType::Footman));
+        let in_guard = self.is_guard(owner);
+        self.remove(c);
+        !in_guard
+    }
+
+    /// Apply-check-undo guard check for a move. Takes `&mut self`.
+    fn move_does_not_put_in_guard(&mut self, mv: BoardMove, owner: Owner) -> bool {
+        match mv {
+            BoardMove::PlaceNewTile(_tile_type, duke_offset, mv_owner) => {
+                let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(mv_owner))
+                    .expect("Invalid duke offset");
+                self.place(c, PlacedTile::new(mv_owner, _tile_type));
+                let in_guard = self.is_guard(owner);
+                self.remove(c);
+                !in_guard
+            }
+            BoardMove::ApplyNonCommandTileAction { src, dst } => {
+                let action = self.can_apply(src, dst);
+                match action {
+                    AppliedPubAction::Movement => {
+                        let old_duke_cache = self.duke_cache;
+                        if let Some(tile) = self.board.get(src) {
+                            if tile.tile_type.is_duke() {
+                                self.duke_cache[Self::owner_index(tile.owner)] = Some(dst);
+                            }
+                        }
+                        if let Some(captured) = self.board.get(dst) {
+                            if captured.tile_type.is_duke() {
+                                self.duke_cache[Self::owner_index(captured.owner)] = None;
+                            }
+                        }
+                        self.flip(src);
+                        let captured = self.board.mv(src, dst);
+                        let in_guard = self.is_guard(owner);
+                        // Undo.
+                        let mut mover = self.remove(dst);
+                        mover.flip();
+                        self.place(src, mover);
+                        if let Some(cap) = captured {
+                            self.place(dst, cap);
+                        }
+                        self.duke_cache = old_duke_cache;
+                        !in_guard
+                    }
+                    AppliedPubAction::Strike => {
+                        let old_duke_cache = self.duke_cache;
+                        if let Some(target) = self.board.get(dst) {
+                            if target.tile_type.is_duke() {
+                                self.duke_cache[Self::owner_index(target.owner)] = None;
+                            }
+                        }
+                        self.flip(src);
+                        let captured = self.board.remove(dst);
+                        let in_guard = self.is_guard(owner);
+                        // Undo.
+                        self.flip(src);
+                        if let Some(cap) = captured {
+                            self.place(dst, cap);
+                        }
+                        self.duke_cache = old_duke_cache;
+                        !in_guard
+                    }
+                    AppliedPubAction::Invalid =>
+                        panic!("Cannot move unit in {:?} to {:?} (invalid action)", &src, &dst)
                 }
+            }
         }
     }
 
@@ -450,7 +575,7 @@ impl GameBoard {
             BoardMove::PlaceNewTile(tile_type, duke_offset, owner) => {
                 let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(owner))
                     .expect("Request duke location is out of bounds");
-                debug_assert!(self.is_valid_placement(owner, duke_offset));
+                debug_assert!(self.is_valid_placement_space(owner, duke_offset).is_some());
                 self.place(c, PlacedTile::new(owner, tile_type));
                 None
             }
@@ -513,19 +638,14 @@ impl GameBoard {
             .filter(move |e| e.1.owner.same_team(&o))
     }
 
-    // Except commands.
-    pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
-        self.get_legal_moves_aux(src, CheckForGuard(true)).collect()
-    }
-
     pub fn get_legal_moves_ignoring_guard(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
-        self.get_legal_moves_aux(src, CheckForGuard(false)).collect()
+        self.get_legal_moves_no_guard(src).collect()
     }
 
-    fn get_legal_moves_aux(
-        &self, src: Coordinates, cfg: CheckForGuard) -> Box<dyn Iterator<Item=(Coordinates, TileAction)> + '_> {
+    /// Returns candidate moves for the tile at `src` without guard checking.
+    fn get_legal_moves_no_guard(
+        &self, src: Coordinates) -> Box<dyn Iterator<Item=(Coordinates, TileAction)> + '_> {
         let tile = self.get(src).unwrap();
-        let owner = tile.owner;
         let tile_side = tile.get_current_side();
         let center_offset = tile_side.center_offset();
         Box::new(
@@ -538,12 +658,6 @@ impl GameBoard {
                     .map(move |c| (c, o.1))
                 )
                 .filter(move |o| self.can_apply_action(src, o.0, o.1))
-                .filter(move |o| cfg.if_check(||
-                    self.does_not_put_in_guard(
-                        BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
-                        owner,
-                    )
-                ))
                 .into_iter()
         )
     }
@@ -717,11 +831,7 @@ impl GameBoard {
         }
     }
 
-    pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
-        let mut clone = self.clone();
-        clone.make_a_move(mv);
-        !clone.is_guard(owner)
-    }
+    // does_not_put_in_guard is now on GameBoard (uses UnsafeCell for apply+undo).
 
     // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,
     // undoing the action would remove the new tile from the board.
@@ -756,26 +866,15 @@ impl GameBoard {
         }
     }
 
-    pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
-        self.all_valid_moves_aux(owner, new_tiles, CheckForGuard(true))
-    }
+    // all_valid_moves and all_valid_moves_ignoring_guard are now on GameBoard.
 
     pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
-        self.all_valid_moves_aux(owner, new_tiles, CheckForGuard(false))
-    }
-
-    fn all_valid_moves_aux(
-        &self,
-        owner: Owner,
-        new_tiles: WithNewTiles,
-        cfg: CheckForGuard,
-    ) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
         let result = self
             .get_tiles_for(owner)
             .into_iter()
             .map(|e| e.0)
             .flat_map(move |src| self
-                .get_legal_moves_aux(src, cfg)
+                .get_legal_moves_no_guard(src)
                 .map(move |e| e.0)
                 .map(move |dst| PossibleMove::ApplyNonCommandTileAction {
                     src,
@@ -788,7 +887,7 @@ impl GameBoard {
         if let WithNewTiles(true) = new_tiles {
             Box::new(result.chain(
                 DukeOffset::iter().filter_map(move |offset|
-                    if self.is_valid_placement_aux(owner, offset, cfg) {
+                    if self.is_valid_placement_space(owner, offset).is_some() {
                         Some(PossibleMove::PlaceNewTile(offset, owner))
                     } else {
                         None
@@ -808,13 +907,126 @@ impl GameBoard {
     pub fn debug_double(&self) { println!("{}", self.as_double_string()); }
 }
 
-impl Rectangular for GameBoard {
+impl Rectangular for GameBoardInner {
     fn width(&self) -> u8 {
         self.board.width()
     }
 
     fn height(&self) -> u8 {
         self.board.height()
+    }
+}
+
+impl Rectangular for GameBoard {
+    fn width(&self) -> u8 { self.i().width() }
+    fn height(&self) -> u8 { self.i().height() }
+}
+
+// Guard-checked methods that use interior mutability (apply + check + undo).
+impl GameBoard {
+    /// Check if a move does not put the owner in guard. Uses apply+undo via UnsafeCell.
+    pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
+        // SAFETY: We apply the move, check guard, then undo — restoring the board to
+        // its original state before returning. No other mutable references exist
+        // during this window because we're in a single-threaded call chain.
+        let inner = unsafe { self.i_mut_unchecked() };
+        inner.move_does_not_put_in_guard(mv, owner)
+    }
+
+    pub fn is_valid_placement(&self, owner: Owner, offset: DukeOffset) -> bool {
+        match self.is_valid_placement_space(owner, offset) {
+            None => false,
+            Some(c) => {
+                let inner = unsafe { self.i_mut_unchecked() };
+                inner.placement_does_not_put_in_guard(c, owner)
+            }
+        }
+    }
+
+    // Except commands.
+    pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
+        let inner = unsafe { self.i_mut_unchecked() };
+        let owner = inner.get(src).unwrap().owner;
+        let candidates: Vec<_> = inner.get_legal_moves_no_guard(src).collect();
+        candidates.into_iter()
+            .filter(|o| inner.move_does_not_put_in_guard(
+                BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
+                owner,
+            ))
+            .collect()
+    }
+
+    pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+        let inner = unsafe { self.i_mut_unchecked() };
+        // Collect tile coordinates first to avoid holding references into the board
+        // while mutating it during guard checks.
+        let tile_coords: Vec<Coordinates> = inner.get_tiles_for(owner)
+            .map(|e| e.0)
+            .collect();
+
+        let mut result = Vec::new();
+
+        // Tile action moves: collect candidates per tile and filter inline.
+        for src in tile_coords {
+            let candidates: Vec<(Coordinates, TileAction)> = inner.get_legal_moves_no_guard(src).collect();
+            for (dst, _action) in candidates {
+                if inner.move_does_not_put_in_guard(
+                    BoardMove::ApplyNonCommandTileAction { src, dst },
+                    owner,
+                ) {
+                    result.push(PossibleMove::ApplyNonCommandTileAction {
+                        src,
+                        dst,
+                        capturing: inner.board.get(dst).cloned(),
+                    });
+                }
+            }
+        }
+
+        // Placement moves.
+        if let WithNewTiles(true) = new_tiles {
+            for offset in DukeOffset::iter() {
+                if let Some(c) = inner.is_valid_placement_space(owner, offset) {
+                    if inner.placement_does_not_put_in_guard(c, owner) {
+                        result.push(PossibleMove::PlaceNewTile(offset, owner));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Check if there is at least one valid move (short-circuits on first found).
+    pub fn has_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> bool {
+        let inner = unsafe { self.i_mut_unchecked() };
+        let tile_coords: Vec<Coordinates> = inner.get_tiles_for(owner)
+            .map(|e| e.0)
+            .collect();
+
+        for src in tile_coords {
+            let candidates: Vec<(Coordinates, TileAction)> = inner.get_legal_moves_no_guard(src).collect();
+            for (dst, _) in candidates {
+                if inner.move_does_not_put_in_guard(
+                    BoardMove::ApplyNonCommandTileAction { src, dst },
+                    owner,
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        if let WithNewTiles(true) = new_tiles {
+            for offset in DukeOffset::iter() {
+                if let Some(c) = inner.is_valid_placement_space(owner, offset) {
+                    if inner.placement_does_not_put_in_guard(c, owner) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 }
 
