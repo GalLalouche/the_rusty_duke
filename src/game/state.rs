@@ -538,7 +538,18 @@ impl GameState {
 
 impl Hash for GameState {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.board.get_board().hash(state)
+        self.board.get_board().hash(state);
+        self.pulled_tile.hash(state);
+        self.current_player_turn.hash(state);
+        // Bags: hash sorted contents since swap_remove may change ordering
+        let mut top_bag: Vec<u8> = self.top_player_bag.remaining().iter().map(|t| *t as u8).collect();
+        top_bag.sort();
+        top_bag.hash(state);
+        let mut bottom_bag: Vec<u8> = self.bottom_player_bag.remaining().iter().map(|t| *t as u8).collect();
+        bottom_bag.sort();
+        bottom_bag.hash(state);
+        self.top_player_discard.existing().hash(state);
+        self.bottom_player_discard.existing().hash(state);
     }
 }
 
@@ -1216,9 +1227,10 @@ mod tests {
 
     /// GameState Hash only includes the board (not player turn), which is
     /// intentional for transposition-table-style lookups. Verify the documented
-    /// property: same board, different turn -> same hash.
+    /// Hash includes all fields that PartialEq compares (board, turn, bags, discards).
+    /// States that differ in any field should (usually) have different hashes.
     #[test]
-    fn hash_depends_only_on_board() {
+    fn hash_consistent_with_partial_eq() {
         use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
 
@@ -1236,7 +1248,7 @@ mod tests {
             idle_move_count: 0,
         });
         let gs2 = GameState::from_snapshot(GameSnapshot {
-            tiles,
+            tiles: tiles.clone(),
             current_turn: Owner::BottomPlayer,
             top_bag: TileBag::new(vec![TileType::Footman]),
             bottom_bag: TileBag::new(vec![]),
@@ -1244,6 +1256,8 @@ mod tests {
             bottom_discard: DiscardBag::empty(),
             idle_move_count: 0,
         });
+        // Same state should have same hash
+        let gs1_copy = gs1.clone();
 
         let hash = |gs: &GameState| {
             let mut h = DefaultHasher::new();
@@ -1251,9 +1265,11 @@ mod tests {
             h.finish()
         };
 
-        // Same board -> same hash (even though bags/turn differ)
-        assert_eq!(hash(&gs1), hash(&gs2));
-        // But they should NOT be equal via PartialEq (different turn/bags)
+        // Equal states -> equal hash (required by Hash contract)
+        assert_eq!(hash(&gs1), hash(&gs1_copy));
+        // Different states -> different hash (not guaranteed but expected)
+        assert_ne!(hash(&gs1), hash(&gs2));
+        // And they're not equal via PartialEq either
         assert_ne!(gs1, gs2);
     }
 }
