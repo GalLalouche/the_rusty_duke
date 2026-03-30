@@ -87,6 +87,17 @@ pub struct CnnModel {
     pub bag_features: usize,
 }
 
+/// Cached layout information for a CnnModel, computed once and reused
+/// to avoid per-call Vec allocations in forward/backward passes.
+struct CnnLayout {
+    /// Conv layer weight offsets (len = conv_channels.len() + 1, last is FC start).
+    conv_offsets: Vec<usize>,
+    /// FC layer weight offsets (len = fc_sizes.len() + 1, last is output layer).
+    fc_offsets: Vec<usize>,
+    /// Kernel weights per (out_ch, in_ch) pair.
+    kwpp: usize,
+}
+
 /// Forward pass result containing intermediate values needed for backpropagation.
 pub struct CnnForwardResult {
     /// Pre-ReLU activations per conv layer: [layer][out_ch * board_size * board_size].
@@ -145,12 +156,47 @@ pub struct CnnScratch {
     bk_d_input: Vec<f32>,
     /// fc_input reconstruction for backward.
     bk_fc_input: Vec<f32>,
+    /// Cached layout (avoids per-call Vec allocation of offsets).
+    layout: CnnLayout,
 }
 
 // ── Weight layout helpers ─────────────────────────────────────────────────
 
+impl CnnLayout {
+    /// Build cached layout from model parameters.
+    fn new(model: &CnnModel) -> Self {
+        let kwpp = CnnModel::kernel_weights_per_pair(model.kernel_type);
+
+        // Conv offsets
+        let mut conv_offsets = Vec::with_capacity(model.conv_channels.len() + 1);
+        let mut off = 0;
+        let mut in_ch = model.input_channels;
+        for &out_ch in &model.conv_channels {
+            conv_offsets.push(off);
+            off += CnnModel::conv_layer_params(model.kernel_type, in_ch, out_ch);
+            in_ch = out_ch;
+        }
+        conv_offsets.push(off); // FC section start
+
+        // FC offsets
+        let fc_start = off;
+        let mut fc_offsets = Vec::with_capacity(model.fc_sizes.len() + 2);
+        let mut fc_off = fc_start;
+        let mut prev = model.fc_input_size();
+        for &h in &model.fc_sizes {
+            fc_offsets.push(fc_off);
+            fc_off += prev * h + h;
+            prev = h;
+        }
+        fc_offsets.push(fc_off); // output layer
+
+        Self { conv_offsets, fc_offsets, kwpp }
+    }
+}
+
 impl CnnModel {
     /// Kernel footprint (number of f32 weights per (out_ch, in_ch) pair) for a single conv.
+    #[inline]
     fn kernel_weights_per_pair(kernel: KernelType) -> usize {
         match kernel {
             KernelType::Box => 3 * 3,
@@ -195,6 +241,7 @@ impl CnnModel {
     }
 
     /// Compute the size of the FC input (flattened conv + bag).
+    #[inline]
     pub fn fc_input_size(&self) -> usize {
         self.conv_channels.last().unwrap() * self.board_size * self.board_size + self.bag_features
     }
@@ -255,6 +302,7 @@ impl CnnModel {
             bk_d_conv: vec![0.0f32; max_conv_buf],
             bk_d_input: vec![0.0f32; max_conv_buf],
             bk_fc_input: vec![0.0f32; fc_input_size],
+            layout: CnnLayout::new(self),
         }
     }
 
@@ -526,8 +574,8 @@ impl CnnModel {
     pub fn forward_sparse_scratch(&self, active_board: &[usize], bag: &[f32], scratch: &mut CnnScratch) -> f32 {
         let bs = self.board_size;
         let spatial = bs * bs;
-        let conv_offsets = self.conv_layer_offsets();
-        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+        let conv_offsets = &scratch.layout.conv_offsets;
+        let kwpp = scratch.layout.kwpp;
 
         // Ping-pong: start writing to buf_a
         let (mut cur_buf, mut prev_buf) = (true, false); // true = buf_a, false = buf_b
@@ -631,7 +679,7 @@ impl CnnModel {
         scratch.fc_buf_a[conv_flat_size..fc_input_size].copy_from_slice(bag);
 
         // ── FC layers: ping-pong fc_buf_a / fc_buf_b ──
-        let fc_offsets = self.fc_layer_offsets();
+        let fc_offsets = &scratch.layout.fc_offsets;
         let mut fc_cur = true; // true = fc_buf_a, false = fc_buf_b
         let mut prev_size = fc_input_size;
 
@@ -820,8 +868,8 @@ impl CnnModel {
     ) -> f32 {
         let bs = self.board_size;
         let spatial = bs * bs;
-        let conv_offsets = self.conv_layer_offsets();
-        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+        let conv_offsets = &scratch.layout.conv_offsets;
+        let kwpp = scratch.layout.kwpp;
 
         // ── Conv layer 0: sparse input ──
         {
@@ -916,7 +964,7 @@ impl CnnModel {
         scratch.fc_input[conv_flat_size..fc_input_size].copy_from_slice(bag);
 
         // ── FC hidden layers ──
-        let fc_offsets = self.fc_layer_offsets();
+        let fc_offsets = &scratch.layout.fc_offsets;
         // Copy fc_input into fc_prev_act for the first iteration
         scratch.fc_prev_act[..fc_input_size].copy_from_slice(&scratch.fc_input[..fc_input_size]);
         let mut prev_size = fc_input_size;
@@ -2664,6 +2712,8 @@ pub struct CnnBatchScratch {
     im2col_buf: Vec<f32>,
     /// Max batch size (for bounds checking).
     pub max_batch: usize,
+    /// Cached layout (offsets + kwpp), computed once to avoid per-call allocations.
+    layout: CnnLayout,
 }
 
 impl CnnModel {
@@ -2721,6 +2771,7 @@ impl CnnModel {
                 KernelType::Cross => 9,
             } * spatial],
             max_batch,
+            layout: CnnLayout::new(self),
         }
     }
 
@@ -2737,8 +2788,8 @@ impl CnnModel {
     ) {
         let bs = self.board_size;
         let spatial = bs * bs;
-        let conv_offsets = self.conv_layer_offsets();
-        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+        let conv_offsets = &batch_scratch.layout.conv_offsets;
+        let kwpp = batch_scratch.layout.kwpp;
 
         // ── Conv layer 0: sparse input ──
         {
@@ -3206,8 +3257,8 @@ impl CnnModel {
         let spatial = bs * bs;
         let fc_input_size = batch_scratch.fc_input_size;
         let conv_flat_size = fc_input_size - self.bag_features;
-        let conv_offsets = self.conv_layer_offsets();
-        let kwpp = Self::kernel_weights_per_pair(self.kernel_type);
+        let conv_offsets = &batch_scratch.layout.conv_offsets;
+        let kwpp = batch_scratch.layout.kwpp;
         let num_conv = self.conv_channels.len();
 
         // Copy d_fc_input (conv portion only) into bk_d_conv
@@ -3334,24 +3385,27 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
+/// Precomputed list of inactive (non-diamond) positions in a 5x5 kernel.
+/// These are the 12 corner positions that should always be zero.
+const NON_DIAMOND_POSITIONS: [usize; 12] = [0, 1, 3, 4, 5, 9, 15, 19, 20, 21, 23, 24];
+
 /// Apply diamond mask: zero out corner weights in all diamond conv layers.
 /// Call after each optimizer step to enforce the mask.
 pub fn apply_diamond_mask(model: &mut CnnModel) {
     if model.kernel_type != KernelType::Diamond {
         return;
     }
-    let mask = diamond_mask_5x5();
     let mut offset = 0;
     let mut in_ch = model.input_channels;
     for &out_ch in &model.conv_channels {
-        let n_w = out_ch * in_ch * 25;
-        for i in 0..n_w {
-            let kpos = i % 25;
-            if !mask[kpos] {
-                model.weights[offset + i] = 0.0;
+        let n_pairs = out_ch * in_ch;
+        for pair in 0..n_pairs {
+            let base = offset + pair * 25;
+            for &kpos in &NON_DIAMOND_POSITIONS {
+                model.weights[base + kpos] = 0.0;
             }
         }
-        offset += n_w + out_ch; // weights + bias
+        offset += n_pairs * 25 + out_ch; // weights + bias
         in_ch = out_ch;
     }
 }

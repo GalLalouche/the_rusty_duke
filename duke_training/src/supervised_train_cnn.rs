@@ -199,6 +199,10 @@ struct AdamState {
     beta1: f32,
     beta2: f32,
     eps: f32,
+    /// Running product of beta1^t (avoids powf per step).
+    beta1_t: f32,
+    /// Running product of beta2^t (avoids powf per step).
+    beta2_t: f32,
 }
 
 impl AdamState {
@@ -211,18 +215,32 @@ impl AdamState {
             beta1: 0.9,
             beta2: 0.999,
             eps: 1e-8,
+            beta1_t: 1.0,
+            beta2_t: 1.0,
         }
     }
 
     fn step(&mut self, weights: &mut [f32], grad: &[f32]) {
         self.t += 1;
-        let t = self.t as f32;
-        let lr_t = self.lr * (1.0 - self.beta2.powf(t)).sqrt() / (1.0 - self.beta1.powf(t));
+        self.beta1_t *= self.beta1;
+        self.beta2_t *= self.beta2;
+        let lr_t = self.lr * (1.0 - self.beta2_t).sqrt() / (1.0 - self.beta1_t);
+        let beta1 = self.beta1;
+        let beta2 = self.beta2;
+        let one_minus_beta1 = 1.0 - beta1;
+        let one_minus_beta2 = 1.0 - beta2;
+        let eps = self.eps;
+        let n = weights.len();
 
-        for i in 0..weights.len() {
-            self.m[i] = self.beta1 * self.m[i] + (1.0 - self.beta1) * grad[i];
-            self.v[i] = self.beta2 * self.v[i] + (1.0 - self.beta2) * grad[i] * grad[i];
-            weights[i] -= lr_t * self.m[i] / (self.v[i].sqrt() + self.eps);
+        // Split into 3 passes for better cache utilization on large param vectors
+        for i in 0..n {
+            self.m[i] = beta1 * self.m[i] + one_minus_beta1 * grad[i];
+        }
+        for i in 0..n {
+            self.v[i] = beta2 * self.v[i] + one_minus_beta2 * grad[i] * grad[i];
+        }
+        for i in 0..n {
+            weights[i] -= lr_t * self.m[i] / (self.v[i].sqrt() + eps);
         }
     }
 }
@@ -424,6 +442,10 @@ fn main() {
     let mut batch_active_indices: Vec<Vec<usize>> = (0..batch_size).map(|_| Vec::with_capacity(64)).collect();
     let mut batch_bag_features: Vec<[f32; BAG_FEATURES]> = vec![[0.0f32; BAG_FEATURES]; batch_size];
 
+    // Pre-allocate gradient and target buffers (avoids per-batch heap allocation)
+    let mut grad = vec![0.0f32; num_params];
+    let mut batch_targets = vec![0.0f32; batch_size];
+
     // Initial evaluation
     eprintln!("\n--- Initial evaluation ---");
     evaluate_model(&model, &benchmark_specs, eval_games);
@@ -459,7 +481,8 @@ fn main() {
             let actual_batch_size = batch_end - batch_start;
             let inv_batch = 1.0f32 / actual_batch_size as f32;
 
-            let mut grad = vec![0.0f32; num_params];
+            // Zero the pre-allocated gradient buffer
+            for g in grad.iter_mut() { *g = 0.0; }
 
             // Step 1: Per-position conv forward → write FC inputs into batch matrix
             for (bi, si) in (batch_start..batch_end).enumerate() {
@@ -481,19 +504,18 @@ fn main() {
             // Step 2: Batched FC forward (sgemm)
             model.batch_fc_forward(actual_batch_size, &mut batch_scratch);
 
-            // Compute batch targets and loss
-            let mut batch_targets: Vec<f32> = Vec::with_capacity(actual_batch_size);
+            // Compute batch targets and loss (reuse pre-allocated buffer)
             let mut batch_loss = 0.0f64;
             for (bi, si) in (batch_start..batch_end).enumerate() {
                 let pos_idx = shuffled_indices[si] as usize;
                 let target = label_to_target(positions[pos_idx].label);
-                batch_targets.push(target);
+                batch_targets[bi] = target;
                 let error = batch_scratch.outputs[bi] - target;
                 batch_loss += (error * error) as f64;
             }
 
             // Step 3: Batched FC backward (sgemm) → FC weight gradients + d_fc_inputs
-            model.batch_fc_backward(actual_batch_size, &batch_targets, inv_batch, &mut batch_scratch, &mut grad);
+            model.batch_fc_backward(actual_batch_size, &batch_targets[..actual_batch_size], inv_batch, &mut batch_scratch, &mut grad);
 
             // Step 4: Per-position conv backward using saved intermediates
             for bi in 0..actual_batch_size {

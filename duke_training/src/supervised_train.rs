@@ -888,6 +888,7 @@ fn main() {
     let mut adam = AdamState::new(num_params, lr);
     let mut scratch = FcScratch::new(&hidden_layers, num_params, batch_size, input_size);
     let mut batch_targets = vec![0.0f32; batch_size];
+    let mut batch_positions: Vec<&LabeledPosition> = Vec::with_capacity(batch_size);
 
     // Initial evaluation
     eprintln!("\n--- Initial evaluation ---");
@@ -925,10 +926,11 @@ fn main() {
             let actual_batch_size = batch_end - batch_start;
             let inv_batch = 1.0f32 / actual_batch_size as f32;
 
-            // Gather batch position refs and targets
-            let batch_positions: Vec<&LabeledPosition> = (batch_start..batch_end)
-                .map(|si| &positions[shuffled_indices[si] as usize])
-                .collect();
+            // Gather batch position refs and targets (reuse pre-allocated buffer)
+            batch_positions.clear();
+            for si in batch_start..batch_end {
+                batch_positions.push(&positions[shuffled_indices[si] as usize]);
+            }
             for (i, pos) in batch_positions.iter().enumerate() {
                 batch_targets[i] = label_to_target(pos.label);
             }
