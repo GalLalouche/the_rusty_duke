@@ -597,21 +597,21 @@ fn main() {
 
     let mut net = GenericMlp::random(input_size, hidden_layers.clone(), &mut rng);
 
-    // --sparse-init: re-initialize L1 weights using effective fan_in (avg active features)
-    // instead of full input_size. With ~24 active out of 1106, default Kaiming makes L1
-    // weights ~7x too small, weakening initial activations.
+    // --sparse-init: scale up L1 weights to compensate for sparse inputs.
+    // Default Kaiming uses fan_in=1106, but only ~24 features are active per position.
+    // Scale existing weights by sqrt(input_size / avg_active) to correct the variance.
     if sparse_init {
         let avg_active: f64 = positions.iter()
             .take(10000)
             .map(|p| p.active_indices.len() as f64 + p.bag_features.iter().filter(|&&v| v != 0.0).count() as f64)
             .sum::<f64>() / positions.len().min(10000) as f64;
         let h1 = hidden_layers[0];
-        let scale = (6.0 / avg_active).sqrt() as f32;
+        let correction = (input_size as f64 / avg_active).sqrt() as f32;
         let l1_weights = &mut net.weights[0..input_size * h1];
         for w in l1_weights.iter_mut() {
-            *w = rng.gen::<f32>() * 2.0 * scale - scale;
+            *w *= correction;
         }
-        eprintln!("  Sparse init:    L1 fan_in={:.0} (was {}), scale={:.4}", avg_active, input_size, scale);
+        eprintln!("  Sparse init:    L1 correction={:.2}x (effective fan_in={:.0}, full={})", correction, avg_active, input_size);
     }
 
     let mut adam = AdamState::new(num_params, lr);
