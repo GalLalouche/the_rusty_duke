@@ -147,7 +147,7 @@ fn main() {
             };
 
             for state in states {
-                if state.game_result() != GameResult::Ongoing { continue; }
+                if state.clone().game_result() != GameResult::Ongoing { continue; }
                 let current = state.current_player_turn();
                 // Target from current player's perspective
                 let target = if current == nnue_owner {

@@ -45,7 +45,7 @@ impl RegressionAccumulator {
     /// Add one game trajectory to the accumulator (extracts features from GameStates).
     pub fn add_game(&mut self, states: &[GameState], result: &GameResult) {
         for state in states {
-            if state.game_result() != GameResult::Ongoing {
+            if state.clone().game_result() != GameResult::Ongoing {
                 continue;
             }
             let features = extract_features(state);

@@ -50,14 +50,14 @@ pub fn play_match(
                         ai.play_next_move(rng, &mut game);
                     }
                     Player::Evaluator(eval) => {
-                        let mv = greedy_move(&game, *eval, rng);
+                        let mv = greedy_move(&mut game, *eval, rng);
                         mv.play(&mut game, rng);
                     }
                     Player::EvaluatorDepth(eval, depth) => {
                         let mv = if *depth <= 1 {
-                            greedy_move(&game, *eval, rng)
+                            greedy_move(&mut game, *eval, rng)
                         } else {
-                            greedy_move_deep(&game, *eval, *depth, rng)
+                            greedy_move_deep(&mut game, *eval, *depth, rng)
                         };
                         mv.play(&mut game, rng);
                     }

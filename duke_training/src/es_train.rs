@@ -156,14 +156,14 @@ fn play_match_with_epsilon(
                 let is_candidate = (current == Owner::TopPlayer) == candidate_is_top;
                 if is_candidate {
                     // Candidate always plays greedily
-                    let mv = greedy_move(&game, candidate, rng);
+                    let mv = greedy_move(&mut game, candidate, rng);
                     mv.play(&mut game, rng);
                 } else {
                     // Opponent: epsilon-greedy
                     if opponent_epsilon > 0.0 && rng.gen::<f32>() < opponent_epsilon {
                         ai.play_next_move(rng, &mut game);
                     } else {
-                        let mv = greedy_move(&game, opponent, rng);
+                        let mv = greedy_move(&mut game, opponent, rng);
                         mv.play(&mut game, rng);
                     }
                 }

@@ -15,11 +15,11 @@ pub trait ArtificialPlayer {
         gs.make_a_move(mv.borrow().try_into().unwrap(), rng);
         mv.to_undo_move().expect("AI moved should have been playable")
     }
-    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &GameState) -> AiMove;
+    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &mut GameState) -> AiMove;
 }
 
 pub trait EvaluatingPlayer {
-    fn evaluate(&self, gs: &GameState) -> f64;
+    fn evaluate(&self, gs: &mut GameState) -> f64;
     // A faster version of the above, that might not be entirely accurate.
     // For example, it might consider illegal moves.
     fn cheap_evaluate(&self, gs: &GameState) -> f64;
@@ -91,7 +91,7 @@ impl AiMove {
         }
     }
 
-    pub fn all_moves(gs: &GameState) -> impl Iterator<Item=AiMove> + '_ {
+    pub fn all_moves(gs: &mut GameState) -> impl Iterator<Item=AiMove> + '_ {
         gs.all_valid_game_moves_for_current_player().map(|e| e.borrow().into())
     }
 }

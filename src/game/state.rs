@@ -161,7 +161,7 @@ impl GameState {
         }
     }
 
-    fn can_pull_tile_from_bag(&self) -> CanPullNewTileResult {
+    fn can_pull_tile_from_bag(&mut self) -> CanPullNewTileResult {
         let bag = match self.current_player_turn {
             Owner::TopPlayer => &self.top_player_bag,
             Owner::BottomPlayer => &self.bottom_player_bag,
@@ -179,7 +179,7 @@ impl GameState {
         }
     }
 
-    pub fn can_pull_tile_from_bag_bool(&self) -> bool {
+    pub fn can_pull_tile_from_bag_bool(&mut self) -> bool {
         self.can_pull_tile_from_bag() == CanPullNewTileResult::OK
     }
 
@@ -215,7 +215,7 @@ impl GameState {
         self.pulled_tile.is_some()
     }
 
-    pub fn can_make_a_move(&self, game_move: &GameMove) -> bool {
+    pub fn can_make_a_move(&mut self, game_move: &GameMove) -> bool {
         match game_move {
             GameMove::PlaceNewTile(o) =>
                 self.is_waiting_for_tile_placement() && self.is_valid_placement(*o),
@@ -310,7 +310,7 @@ impl GameState {
     }
 
     // Except commands
-    pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
+    pub fn get_legal_moves(&mut self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         self.board.get_legal_moves(src)
     }
 
@@ -338,7 +338,7 @@ impl GameState {
         self.board.empty_spaces_near_current_duke(self.current_player_turn)
     }
 
-    pub fn is_valid_placement(&self, offset: DukeOffset) -> bool {
+    pub fn is_valid_placement(&mut self, offset: DukeOffset) -> bool {
         let owner = self.current_player_turn;
         self.board.is_valid_placement(owner, offset) &&
             self.board.does_not_put_in_guard(
@@ -351,14 +351,14 @@ impl GameState {
         self.moves_without_capture_or_placement_stack.last().unwrap() >=
             &MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT
     }
-    pub fn is_over(&self) -> bool {
+    pub fn is_over(&mut self) -> bool {
         !self.board.has_valid_moves(
             self.current_player_turn,
             WithNewTiles(self.bag_for_current_player().non_empty()),
         ) || self.is_tie()
     }
 
-    pub fn game_result(&self) -> GameResult {
+    pub fn game_result(&mut self) -> GameResult {
         if self.is_tie() {
             GameResult::Tie
         } else if self.is_over() {
@@ -369,13 +369,13 @@ impl GameState {
     }
 
     // Except commands for now
-    pub fn all_valid_game_moves_for_current_player(&self) -> impl Iterator<Item=PossibleMove> + '_ {
+    pub fn all_valid_game_moves_for_current_player(&mut self) -> impl Iterator<Item=PossibleMove> + '_ {
         self.all_valid_game_moves_for(self.current_player_turn)
     }
 
     // Faster than collecting the above, since it avoid some validations.
     pub fn get_random_move_for_current_player<R>(
-        &self, rng: &mut R, new_tile_boost: Percentage,
+        &mut self, rng: &mut R, new_tile_boost: Percentage,
     ) -> Option<PossibleMove> where R: Rng {
         let only_place = new_tile_boost.roll(rng);
         if self.is_over() {
@@ -398,7 +398,7 @@ impl GameState {
     }
 
     fn get_random_move_for_current_player_aux(
-        &self, only_place: bool, moves: &Vec<PossibleMove>,
+        &mut self, only_place: bool, moves: &Vec<PossibleMove>,
     ) -> Option<PossibleMove> {
         for mv in moves {
             if only_place && (match &mv {
@@ -423,7 +423,7 @@ impl GameState {
         None
     }
 
-    pub fn all_valid_game_moves_for(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
+    pub fn all_valid_game_moves_for(&mut self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
         self.board.all_valid_moves(
             o,
             WithNewTiles(self.bag_for_owner(o).non_empty()),
@@ -596,7 +596,7 @@ mod tests {
             Coordinates { x: 3, y: 1 },
             units::place_tile(Owner::BottomPlayer, units::footman),
         );
-        let state = GameState::from_board(board, Owner::TopPlayer);
+        let mut state = GameState::from_board(board, Owner::TopPlayer);
         assert_not!(state.can_make_a_move(
             &GameMove::ApplyNonCommandTileAction { src: duke_coordinates, dst: Coordinates { x: 3, y: 0 }}));
     }
@@ -697,7 +697,7 @@ mod tests {
         opposite_duke.flip();
         board.place(Coordinates { x: 0, y: 5 }, opposite_duke);
 
-        let state = GameState::from_board_with_bag(board, Owner::TopPlayer, bag);
+        let mut state = GameState::from_board_with_bag(board, Owner::TopPlayer, bag);
         assert_eq_set!(
             vec!(
                 PossibleMove::PlaceNewTile(DukeOffset::Right, Owner::TopPlayer),
@@ -917,7 +917,7 @@ mod tests {
         let top_bag = TileBag::empty();
         let bottom_bag = TileBag::new(vec![TileType::Footman]);
 
-        let state = GameState::from_snapshot(GameSnapshot {
+        let mut state = GameState::from_snapshot(GameSnapshot {
             tiles,
             current_turn: Owner::TopPlayer,
             top_bag,

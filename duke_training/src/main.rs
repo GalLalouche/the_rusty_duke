@@ -225,7 +225,7 @@ fn main() {
             if let Some(ref mut fw) = feature_writer {
                 let mut cached_states = Vec::with_capacity(traj.states.len());
                 for state in &traj.states {
-                    if state.game_result() != GameResult::Ongoing { continue; }
+                    if state.clone().game_result() != GameResult::Ongoing { continue; }
                     cached_states.push(CachedState {
                         current_player: state.current_player_turn(),
                         features: extract_features(state).to_vec(),

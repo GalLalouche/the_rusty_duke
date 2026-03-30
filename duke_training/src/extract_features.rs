@@ -40,7 +40,7 @@ fn main() {
     for (i, game) in games.iter().enumerate() {
         let mut cached_states = Vec::with_capacity(game.states.len());
         for state in &game.states {
-            if state.game_result() != GameResult::Ongoing {
+            if state.clone().game_result() != GameResult::Ongoing {
                 continue;
             }
             let features: Vec<f64> = if combined {

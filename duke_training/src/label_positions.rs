@@ -128,7 +128,7 @@ fn position_key(gs: &GameState) -> u64 {
 /// Label a single position using negamax at the specified depth.
 fn label_position(gs: &GameState, evaluator: &CombinedWeights, depth: u32) -> f32 {
     let mut rng = StdRng::seed_from_u64(0);
-    negamax(gs, evaluator, depth, &mut rng) as f32
+    negamax(&mut gs.clone(), evaluator, depth, &mut rng) as f32
 }
 
 /// Synthetic label: incrementally harder functions of the game state.
@@ -213,7 +213,7 @@ fn main() {
     let mut dedup: HashMap<u64, (GameState, u32)> = HashMap::new();
     for game in &games {
         for gs in &game.states {
-            if gs.game_result() != GameResult::Ongoing {
+            if gs.clone().game_result() != GameResult::Ongoing {
                 continue;
             }
             ongoing_count += 1;

@@ -73,8 +73,8 @@ impl Node {
     }
 
     fn simulate_unexplored<R: Rng>(ai_move: &AiMove, gs: &GameState, rng: &mut R) -> Self {
-        let mv = random_move(gs, rng);
         let mut gs = gs.clone();
+        let mv = random_move(&mut gs, rng);
         let result = Node::test_move(
             gs.current_player_turn(),
             &mv,
@@ -139,7 +139,7 @@ impl Node {
     }
 }
 
-fn random_move<R: Rng>(gs: &GameState, rng: &mut R) -> AiMove {
+fn random_move<R: Rng>(gs: &mut GameState, rng: &mut R) -> AiMove {
     AiMove::from(
         gs
             .get_random_move_for_current_player(rng, Percentage::new(PLACE_TILE_PERCENTAGE))
@@ -149,9 +149,10 @@ fn random_move<R: Rng>(gs: &GameState, rng: &mut R) -> AiMove {
 }
 
 impl GameRoot {
-    pub fn initialize<R: Rng>(gs: GameState, rng: &mut R) -> Self {
+    pub fn initialize<R: Rng>(mut gs: GameState, rng: &mut R) -> Self {
+        let ai_moves: Vec<AiMove> = AiMove::all_moves(&mut gs).collect();
         let moves: Vec<Node> =
-            AiMove::all_moves(&gs).map(|e| Node::unexplored(e, gs.clone(), rng)).collect();
+            ai_moves.into_iter().map(|e| Node::unexplored(e, gs.clone(), rng)).collect();
         assert_not!(moves.is_empty());
         GameRoot {
             root_state: gs,

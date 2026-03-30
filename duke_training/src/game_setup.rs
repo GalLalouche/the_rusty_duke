@@ -209,8 +209,8 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
                 } else {
                     let current = game.current_player_turn();
                     let mv = match current {
-                        Owner::TopPlayer => greedy_move(&game, top_eval, rng),
-                        Owner::BottomPlayer => greedy_move(&game, bottom_eval, rng),
+                        Owner::TopPlayer => greedy_move(&mut game, top_eval, rng),
+                        Owner::BottomPlayer => greedy_move(&mut game, bottom_eval, rng),
                     };
                     mv.play(&mut game, rng);
                 }
@@ -237,7 +237,7 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
 /// valid placement locations, then weight-average across tile types.
 /// The final value is the best of "best piece move" and "expected draw value".
 pub fn negamax<E: GameEvaluator + ?Sized>(
-    gs: &GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
+    gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> f64 {
     // Terminal check
     match gs.game_result() {
@@ -283,7 +283,7 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
         let mut child = gs.clone();
         let mut eval_rng = base_rng.clone();
         mv.play(&mut child, &mut eval_rng);
-        let score = -negamax(&child, evaluator, depth - 1, rng);
+        let score = -negamax(&mut child, evaluator, depth - 1, rng);
         if score > best {
             best = score;
         }
@@ -321,7 +321,7 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
                 let mut child = gs.clone();
                 child.pull_specific_tile_from_bag(tile_type);
                 child.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
-                let score = -negamax(&child, evaluator, depth - 1, rng);
+                let score = -negamax(&mut child, evaluator, depth - 1, rng);
                 if score > best_for_tile {
                     best_for_tile = score;
                 }
@@ -348,7 +348,7 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
 /// (win/loss/tie) are handled explicitly so the search never misses a
 /// forced win or avoids a forced loss.
 pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
-    gs: &GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
+    gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> AiMove {
     assert!(depth >= 1, "greedy_move_deep requires depth >= 1");
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
@@ -364,7 +364,7 @@ pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
         let mut eval_rng = base_eval_rng.clone();
         mv.play(&mut child, &mut eval_rng);
         // Score from opponent's perspective, negated to get ours
-        let score = -negamax(&child, evaluator, depth - 1, rng);
+        let score = -negamax(&mut child, evaluator, depth - 1, rng);
         if score > best_score {
             best_score = score;
             best_move = mv.clone();
@@ -382,7 +382,7 @@ pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
 /// candidate evaluation.
 ///
 /// Panics if the game state has no legal moves.
-pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &GameState, evaluator: &E, rng: &mut impl Rng) -> AiMove {
+pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E, rng: &mut impl Rng) -> AiMove {
     // Check if the evaluator supports the incremental accumulator path.
     if let Some((net, include_combined)) = evaluator.as_generic_mlp() {
         return greedy_move_incremental(gs, net, include_combined, rng);
@@ -426,7 +426,7 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &GameState, evaluator: &E, rng
 ///
 /// `include_combined` should be `true` for 1147-input models, `false` for 1106.
 pub fn greedy_move_incremental(
-    gs: &GameState,
+    gs: &mut GameState,
     net: &GenericMlp,
     include_combined: bool,
     rng: &mut impl Rng,

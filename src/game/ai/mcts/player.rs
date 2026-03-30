@@ -46,7 +46,7 @@ impl MctsPlayer {
 }
 
 impl ArtificialPlayer for MctsPlayer {
-    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &GameState) -> AiMove {
+    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &mut GameState) -> AiMove {
         let all_moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
         let mut scores: HashMap<&AiMove, i64> = HashMap::new();
         for _ in 0..self.playouts {
@@ -89,7 +89,7 @@ enum TestResult {
     MaxDepthReached { final_state_score: f64 },
 }
 
-fn random_move<R: Rng>(gs: &GameState, rng: &mut R) -> AiMove {
+fn random_move<R: Rng>(gs: &mut GameState, rng: &mut R) -> AiMove {
     time_it_macro!("random_move",{
     gs.get_random_move_for_current_player(rng, Percentage::new(0.5)).unwrap().borrow().into()
     })

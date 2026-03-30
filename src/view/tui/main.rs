@@ -114,7 +114,7 @@ pub fn go_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        let winner = controller.borrow().game_result();
+        let winner = controller.borrow_mut().game_result();
         let message = match winner {
             GameResult::Tie => Some("The game ended in a tie!\nPress any key to quit".to_owned()),
             GameResult::Ongoing => None,

@@ -137,7 +137,7 @@ fn main() {
 
                     // --- Move generation ---
                     let t = Instant::now();
-                    let mut moves: Vec<AiMove> = AiMove::all_moves(&game_state).collect();
+                    let mut moves: Vec<AiMove> = AiMove::all_moves(&mut game_state).collect();
                     move_gen_time += t.elapsed();
 
                     assert!(!moves.is_empty(), "no legal moves in Ongoing state");

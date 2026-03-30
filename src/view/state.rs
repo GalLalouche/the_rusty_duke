@@ -193,7 +193,7 @@ impl ViewState {
         }
     }
 
-    pub fn can_pull_token_from_bag(&self) -> bool {
+    pub fn can_pull_token_from_bag(&mut self) -> bool {
         match self.current_state() {
             ViewStateMode::FreeMoving(_) => self.game_state.can_pull_tile_from_bag_bool(),
             _ => false,
@@ -264,7 +264,7 @@ impl ViewState {
         self.game_state.undo(mv)
     }
 
-    pub fn game_result(&self) -> GameResult {
+    pub fn game_result(&mut self) -> GameResult {
         self.game_state.game_result()
     }
 }

@@ -63,7 +63,7 @@ pub(super) struct HeuristicAlphaBetaPlayerStrategy<'a> {
 }
 
 impl ArtificialPlayer for HeuristicAlphaBetaPlayer {
-    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &GameState) -> AiMove {
+    fn get_next_move<R: Rng>(&self, rng: &mut R, gs: &mut GameState) -> AiMove {
         HeuristicAlphaBetaPlayerStrategy {
             state: gs.clone(),
             player: self,
@@ -78,10 +78,11 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStra
     type Board = GameState;
 
     fn evaluate(&self) -> f64 {
-        if self.state.is_over() {
+        let mut state = self.state.clone();
+        if state.is_over() {
             f64::INFINITY
         } else {
-            self.player.evaluator.evaluate(&self.state)
+            self.player.evaluator.evaluate(&mut state)
         }
     }
 
@@ -94,24 +95,23 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStra
     }
 
     fn is_game_complete(&self) -> bool {
-        self.state.is_over()
+        self.state.clone().is_over()
     }
 
     fn get_available_moves(&self) -> Vec<Self::Move> {
         let mut clone = self.state.clone();
         // Reuse a single rng instead of calling thread_rng() per move.
         let mut rng = rand::thread_rng();
+        let moves: Vec<AiMove> = AiMove::all_moves(&mut clone).collect();
         let mut result = Vec::new();
-        AiMove::all_moves(&self.state)
-            .for_each(|mv: AiMove| {
-                play_aux(&mv, &mut clone, &mut rng);
-                let res = self.player.evaluator.cheap_evaluate(&clone);
-                // TODO reduce duplication with below
-                if let Some(um) = mv.to_undo_move() {
-                    clone.undo(um)
-                }
-                result.push((mv, res))
-            });
+        for mv in moves {
+            play_aux(&mv, &mut clone, &mut rng);
+            let res = self.player.evaluator.cheap_evaluate(&clone);
+            if let Some(um) = mv.to_undo_move() {
+                clone.undo(um)
+            }
+            result.push((mv, res));
+        }
         result.better_sort_by_key(|e| -e.1).into_iter().map(|e| e.0).collect()
     }
 
@@ -190,13 +190,13 @@ impl minimax::Game for GameState {
 
     fn generate_moves(state: &Self::S, moves: &mut Vec<Self::M>) {
         time_it_macro!("generate_moves", {
-            moves.append(&mut AiMove::all_moves(state).collect());
+            moves.append(&mut AiMove::all_moves(&mut state.clone()).collect());
         })
     }
 
     fn get_winner(state: &Self::S) -> Option<minimax::Winner> {
         time_it_macro!("get_winner", {
-            match state.game_result() {
+            match state.clone().game_result() {
                 GameResult::Won(o) => Some(
                     if o == state.current_player_turn() {
                         minimax::Winner::PlayerToMove
@@ -214,7 +214,7 @@ impl minimax::Evaluator for HeuristicAlphaBetaPlayerStrategy<'_> {
 
     fn evaluate(&self, s: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
         time_it_macro!("evaluate", {
-            self.player.evaluator.evaluate(s) as i32
+            self.player.evaluator.evaluate(&mut s.clone()) as i32
         })
     }
 }

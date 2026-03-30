@@ -1,4 +1,3 @@
-use std::cell::UnsafeCell;
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
@@ -47,87 +46,12 @@ impl Display for PossibleMove {
     }
 }
 
-/// Interior-mutable game board. Wraps the actual board data in `UnsafeCell`
-/// so that `does_not_put_in_guard` and `is_valid_placement_aux` can
-/// temporarily mutate the board (apply + check + undo) while holding `&self`.
-///
-/// All normal field access goes through `Deref`/`DerefMut` and is transparent.
-///
-/// SAFETY: `GameBoard` is `!Sync` (inherited from `UnsafeCell`). The interior
-/// mutation only occurs in guard-checking methods that provably restore the
-/// original board state before returning.
-pub(super) struct GameBoard {
-    inner: UnsafeCell<GameBoardInner>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct GameBoardInner {
+pub(super) struct GameBoard {
     board: Board<PlacedTile>,
     /// Cached duke positions per player. Updated on place/remove/mv to avoid O(36) scans.
     /// None if the duke for that player hasn't been placed yet (only during initial setup).
     duke_cache: [Option<Coordinates>; 2],
-}
-
-// --- Trait impls delegated to GameBoardInner ---
-
-impl std::fmt::Debug for GameBoard {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { self.i().fmt(f) }
-}
-
-impl Clone for GameBoard {
-    fn clone(&self) -> Self { GameBoard::wrap(self.i().clone()) }
-}
-
-impl PartialEq for GameBoard {
-    fn eq(&self, other: &Self) -> bool { self.i() == other.i() }
-}
-
-impl Eq for GameBoard {}
-
-// SAFETY: The UnsafeCell interior mutation in guard-checking methods is
-// confined to a single call frame (apply + check + undo) and never races
-// with another thread. Threads that share a &GameBoard only read it;
-// each thread clones before mutating.
-unsafe impl Sync for GameBoard {}
-
-impl GameBoard {
-    #[inline(always)]
-    fn i(&self) -> &GameBoardInner { unsafe { &*self.inner.get() } }
-
-    #[inline(always)]
-    fn i_mut(&mut self) -> &mut GameBoardInner { self.inner.get_mut() }
-
-    /// Obtain a mutable reference for apply+check+undo from a shared reference.
-    /// SAFETY: caller must restore original state before returning.
-    #[inline(always)]
-    unsafe fn i_mut_unchecked(&self) -> &mut GameBoardInner { &mut *self.inner.get() }
-
-    fn wrap(inner: GameBoardInner) -> Self { GameBoard { inner: UnsafeCell::new(inner) } }
-}
-
-// Transparent field access.
-impl std::ops::Deref for GameBoard {
-    type Target = GameBoardInner;
-    #[inline(always)]
-    fn deref(&self) -> &GameBoardInner { self.i() }
-}
-
-impl std::ops::DerefMut for GameBoard {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut GameBoardInner { self.i_mut() }
-}
-
-// Forwarding constructors and constants so external code can use GameBoard::*.
-impl GameBoard {
-    pub const BOARD_SIZE: u8 = GameBoardInner::BOARD_SIZE;
-
-    pub(super) fn new(board: Board<PlacedTile>) -> Self {
-        GameBoard::wrap(GameBoardInner::new(board))
-    }
-
-    pub fn empty() -> Self {
-        GameBoard::wrap(GameBoardInner::empty())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,13 +156,17 @@ impl DukeNeighbors {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
 
-impl GameBoardInner {
+impl GameBoard {
     pub const BOARD_SIZE: u8 = 6;
 
-    fn new(board: Board<PlacedTile>) -> Self {
+    pub(super) fn new(board: Board<PlacedTile>) -> Self {
         let top = board.find(|a| a.owner == Owner::TopPlayer && a.tile_type.is_duke());
         let bottom = board.find(|a| a.owner == Owner::BottomPlayer && a.tile_type.is_duke());
-        GameBoardInner { board, duke_cache: [top, bottom] }
+        GameBoard { board, duke_cache: [top, bottom] }
+    }
+
+    pub fn empty() -> GameBoard {
+        GameBoard { board: Board::square(GameBoard::BOARD_SIZE), duke_cache: [None, None] }
     }
 
     #[inline(always)]
@@ -268,9 +196,6 @@ impl GameBoardInner {
         &self.board
     }
 
-    fn empty() -> GameBoardInner {
-        GameBoardInner { board: Board::square(GameBoardInner::BOARD_SIZE), duke_cache: [None, None] }
-    }
     pub fn place(&mut self, c: Coordinates, t: PlacedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
         if t.tile_type.is_duke() {
@@ -831,8 +756,6 @@ impl GameBoardInner {
         }
     }
 
-    // does_not_put_in_guard is now on GameBoard (uses UnsafeCell for apply+undo).
-
     // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,
     // undoing the action would remove the new tile from the board.
     pub fn undo(&mut self, mv: PossibleMove) -> Option<PlacedTile> {
@@ -865,8 +788,6 @@ impl GameBoardInner {
             }
         }
     }
-
-    // all_valid_moves and all_valid_moves_ignoring_guard are now on GameBoard.
 
     pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
         let result = self
@@ -907,77 +828,60 @@ impl GameBoardInner {
     pub fn debug_double(&self) { println!("{}", self.as_double_string()); }
 }
 
-impl Rectangular for GameBoardInner {
-    fn width(&self) -> u8 {
-        self.board.width()
-    }
-
-    fn height(&self) -> u8 {
-        self.board.height()
-    }
-}
-
 impl Rectangular for GameBoard {
-    fn width(&self) -> u8 { self.i().width() }
-    fn height(&self) -> u8 { self.i().height() }
+    fn width(&self) -> u8 { self.board.width() }
+    fn height(&self) -> u8 { self.board.height() }
 }
 
-// Guard-checked methods that use interior mutability (apply + check + undo).
+// Guard-checked methods (apply + check + undo). These require `&mut self`.
 impl GameBoard {
-    /// Check if a move does not put the owner in guard. Uses apply+undo via UnsafeCell.
-    pub(super) fn does_not_put_in_guard(&self, mv: BoardMove, owner: Owner) -> bool {
-        // SAFETY: We apply the move, check guard, then undo — restoring the board to
-        // its original state before returning. No other mutable references exist
-        // during this window because we're in a single-threaded call chain.
+    /// Check if a move does not put the owner in guard.
+    pub(super) fn does_not_put_in_guard(&mut self, mv: BoardMove, owner: Owner) -> bool {
         #[cfg(debug_assertions)]
-        let snapshot = self.i().clone();
-        let inner = unsafe { self.i_mut_unchecked() };
-        let result = inner.move_does_not_put_in_guard(mv, owner);
+        let snapshot = self.clone();
+        let result = self.move_does_not_put_in_guard(mv, owner);
         #[cfg(debug_assertions)]
-        debug_assert_eq!(self.i(), &snapshot, "does_not_put_in_guard: board not restored after apply/undo");
+        debug_assert_eq!(self, &snapshot, "does_not_put_in_guard: board not restored after apply/undo");
         result
     }
 
-    pub fn is_valid_placement(&self, owner: Owner, offset: DukeOffset) -> bool {
+    pub fn is_valid_placement(&mut self, owner: Owner, offset: DukeOffset) -> bool {
         match self.is_valid_placement_space(owner, offset) {
             None => false,
             Some(c) => {
                 #[cfg(debug_assertions)]
-                let snapshot = self.i().clone();
-                let inner = unsafe { self.i_mut_unchecked() };
-                let result = inner.placement_does_not_put_in_guard(c, owner);
+                let snapshot = self.clone();
+                let result = self.placement_does_not_put_in_guard(c, owner);
                 #[cfg(debug_assertions)]
-                debug_assert_eq!(self.i(), &snapshot, "is_valid_placement: board not restored after apply/undo");
+                debug_assert_eq!(self, &snapshot, "is_valid_placement: board not restored after apply/undo");
                 result
             }
         }
     }
 
     // Except commands.
-    pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
+    pub fn get_legal_moves(&mut self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         #[cfg(debug_assertions)]
-        let snapshot = self.i().clone();
-        let inner = unsafe { self.i_mut_unchecked() };
-        let owner = inner.get(src).unwrap().owner;
-        let candidates: Vec<_> = inner.get_legal_moves_no_guard(src).collect();
+        let snapshot = self.clone();
+        let owner = self.get(src).unwrap().owner;
+        let candidates: Vec<_> = self.get_legal_moves_no_guard(src).collect();
         let result = candidates.into_iter()
-            .filter(|o| inner.move_does_not_put_in_guard(
+            .filter(|o| self.move_does_not_put_in_guard(
                 BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
                 owner,
             ))
             .collect();
         #[cfg(debug_assertions)]
-        debug_assert_eq!(self.i(), &snapshot, "get_legal_moves: board not restored after apply/undo");
+        debug_assert_eq!(self, &snapshot, "get_legal_moves: board not restored after apply/undo");
         result
     }
 
-    pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+    pub fn all_valid_moves(&mut self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
         #[cfg(debug_assertions)]
-        let snapshot = self.i().clone();
-        let inner = unsafe { self.i_mut_unchecked() };
+        let snapshot = self.clone();
         // Collect tile coordinates first to avoid holding references into the board
         // while mutating it during guard checks.
-        let tile_coords: Vec<Coordinates> = inner.get_tiles_for(owner)
+        let tile_coords: Vec<Coordinates> = self.get_tiles_for(owner)
             .map(|e| e.0)
             .collect();
 
@@ -985,16 +889,16 @@ impl GameBoard {
 
         // Tile action moves: collect candidates per tile and filter inline.
         for src in tile_coords {
-            let candidates: Vec<(Coordinates, TileAction)> = inner.get_legal_moves_no_guard(src).collect();
+            let candidates: Vec<(Coordinates, TileAction)> = self.get_legal_moves_no_guard(src).collect();
             for (dst, _action) in candidates {
-                if inner.move_does_not_put_in_guard(
+                if self.move_does_not_put_in_guard(
                     BoardMove::ApplyNonCommandTileAction { src, dst },
                     owner,
                 ) {
                     result.push(PossibleMove::ApplyNonCommandTileAction {
                         src,
                         dst,
-                        capturing: inner.board.get(dst).cloned(),
+                        capturing: self.board.get(dst).cloned(),
                     });
                 }
             }
@@ -1003,8 +907,8 @@ impl GameBoard {
         // Placement moves.
         if let WithNewTiles(true) = new_tiles {
             for offset in DukeOffset::iter() {
-                if let Some(c) = inner.is_valid_placement_space(owner, offset) {
-                    if inner.placement_does_not_put_in_guard(c, owner) {
+                if let Some(c) = self.is_valid_placement_space(owner, offset) {
+                    if self.placement_does_not_put_in_guard(c, owner) {
                         result.push(PossibleMove::PlaceNewTile(offset, owner));
                     }
                 }
@@ -1012,28 +916,27 @@ impl GameBoard {
         }
 
         #[cfg(debug_assertions)]
-        debug_assert_eq!(self.i(), &snapshot, "all_valid_moves: board not restored after apply/undo");
+        debug_assert_eq!(self, &snapshot, "all_valid_moves: board not restored after apply/undo");
         result
     }
 
     /// Check if there is at least one valid move (short-circuits on first found).
-    pub fn has_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> bool {
+    pub fn has_valid_moves(&mut self, owner: Owner, new_tiles: WithNewTiles) -> bool {
         #[cfg(debug_assertions)]
-        let snapshot = self.i().clone();
-        let inner = unsafe { self.i_mut_unchecked() };
-        let tile_coords: Vec<Coordinates> = inner.get_tiles_for(owner)
+        let snapshot = self.clone();
+        let tile_coords: Vec<Coordinates> = self.get_tiles_for(owner)
             .map(|e| e.0)
             .collect();
 
         for src in tile_coords {
-            let candidates: Vec<(Coordinates, TileAction)> = inner.get_legal_moves_no_guard(src).collect();
+            let candidates: Vec<(Coordinates, TileAction)> = self.get_legal_moves_no_guard(src).collect();
             for (dst, _) in candidates {
-                if inner.move_does_not_put_in_guard(
+                if self.move_does_not_put_in_guard(
                     BoardMove::ApplyNonCommandTileAction { src, dst },
                     owner,
                 ) {
                     #[cfg(debug_assertions)]
-                    debug_assert_eq!(self.i(), &snapshot, "has_valid_moves: board not restored after apply/undo");
+                    debug_assert_eq!(self, &snapshot, "has_valid_moves: board not restored after apply/undo");
                     return true;
                 }
             }
@@ -1041,10 +944,10 @@ impl GameBoard {
 
         if let WithNewTiles(true) = new_tiles {
             for offset in DukeOffset::iter() {
-                if let Some(c) = inner.is_valid_placement_space(owner, offset) {
-                    if inner.placement_does_not_put_in_guard(c, owner) {
+                if let Some(c) = self.is_valid_placement_space(owner, offset) {
+                    if self.placement_does_not_put_in_guard(c, owner) {
                         #[cfg(debug_assertions)]
-                        debug_assert_eq!(self.i(), &snapshot, "has_valid_moves: board not restored after apply/undo");
+                        debug_assert_eq!(self, &snapshot, "has_valid_moves: board not restored after apply/udo");
                         return true;
                     }
                 }
@@ -1052,7 +955,7 @@ impl GameBoard {
         }
 
         #[cfg(debug_assertions)]
-        debug_assert_eq!(self.i(), &snapshot, "has_valid_moves: board not restored after apply/undo");
+        debug_assert_eq!(self, &snapshot, "has_valid_moves: board not restored after apply/undo");
         false
     }
 }

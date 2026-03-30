@@ -477,13 +477,13 @@ fn greedy_move_is_deterministic() {
     let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
     let evaluator = NnueEvaluator::new(weights);
 
-    let gs = create_test_state();
+    let mut gs = create_test_state();
 
     let mut rng1 = StdRng::seed_from_u64(42);
-    let mv1 = greedy_move(&gs, &evaluator, &mut rng1);
+    let mv1 = greedy_move(&mut gs, &evaluator, &mut rng1);
 
     let mut rng2 = StdRng::seed_from_u64(42);
-    let mv2 = greedy_move(&gs, &evaluator, &mut rng2);
+    let mv2 = greedy_move(&mut gs, &evaluator, &mut rng2);
 
     assert_eq!(mv1, mv2, "Same seed should produce same move");
 
@@ -886,7 +886,7 @@ fn feature_cache_roundtrip() {
         let (states, result) = play_random_game(&gs, &mut rng);
         let mut cached_states = Vec::new();
         for state in &states {
-            if state.game_result() != GameResult::Ongoing { continue; }
+            if state.clone().game_result() != GameResult::Ongoing { continue; }
             let features = extract_features(state);
             cached_states.push(CachedState {
                 current_player: state.current_player_turn(),
@@ -946,7 +946,7 @@ fn stream_feature_cache_matches_load() {
         let (states, result) = play_random_game(&gs, &mut rng);
         let mut cached_states = Vec::new();
         for state in &states {
-            if state.game_result() != GameResult::Ongoing { continue; }
+            if state.clone().game_result() != GameResult::Ongoing { continue; }
             let features = extract_features(state);
             cached_states.push(CachedState {
                 current_player: state.current_player_turn(),
@@ -1095,18 +1095,18 @@ fn duke_movement_options_simple_unblocked() {
     // TopPlayer Duke (Initial) at (0,0): slides left/right.
     //   Left: out of bounds; Right: x=1,2,3,4,5 => 5 squares.
     // No guard issues since dukes are on different rows.
-    let gs = snapshot_state(vec![
+    let mut gs = snapshot_state(vec![
         (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::DukeMovementOptions;
     // BottomPlayer duke has 5 horizontal slide moves
-    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &mut gs);
     assert_eq!(bottom_val, 5.0,
         "BottomPlayer duke at (3,3) Initial should have 5 slide moves, got {}", bottom_val);
     // TopPlayer duke has 5 horizontal slide moves
-    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &mut gs);
     assert_eq!(top_val, 5.0,
         "TopPlayer duke at (0,0) Initial should have 5 slide moves, got {}", top_val);
 
@@ -1125,7 +1125,7 @@ fn duke_movement_options_blocked_by_own_tile() {
     //   Right: blocked at x=4 => 0 squares.
     //   Total: 3 moves.
     // TopPlayer Duke at (0,0) far away.
-    let gs = snapshot_state(vec![
+    let mut gs = snapshot_state(vec![
         (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         (Coordinates { x: 4, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
         (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
@@ -1133,7 +1133,7 @@ fn duke_movement_options_blocked_by_own_tile() {
 
     let h = Heuristics::DukeMovementOptions;
     // BottomPlayer duke: left 3 squares, right blocked => 3
-    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &mut gs);
     assert_eq!(bottom_val, 3.0,
         "BottomPlayer duke at (3,3) blocked right by own footman should have 3 moves, got {}", bottom_val);
 
@@ -1148,7 +1148,7 @@ fn duke_movement_options_flipped_duke_slides_vertically() {
     // TopPlayer Duke at (5,5).
     let mut bottom_duke = PlacedTile::new(Owner::BottomPlayer, TileType::Duke);
     bottom_duke.flip();
-    let gs = snapshot_state(vec![
+    let mut gs = snapshot_state(vec![
         (Coordinates { x: 2, y: 2 }, bottom_duke),
         (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
@@ -1157,7 +1157,7 @@ fn duke_movement_options_flipped_duke_slides_vertically() {
     // BottomPlayer duke flipped slides vertically: up y=1,0 (2) + down y=3,4 (2) = 4 moves.
     // (2,5) is excluded because TopPlayer duke at (5,5) Initial slides horizontally along y=5,
     // so moving to (2,5) would put the BottomPlayer duke in guard.
-    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &mut gs);
     assert_eq!(bottom_val, 4.0,
         "Flipped BottomPlayer duke at (2,2) should have 4 legal slide moves (guard), got {}", bottom_val);
 
@@ -1174,17 +1174,17 @@ fn total_tiles_on_board_simple() {
     // BottomPlayer has 2 tiles (Duke + Footman), TopPlayer has 1 tile (Duke).
     // TotalTilesOnBoard = count * 10.
     // BottomPlayer: 2 * 10 = 20; TopPlayer: 1 * 10 = 10.
-    let gs = snapshot_state(vec![
+    let mut gs = snapshot_state(vec![
         (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
         (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::TotalTilesOnBoard;
-    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &mut gs);
     assert_eq!(bottom_val, 20.0,
         "BottomPlayer with 2 tiles should score 20.0, got {}", bottom_val);
-    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &mut gs);
     assert_eq!(top_val, 10.0,
         "TopPlayer with 1 tile should score 10.0, got {}", top_val);
 
@@ -1197,7 +1197,7 @@ fn total_tiles_on_board_simple() {
 fn total_tiles_on_board_symmetric() {
     // Both players have 3 tiles each (Duke + 2 Footmen).
     // Each player: 3 * 10 = 30.
-    let gs = snapshot_state(vec![
+    let mut gs = snapshot_state(vec![
         (Coordinates { x: 2, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         (Coordinates { x: 1, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
         (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
@@ -1207,13 +1207,13 @@ fn total_tiles_on_board_symmetric() {
     ], Owner::BottomPlayer);
 
     let h = Heuristics::TotalTilesOnBoard;
-    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &gs), 30.0,
+    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &mut gs), 30.0,
         "BottomPlayer with 3 tiles should score 30.0");
-    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &gs), 30.0,
+    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &mut gs), 30.0,
         "TopPlayer with 3 tiles should score 30.0");
 
     // Difference should be 0 for symmetric setup
-    assert_eq!(h.difference(Owner::BottomPlayer, &gs), 0.0);
+    assert_eq!(h.difference(Owner::BottomPlayer, &mut gs), 0.0);
 }
 
 // ── TotalMovementOptions ───────────────────────────────────────────────
@@ -1225,16 +1225,16 @@ fn total_movement_options_duke_only() {
     // TopPlayer Duke (Initial) at (0,0): slides left/right = 5 moves.
     // TotalMovementOptions counts all valid game moves (tile moves only, no placements
     // since bags are empty).
-    let gs = snapshot_state(vec![
+    let mut gs = snapshot_state(vec![
         (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::TotalMovementOptions;
-    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &mut gs);
     assert_eq!(bottom_val, 5.0,
         "BottomPlayer with only duke at (3,3) should have 5 moves, got {}", bottom_val);
-    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &mut gs);
     assert_eq!(top_val, 5.0,
         "TopPlayer with only duke at (0,0) should have 5 moves, got {}", top_val);
 
@@ -1253,7 +1253,7 @@ fn total_movement_options_multiple_pieces_with_bag() {
     //
     // With BottomPlayer having tiles in bag, placement moves are possible
     // near the duke at (3,5): valid offsets that are empty.
-    let gs = snapshot_state_with_bags(
+    let mut gs = snapshot_state_with_bags(
         vec![
             (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
             (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
@@ -1270,13 +1270,13 @@ fn total_movement_options_multiple_pieces_with_bag() {
     // Plus placement moves near duke at (3,5): empty adjacent squares.
     // Duke at (3,5), adjacent: (2,5), (4,5), (3,4)=occupied. DukeOffset has
     // Left, Right, Top, Bottom variants => need to check which are valid.
-    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &mut gs);
     // We'll assert it's strictly greater than the duke-only case
     assert!(bottom_val > 5.0,
         "BottomPlayer with duke + footman + bag should have > 5 moves, got {}", bottom_val);
 
     // TopPlayer with just duke at (0,0) and empty bag: 5 slide moves only.
-    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &mut gs);
     assert_eq!(top_val, 5.0,
         "TopPlayer with only duke at (0,0) and empty bag should have 5 moves, got {}", top_val);
 }
@@ -1286,15 +1286,15 @@ fn total_movement_options_multiple_pieces_with_bag() {
 #[test]
 fn discarded_units_empty_discards() {
     // No discarded tiles => score is 0 * -15 = 0.0 for both players.
-    let gs = snapshot_state(vec![
+    let mut gs = snapshot_state(vec![
         (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
         (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
     ], Owner::BottomPlayer);
 
     let h = Heuristics::DiscardedUnits;
-    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &gs), 0.0,
+    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &mut gs), 0.0,
         "No discards should give 0.0");
-    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &gs), 0.0,
+    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &mut gs), 0.0,
         "No discards should give 0.0");
     assert_eq!(h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs), 0.0);
 }
@@ -1304,7 +1304,7 @@ fn discarded_units_with_discards() {
     // TopPlayer has 2 discarded tiles => 2 * -15 = -30.0.
     // BottomPlayer has 1 discarded tile => 1 * -15 = -15.0.
 
-    let gs = snapshot_state_with_discards(
+    let mut gs = snapshot_state_with_discards(
         vec![
             (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
             (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
@@ -1321,11 +1321,11 @@ fn discarded_units_with_discards() {
 
     let h = Heuristics::DiscardedUnits;
     // TopPlayer has 2 of their tiles in discard (lost to opponent): 2 * -15 = -30
-    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &gs);
+    let top_val = h.evaluate_for_owner(Owner::TopPlayer, &mut gs);
     assert_eq!(top_val, -30.0,
         "TopPlayer with 2 lost pieces should score -30.0, got {}", top_val);
     // BottomPlayer has 1 of their tiles in discard (lost to opponent): 1 * -15 = -15
-    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &gs);
+    let bottom_val = h.evaluate_for_owner(Owner::BottomPlayer, &mut gs);
     assert_eq!(bottom_val, -15.0,
         "BottomPlayer with 1 lost piece should score -15.0, got {}", bottom_val);
 
@@ -1334,7 +1334,7 @@ fn discarded_units_with_discards() {
     assert_eq!(h.approx_evaluate_for_owner(Owner::BottomPlayer, &gs), -15.0);
 
     // Difference for BottomPlayer: -15 - (-30) = 15 (advantage since fewer losses)
-    assert_eq!(h.difference(Owner::BottomPlayer, &gs), 15.0);
+    assert_eq!(h.difference(Owner::BottomPlayer, &mut gs), 15.0);
 }
 
 #[test]
@@ -1342,7 +1342,7 @@ fn discarded_units_three_tiles_discarded() {
     // TopPlayer has 0 discarded, BottomPlayer has 3 discarded.
     // BottomPlayer: 3 * -15 = -45.0
 
-    let gs = snapshot_state_with_discards(
+    let mut gs = snapshot_state_with_discards(
         vec![
             (Coordinates { x: 3, y: 3 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
             (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
@@ -1357,13 +1357,13 @@ fn discarded_units_three_tiles_discarded() {
     );
 
     let h = Heuristics::DiscardedUnits;
-    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &gs), 0.0,
+    assert_eq!(h.evaluate_for_owner(Owner::TopPlayer, &mut gs), 0.0,
         "TopPlayer with 0 lost pieces should score 0.0");
-    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &gs), -45.0,
+    assert_eq!(h.evaluate_for_owner(Owner::BottomPlayer, &mut gs), -45.0,
         "BottomPlayer with 3 lost pieces should score -45.0");
 
     // Difference for BottomPlayer: -45 - 0 = -45 (disadvantage from more losses)
-    assert_eq!(h.difference(Owner::BottomPlayer, &gs), -45.0);
+    assert_eq!(h.difference(Owner::BottomPlayer, &mut gs), -45.0);
 }
 
 // ── Manhattan distance feature tests ────────────────────────────────────
@@ -1558,7 +1558,7 @@ mod board_control_tests {
         // TopPlayer: duke at (2,0) with a footman in bag.
         // BottomPlayer: duke at (3,5) with empty bag.
         // The placement moves should not be counted in approx_moves.
-        let gs = snapshot_state_with_bags(
+        let mut gs = snapshot_state_with_bags(
             vec![
                 (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
                 (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
@@ -1850,7 +1850,7 @@ fn discard_vector_maps_tile_types_correctly() {
     // TopPlayer discards: 1 Footman + 1 Knight
     // BottomPlayer discards: 2 Pikemen
     // Current player = TopPlayer
-    let gs = snapshot_state_with_discards(
+    let mut gs = snapshot_state_with_discards(
         vec![
             (coord(2, 0), PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
             (coord(3, 5), PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
@@ -2275,7 +2275,7 @@ fn l1_accumulator_incremental_matches_full_recompute() {
     let mut rng = StdRng::seed_from_u64(77);
     let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
     let bag = create_bag();
-    let gs = create_initial_state(&bag);
+    let mut gs = create_initial_state(&bag);
 
     // Get base features
     let base_board = active_board_features(&gs);
@@ -2283,7 +2283,7 @@ fn l1_accumulator_incremental_matches_full_recompute() {
     let base_acc = L1Accumulator::from_state(&net, &gs, false);
 
     // Play each candidate move, compare incremental vs full
-    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
+    let moves: Vec<AiMove> = AiMove::all_moves(&mut gs).collect();
     assert!(!moves.is_empty());
 
     let eval_rng_base = StdRng::seed_from_u64(0);
@@ -2318,14 +2318,14 @@ fn l1_accumulator_incremental_matches_full_1147() {
     let mut rng = StdRng::seed_from_u64(55);
     let net = GenericMlp::random(1147, vec![128, 64], &mut rng);
     let bag = create_bag();
-    let gs = create_initial_state(&bag);
+    let mut gs = create_initial_state(&bag);
 
     let base_board = active_board_features(&gs);
     let base_bag = bag_features(&gs);
     let base_combined = extract_combined_features(&gs);
     let base_acc = L1Accumulator::from_state(&net, &gs, true);
 
-    let moves: Vec<AiMove> = AiMove::all_moves(&gs).collect();
+    let moves: Vec<AiMove> = AiMove::all_moves(&mut gs).collect();
     let eval_rng_base = StdRng::seed_from_u64(0);
     for mv in &moves {
         let mut clone = gs.clone();
@@ -2362,16 +2362,16 @@ fn greedy_move_accumulator_matches_non_accumulator() {
     let mut rng = StdRng::seed_from_u64(42);
     let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
     let bag = create_bag();
-    let gs = create_initial_state(&bag);
+    let mut gs = create_initial_state(&bag);
 
     // greedy_move_incremental directly
     let mut rng1 = StdRng::seed_from_u64(100);
-    let mv1 = greedy_move_incremental(&gs, &net, false, &mut rng1);
+    let mv1 = greedy_move_incremental(&mut gs, &net, false, &mut rng1);
 
     // Via the evaluator wrapping, which triggers as_generic_mlp -> incremental path
     let evaluator = GenericEvaluator { net: GenericMlp::random(1106, vec![64, 32], &mut StdRng::seed_from_u64(42)) };
     let mut rng2 = StdRng::seed_from_u64(100);
-    let mv2 = crate::game_setup::greedy_move(&gs, &evaluator, &mut rng2);
+    let mv2 = crate::game_setup::greedy_move(&mut gs, &evaluator, &mut rng2);
 
     assert_eq!(mv1, mv2, "greedy_move via evaluator should pick same move as greedy_move_incremental");
 }
@@ -2382,13 +2382,13 @@ fn greedy_move_incremental_is_deterministic() {
     let mut rng = StdRng::seed_from_u64(42);
     let net = GenericMlp::random(1106, vec![64, 32], &mut rng);
     let bag = create_bag();
-    let gs = create_initial_state(&bag);
+    let mut gs = create_initial_state(&bag);
 
     let mut rng1 = StdRng::seed_from_u64(200);
-    let mv1 = crate::game_setup::greedy_move_incremental(&gs, &net, false, &mut rng1);
+    let mv1 = crate::game_setup::greedy_move_incremental(&mut gs, &net, false, &mut rng1);
 
     let mut rng2 = StdRng::seed_from_u64(200);
-    let mv2 = crate::game_setup::greedy_move_incremental(&gs, &net, false, &mut rng2);
+    let mv2 = crate::game_setup::greedy_move_incremental(&mut gs, &net, false, &mut rng2);
 
     assert_eq!(mv1, mv2, "Same seed should produce same move with incremental path");
 }
@@ -3064,13 +3064,13 @@ fn greedy_move_picks_best_move() {
     // We don't need a custom evaluator -- we can use StaticHeuristicEvaluator
     // and verify that greedy_move picks a sensible move.
     let bag = create_bag();
-    let gs = create_initial_state(&bag);
+    let mut gs = create_initial_state(&bag);
 
     let evaluator = StaticHeuristicEvaluator::new();
     let mut rng = StdRng::seed_from_u64(42);
 
     // greedy_move should return a valid move without panicking
-    let mv = greedy_move(&gs, &evaluator, &mut rng);
+    let mv = greedy_move(&mut gs, &evaluator, &mut rng);
 
     // Play the move and verify the game state changed
     let mut after = gs.clone();
@@ -3544,7 +3544,7 @@ fn negamax_returns_terminal_score_for_won_position() {
     let evaluator = StaticHeuristicEvaluator::new();
     let mut rng = StdRng::seed_from_u64(0);
     // From TopPlayer's perspective (current player), this is a loss
-    let score = negamax(&gs, &evaluator, 3, &mut rng);
+    let score = negamax(&mut gs, &evaluator, 3, &mut rng);
     assert_eq!(score, TERMINAL_LOSS_SCORE,
         "Negamax should return TERMINAL_LOSS_SCORE for a lost position, got {}", score);
 }
@@ -3554,10 +3554,10 @@ fn negamax_depth_0_returns_static_eval() {
     use crate::game_setup::{negamax, StaticHeuristicEvaluator, GameEvaluator};
 
     let evaluator = StaticHeuristicEvaluator::new();
-    let gs = create_test_state();
+    let mut gs = create_test_state();
     let mut rng = StdRng::seed_from_u64(0);
 
-    let score_d0 = negamax(&gs, &evaluator, 0, &mut rng);
+    let score_d0 = negamax(&mut gs, &evaluator, 0, &mut rng);
     let static_eval = evaluator.evaluate(&gs) as f64;
 
     assert_eq!(score_d0, static_eval,
@@ -3579,7 +3579,7 @@ fn negamax_finds_forced_capture() {
         (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
         (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
     ];
-    let gs = GameState::from_snapshot(GameSnapshot {
+    let mut gs = GameState::from_snapshot(GameSnapshot {
         tiles,
         top_bag: TileBag::new(vec![]),
         bottom_bag: TileBag::new(vec![]),
@@ -3591,7 +3591,7 @@ fn negamax_finds_forced_capture() {
 
     let evaluator = StaticHeuristicEvaluator::new();
     let mut rng = StdRng::seed_from_u64(42);
-    let best = greedy_move_deep(&gs, &evaluator, 1, &mut rng);
+    let best = greedy_move_deep(&mut gs, &evaluator, 1, &mut rng);
 
     // The best move should capture the enemy duke
     match &best {

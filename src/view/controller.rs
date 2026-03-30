@@ -196,7 +196,7 @@ impl Controller {
         self.moves.push(pm)
     }
 
-    pub fn game_result(&self) -> GameResult {
+    pub fn game_result(&mut self) -> GameResult {
         self.state.game_result()
     }
 }

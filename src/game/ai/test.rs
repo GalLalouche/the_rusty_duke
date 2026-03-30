@@ -17,8 +17,8 @@ pub mod tests {
         board.place(Coordinates { x: 1, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
         board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
         board.place(Coordinates { x: 4, y: 4 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
-        let gs = GameState::from_board(board, Owner::BottomPlayer);
-        let mv = a.get_next_move(&mut StdRng::seed_from_u64(0), &gs);
+        let mut gs = GameState::from_board(board, Owner::BottomPlayer);
+        let mv = a.get_next_move(&mut StdRng::seed_from_u64(0), &mut gs);
 
         assert_eq!(
             AiMove::ApplyNonCommandTileAction {
@@ -44,8 +44,8 @@ pub mod tests {
         // After moving the above footman, the second player will have to move its footman, and then
         // the top duke will have a win in 1.
         board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
-        let gs = GameState::from_board(board, Owner::TopPlayer);
-        let mv = a.get_next_move(&mut StdRng::seed_from_u64(0), &gs);
+        let mut gs = GameState::from_board(board, Owner::TopPlayer);
+        let mv = a.get_next_move(&mut StdRng::seed_from_u64(0), &mut gs);
 
         assert_eq!(
             AiMove::ApplyNonCommandTileAction {
@@ -69,10 +69,10 @@ pub mod tests {
         board.place(Coordinates { x: 3, y: 2 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
 
         // It's better to a capture a footman than to summon a wizard (...is it though?).
-        let gs = GameState::from_board_with_bag(
+        let mut gs = GameState::from_board_with_bag(
             board, Owner::TopPlayer, TileBag::new(vec![TileType::Wizard]));
 
-        let mv = a.get_next_move(&mut StdRng::seed_from_u64(0), &gs);
+        let mv = a.get_next_move(&mut StdRng::seed_from_u64(0), &mut gs);
 
         assert_eq!(
             AiMove::ApplyNonCommandTileAction {

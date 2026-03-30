@@ -14,9 +14,9 @@ impl Widget for &ViewState {
     fn render(self, area: Rect, buf: &mut Buffer) -> () {
         match self.current_state() {
             ViewStateMode::FreeMoving(p) => render_board_aux(
-                area, buf, self.get_game_state(), self.info.as_ref(), p, None),
+                area, buf, &mut self.get_game_state().clone(), self.info.as_ref(), p, None),
             ViewStateMode::MovingSelection { src, target } => render_board_aux(
-                area, buf, self.get_game_state(), self.info.as_ref(), src, Some(target)),
+                area, buf, &mut self.get_game_state().clone(), self.info.as_ref(), src, Some(target)),
             ViewStateMode::Placing(relative_duke_offset) => {
                 let tile_type = self.get_game_state()
                     .pulled_tile()
@@ -67,7 +67,7 @@ impl Widget for &Controller {
 fn render_board_aux(
     area: Rect,
     buf: &mut Buffer,
-    gs: &GameState,
+    gs: &mut GameState,
     info: Option<&String>,
     p: Coordinates,
     moving: Option<Coordinates>,
