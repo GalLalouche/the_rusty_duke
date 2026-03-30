@@ -43,12 +43,12 @@ use duke_rust::game::tile::Owner;
 
 // ── Backend selection ────────────────────────────────────────────────────
 //
-// Wgpu backend (Vulkan/DX12 -- works on all GPUs without libtorch).
-// For native CUDA: switch to LibTorch and set TORCH_CUDA_VERSION=cu121.
+// LibTorch backend with CUDA support.
+// Requires LIBTORCH env var pointing to PyTorch installation.
 
-type TrainBackend = Autodiff<burn::backend::wgpu::Wgpu>;
+type TrainBackend = Autodiff<burn::backend::LibTorch>;
 #[allow(dead_code)]
-type InferBackend = burn::backend::wgpu::Wgpu;
+type InferBackend = burn::backend::LibTorch;
 
 // ── Model ─────────────────────────────────────────────────────────────────
 
