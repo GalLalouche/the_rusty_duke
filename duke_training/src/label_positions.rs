@@ -28,6 +28,7 @@ use duke_training::cli::parse_flag;
 use duke_training::encoding::{active_board_features, bag_features};
 use duke_training::game_setup::negamax;
 use duke_training::learned_heuristic::{CombinedWeights, extract_combined_features, NUM_COMBINED_FEATURES};
+use duke_training::supervised_common::COMBINED_FEATURE_NAMES;
 use duke_training::trajectory_io::{load_trajectories, write_game_state};
 
 // --- Labeled output format ---
@@ -59,22 +60,6 @@ const OUTPUT_VERSION: u32 = 1;
 const FLPS_MAGIC: &[u8; 4] = b"FLPS";
 const FLPS_VERSION: u32 = 1;
 
-/// Label names for the 41 combined features (for display).
-const COMBINED_FEATURE_NAMES: [&str; 41] = [
-    "near_my_duke_friendly", "near_my_duke_enemy",
-    "near_enemy_duke_friendly", "near_enemy_duke_enemy",
-    "my_moves", "opp_moves", "my_reachable", "opp_reachable", "contested",
-    "my_defended", "my_threatened", "opp_defended", "opp_threatened",
-    "my_duke_mob", "opp_duke_mob",
-    "my_duke_disc", "my_footman_disc", "my_pikeman_disc", "my_knight_disc",
-    "my_sergeant_disc", "my_ranger_disc", "my_champion_disc", "my_wizard_disc",
-    "my_general_disc", "my_marshall_disc", "my_assassin_disc", "my_longbowman_disc",
-    "my_dragoon_disc",
-    "opp_duke_disc", "opp_footman_disc", "opp_pikeman_disc", "opp_knight_disc",
-    "opp_sergeant_disc", "opp_ranger_disc", "opp_champion_disc", "opp_wizard_disc",
-    "opp_general_disc", "opp_marshall_disc", "opp_assassin_disc", "opp_longbowman_disc",
-    "opp_dragoon_disc",
-];
 
 // --- Dedup output format ---
 // Magic: "DPOS" (4 bytes)

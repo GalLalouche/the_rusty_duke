@@ -38,6 +38,7 @@ use duke_training::encoding::{
 use duke_training::game_setup::{create_bag, create_initial_state, GameEvaluator};
 use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, win_rate, Player};
+use duke_training::supervised_common::{LabeledPosition, LABEL_CLAMP, label_to_target, load_lpos};
 
 use duke_rust::game::state::GameState;
 
@@ -45,121 +46,6 @@ use duke_rust::game::state::GameState;
 
 type TrainBackend = Autodiff<NdArray>;
 type InferBackend = NdArray;
-
-// ── Labeled position data ─────────────────────────────────────────────────
-
-/// A single labeled position loaded from the LPOS file.
-struct LabeledPosition {
-    /// Active board feature indices (each < 1080).
-    active_indices: Vec<u16>,
-    /// Dense bag features (26 f32 values).
-    bag_features: [f32; BAG_FEATURES],
-    /// LR-Cheap depth-2 minimax label (roughly -1000 to +1000).
-    label: f32,
-    /// Frequency weight (how many times this position appeared).
-    count: u32,
-}
-
-/// Load labeled positions from an LPOS binary file.
-fn load_lpos(path: &str) -> (Vec<LabeledPosition>, f32, f32) {
-    let t0 = Instant::now();
-    eprintln!("Loading labeled positions from {} ...", path);
-
-    let data = std::fs::read(path).expect("Failed to read LPOS file");
-    let mut cursor = 0usize;
-
-    macro_rules! read_bytes {
-        ($n:expr) => {{
-            let end = cursor + $n;
-            assert!(end <= data.len(), "Unexpected EOF at offset {}", cursor);
-            let slice = &data[cursor..end];
-            cursor = end;
-            slice
-        }};
-    }
-    macro_rules! read_u16 {
-        () => {{
-            let b = read_bytes!(2);
-            u16::from_le_bytes([b[0], b[1]])
-        }};
-    }
-    macro_rules! read_u32 {
-        () => {{
-            let b = read_bytes!(4);
-            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-        }};
-    }
-    macro_rules! read_f32 {
-        () => {{
-            let b = read_bytes!(4);
-            f32::from_le_bytes([b[0], b[1], b[2], b[3]])
-        }};
-    }
-
-    let magic = read_bytes!(4);
-    assert_eq!(magic, b"LPOS", "Not an LPOS file (bad magic)");
-    let version = read_u32!();
-    assert_eq!(version, 1, "Unsupported LPOS version {}", version);
-    let num_positions = read_u32!() as usize;
-
-    eprintln!(
-        "  File header: {} positions, version {}",
-        num_positions, version
-    );
-
-    let mut positions = Vec::with_capacity(num_positions);
-    for _ in 0..num_positions {
-        let num_active = read_u16!() as usize;
-        let mut active_indices = Vec::with_capacity(num_active);
-        for _ in 0..num_active {
-            active_indices.push(read_u16!());
-        }
-        let mut bag_features = [0.0f32; BAG_FEATURES];
-        for i in 0..BAG_FEATURES {
-            bag_features[i] = read_f32!();
-        }
-        let label = read_f32!();
-        let count = read_u32!();
-        positions.push(LabeledPosition {
-            active_indices,
-            bag_features,
-            label,
-            count,
-        });
-    }
-
-    let elapsed = t0.elapsed();
-    let file_mb = data.len() as f64 / (1024.0 * 1024.0);
-    eprintln!(
-        "  Loaded {} positions ({:.1} MB) in {:.1}s",
-        positions.len(),
-        file_mb,
-        elapsed.as_secs_f64()
-    );
-
-    let labels: Vec<f32> = positions.iter().map(|p| p.label).collect();
-    let min = labels.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max = labels.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let mean = labels.iter().map(|l| *l as f64).sum::<f64>() / labels.len() as f64;
-    let total_count: u64 = positions.iter().map(|p| p.count as u64).sum();
-    eprintln!(
-        "  Label stats: min={:.2}, max={:.2}, mean={:.4}, total_count={}",
-        min, max, mean, total_count
-    );
-
-    (positions, min, max)
-}
-
-// ── Label normalization ───────────────────────────────────────────────────
-
-/// Clamp label to [-10, +10] then map linearly to [0, 1].
-const LABEL_CLAMP: f32 = 10.0;
-
-#[inline]
-fn label_to_target(label: f32) -> f32 {
-    let clamped = label.clamp(-LABEL_CLAMP, LABEL_CLAMP);
-    (clamped + LABEL_CLAMP) / (2.0 * LABEL_CLAMP)
-}
 
 // ── Tensor encoding ───────────────────────────────────────────────────────
 
@@ -382,7 +268,7 @@ fn main() {
     // Print configuration
     eprintln!("=== CNN Supervised Training ===");
 
-    let (positions, _label_min, _label_max) = load_lpos(&input_path);
+    let (positions, _label_min, _label_max) = load_lpos(&input_path, 0);
 
     eprintln!("  Input:            {}", input_path);
     let kernel_label = match kernel_type {

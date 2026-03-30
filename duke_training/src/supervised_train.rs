@@ -27,165 +27,9 @@ use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
 use duke_training::loaded_model::LoadedModel;
 use duke_training::match_runner::{run_matches, win_rate, Player};
-
-// ── Labeled position data ──────────────────────────────────────────────────
-
-/// A single labeled position loaded from the LPOS file.
-struct LabeledPosition {
-    /// Active board feature indices (each < 1080).
-    active_indices: Vec<u16>,
-    /// Dense bag features (26 f32 values).
-    bag_features: [f32; BAG_FEATURES],
-    /// LR-Cheap depth-2 minimax label (roughly -1000 to +1000).
-    label: f32,
-    /// Frequency weight (how many times this position appeared).
-    count: u32,
-}
-
-/// Label names for the 41 combined features (for display when loading FLPS).
-const COMBINED_FEATURE_NAMES: [&str; 41] = [
-    "near_my_duke_friendly", "near_my_duke_enemy",
-    "near_enemy_duke_friendly", "near_enemy_duke_enemy",
-    "my_moves", "opp_moves", "my_reachable", "opp_reachable", "contested",
-    "my_defended", "my_threatened", "opp_defended", "opp_threatened",
-    "my_duke_mob", "opp_duke_mob",
-    "my_duke_disc", "my_footman_disc", "my_pikeman_disc", "my_knight_disc",
-    "my_sergeant_disc", "my_ranger_disc", "my_champion_disc", "my_wizard_disc",
-    "my_general_disc", "my_marshall_disc", "my_assassin_disc", "my_longbowman_disc",
-    "my_dragoon_disc",
-    "opp_duke_disc", "opp_footman_disc", "opp_pikeman_disc", "opp_knight_disc",
-    "opp_sergeant_disc", "opp_ranger_disc", "opp_champion_disc", "opp_wizard_disc",
-    "opp_general_disc", "opp_marshall_disc", "opp_assassin_disc", "opp_longbowman_disc",
-    "opp_dragoon_disc",
-];
-
-/// Load labeled positions from an LPOS or FLPS binary file.
-/// For FLPS files, `label_index` selects which of the N labels to use.
-/// Returns (positions, min_label, max_label).
-fn load_lpos(path: &str, label_index: usize) -> (Vec<LabeledPosition>, f32, f32) {
-    let t0 = Instant::now();
-    eprintln!("Loading labeled positions from {} ...", path);
-
-    let data = std::fs::read(path).expect("Failed to read labeled positions file");
-    let mut cursor = 0usize;
-
-    // Helper: read N bytes from the data buffer.
-    macro_rules! read_bytes {
-        ($n:expr) => {{
-            let end = cursor + $n;
-            assert!(end <= data.len(), "Unexpected EOF at offset {}", cursor);
-            let slice = &data[cursor..end];
-            cursor = end;
-            slice
-        }};
-    }
-    macro_rules! read_u16 {
-        () => {{
-            let b = read_bytes!(2);
-            u16::from_le_bytes([b[0], b[1]])
-        }};
-    }
-    macro_rules! read_u32 {
-        () => {{
-            let b = read_bytes!(4);
-            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-        }};
-    }
-    macro_rules! read_f32 {
-        () => {{
-            let b = read_bytes!(4);
-            f32::from_le_bytes([b[0], b[1], b[2], b[3]])
-        }};
-    }
-
-    // Detect format by magic bytes
-    let magic = read_bytes!(4);
-    let is_flps = magic == b"FLPS";
-    let is_lpos = magic == b"LPOS";
-    assert!(is_lpos || is_flps,
-        "Unknown file format (magic: {:?}), expected LPOS or FLPS", magic);
-
-    let version = read_u32!();
-    assert_eq!(version, 1, "Unsupported version {}", version);
-    let num_positions = read_u32!() as usize;
-
-    let num_labels = if is_flps {
-        let nl = read_u32!() as usize;
-        assert!(label_index < nl,
-            "--label-index {} out of range (file has {} labels)", label_index, nl);
-        let label_name = if nl == 41 && label_index < COMBINED_FEATURE_NAMES.len() {
-            COMBINED_FEATURE_NAMES[label_index]
-        } else {
-            "unknown"
-        };
-        eprintln!("  FLPS format: {} positions, {} labels, using label index {} ({})",
-            num_positions, nl, label_index, label_name);
-        nl
-    } else {
-        if label_index != 0 {
-            eprintln!("  Warning: --label-index {} ignored for LPOS format (single label)", label_index);
-        }
-        eprintln!("  LPOS format: {} positions, version {}", num_positions, version);
-        1
-    };
-
-    let mut positions = Vec::with_capacity(num_positions);
-    for _ in 0..num_positions {
-        let num_active = read_u16!() as usize;
-        let mut active_indices = Vec::with_capacity(num_active);
-        for _ in 0..num_active {
-            active_indices.push(read_u16!());
-        }
-        let mut bag_features = [0.0f32; BAG_FEATURES];
-        for i in 0..BAG_FEATURES {
-            bag_features[i] = read_f32!();
-        }
-
-        let label = if is_flps {
-            // Read all labels, pick the one at label_index
-            let mut selected = 0.0f32;
-            for li in 0..num_labels {
-                let val = read_f32!();
-                if li == label_index {
-                    selected = val;
-                }
-            }
-            selected
-        } else {
-            read_f32!()
-        };
-
-        let count = read_u32!();
-        positions.push(LabeledPosition {
-            active_indices,
-            bag_features,
-            label,
-            count,
-        });
-    }
-
-    let elapsed = t0.elapsed();
-    let file_mb = data.len() as f64 / (1024.0 * 1024.0);
-    eprintln!(
-        "  Loaded {} positions ({:.1} MB) in {:.1}s",
-        positions.len(),
-        file_mb,
-        elapsed.as_secs_f64()
-    );
-
-    // Print label statistics
-    let labels: Vec<f32> = positions.iter().map(|p| p.label).collect();
-    let min = labels.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max = labels.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let mean = labels.iter().map(|l| *l as f64).sum::<f64>() / labels.len() as f64;
-    let total_count: u64 = positions.iter().map(|p| p.count as u64).sum();
-    eprintln!(
-        "  Label stats: min={:.2}, max={:.2}, mean={:.4}, total_count={}",
-        min, max, mean, total_count
-    );
-
-    (positions, min, max)
-}
+use duke_training::supervised_common::{
+    AdamState, LabeledPosition, LABEL_CLAMP, build_weighted_indices, label_to_target, load_lpos,
+};
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -197,17 +41,6 @@ fn sigmoid(x: f32) -> f32 {
 /// Format a loss value: scientific notation if < 1e-5, otherwise 6 decimal places.
 fn fmt_loss(v: f64) -> String {
     if v.abs() < 1e-5 { format!("{:.3e}", v) } else { format!("{:.6}", v) }
-}
-
-/// Clamp label to [-10, +10] then map linearly to [0, 1].
-/// Normal positions (±6) get good spread (0.2..0.8).
-/// Terminals (±30) clamp to 0/1.
-const LABEL_CLAMP: f32 = 10.0;
-
-#[inline]
-fn label_to_target(label: f32) -> f32 {
-    let clamped = label.clamp(-LABEL_CLAMP, LABEL_CLAMP);
-    (clamped + LABEL_CLAMP) / (2.0 * LABEL_CLAMP)
 }
 
 // ── Batched forward + backward with sgemm ─────────────────────────────────
@@ -625,58 +458,6 @@ fn batch_loss(scratch: &FcScratch, targets: &[f32], batch_size: usize) -> f64 {
     loss
 }
 
-// ── Adam optimizer ─────────────────────────────────────────────────────────
-
-struct AdamState {
-    m: Vec<f32>,  // first moment
-    v: Vec<f32>,  // second moment
-    t: u64,       // time step
-    lr: f32,
-    beta1: f32,
-    beta2: f32,
-    eps: f32,
-}
-
-impl AdamState {
-    fn new(num_params: usize, lr: f32) -> Self {
-        Self {
-            m: vec![0.0; num_params],
-            v: vec![0.0; num_params],
-            t: 0,
-            lr,
-            beta1: 0.9,
-            beta2: 0.999,
-            eps: 1e-8,
-        }
-    }
-
-    /// Perform one Adam update step. `grad` is the mean gradient over the batch.
-    fn step(&mut self, weights: &mut [f32], grad: &[f32]) {
-        self.t += 1;
-        let t = self.t as f32;
-        let lr_t = self.lr * (1.0 - self.beta2.powf(t)).sqrt() / (1.0 - self.beta1.powf(t));
-        let beta1 = self.beta1;
-        let beta2 = self.beta2;
-        let one_minus_beta1 = 1.0 - beta1;
-        let one_minus_beta2 = 1.0 - beta2;
-        let eps = self.eps;
-        let n = weights.len();
-
-        // Pass 1: update first moment
-        for i in 0..n {
-            self.m[i] = beta1 * self.m[i] + one_minus_beta1 * grad[i];
-        }
-        // Pass 2: update second moment
-        for i in 0..n {
-            self.v[i] = beta2 * self.v[i] + one_minus_beta2 * grad[i] * grad[i];
-        }
-        // Pass 3: update weights
-        for i in 0..n {
-            weights[i] -= lr_t * self.m[i] / (self.v[i].sqrt() + eps);
-        }
-    }
-}
-
 // ── Evaluation ─────────────────────────────────────────────────────────────
 
 /// Evaluate the current network against benchmark opponents.
@@ -820,39 +601,9 @@ fn main() {
     let num_positions = positions.len();
 
     // Build expanded index array weighted by count.
-    // Each position index is repeated `count` times, then we shuffle this array.
     eprintln!("Building weighted index array ...");
     let t_idx = Instant::now();
-    let total_weighted: usize = positions.iter().map(|p| p.count as usize).sum();
-
-    // If total_weighted is huge (e.g. 50M+), cap counts to avoid excessive memory.
-    // Use the index array approach only if it fits in reasonable memory (~200M entries).
-    let (indices, effective_total) = if total_weighted <= 200_000_000 {
-        let mut indices: Vec<u32> = Vec::with_capacity(total_weighted);
-        for (i, pos) in positions.iter().enumerate() {
-            for _ in 0..pos.count {
-                indices.push(i as u32);
-            }
-        }
-        let len = indices.len();
-        (indices, len)
-    } else {
-        // Too many -- just use each position once, weighted by sqrt(count) to
-        // down-weight extremely frequent positions while still sampling more from common ones.
-        eprintln!(
-            "  Total weighted count {} exceeds 200M, using sqrt-weighted sampling",
-            total_weighted
-        );
-        let mut indices: Vec<u32> = Vec::new();
-        for (i, pos) in positions.iter().enumerate() {
-            let repeats = (pos.count as f64).sqrt().ceil() as u32;
-            for _ in 0..repeats {
-                indices.push(i as u32);
-            }
-        }
-        let len = indices.len();
-        (indices, len)
-    };
+    let (indices, effective_total) = build_weighted_indices(&positions);
     eprintln!(
         "  {} training samples (from {} unique positions) in {:.1}s",
         effective_total,
