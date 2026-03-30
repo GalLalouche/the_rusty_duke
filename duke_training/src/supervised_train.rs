@@ -370,32 +370,35 @@ fn batch_backward(
             );
         }
 
-        // Apply ReLU mask for previous layer
-        let pre_prev = &scratch.pre_act[layer_idx - 1];
-        for i in 0..batch_size * prev_size {
-            if pre_prev[i] <= 0.0 {
-                d_prev[i] = 0.0;
-            }
-        }
-
         // Residual gradient: if layer (layer_idx-1) was the source for a residual
         // connection to some later layer, add that layer's gradient.
         // The destination layer is (layer_idx-1) + residual_interval.
+        //
+        // The residual connection in forward is: pre_act[dst] += act[src].
+        // So the gradient flows: d(loss)/d(act[src]) += d(loss)/d(pre_act[dst]).
+        // We must add this BEFORE the ReLU mask, because the residual connects
+        // to act[src] (post-ReLU of layer src), and the ReLU derivative converts
+        // d(act) to d(pre_act). Adding after the mask would let gradient bypass
+        // dead ReLU neurons incorrectly.
         if residual_interval > 0 {
             let src = layer_idx - 1;
             let dst = src + residual_interval;
             if dst < num_layers
                 && hidden_layers[dst] == hidden_layers[src]
             {
-                // d_act[dst] already has ReLU mask applied; add to d_prev (= d_act[src])
-                // We need to re-borrow since d_prev is d_act[layer_idx-1]
-                let (d_lower2, d_upper2) = scratch.d_act.split_at_mut(dst);
-                let d_dst = &d_upper2[0];
-                let d_src2 = &mut d_lower2[src];
+                let d_dst = &d_upper[dst - layer_idx]; // d_act[dst] is in d_upper
                 let size = hidden_layers[src];
                 for i in 0..batch_size * size {
-                    d_src2[i] += d_dst[i];
+                    d_prev[i] += d_dst[i];
                 }
+            }
+        }
+
+        // Apply ReLU mask for previous layer (converts d(act) to d(pre_act))
+        let pre_prev = &scratch.pre_act[layer_idx - 1];
+        for i in 0..batch_size * prev_size {
+            if pre_prev[i] <= 0.0 {
+                d_prev[i] = 0.0;
             }
         }
     }
@@ -1017,5 +1020,87 @@ mod tests {
         for (i, &g) in grads2.iter().enumerate() {
             assert!(g.is_finite(), "gradient[{}] not finite with residual=2", i);
         }
+    }
+
+    /// Regression test: residual gradient must respect the ReLU gate at the source layer.
+    ///
+    /// The residual connection is: pre_act[dst] += act[src], where act[src] = ReLU(pre_act[src]).
+    /// If pre_act[src] <= 0 (dead neuron), act[src] = 0, so the residual contributes nothing
+    /// and the gradient through the residual should also be zero for that neuron.
+    ///
+    /// Bug (fixed): residual gradient was added AFTER the ReLU mask, causing gradient to
+    /// leak through dead neurons. The fix adds residual gradient BEFORE the ReLU mask.
+    #[test]
+    fn test_residual_gradient_respects_relu_gate() {
+        let mut rng = StdRng::seed_from_u64(200);
+        let input_size = TOTAL_FEATURES;
+        let hidden = vec![32, 32, 32];
+        let net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+        let num_params = GenericMlp::param_count(input_size, &hidden);
+        let residual_interval = 1;
+
+        // Use batch_size=1 to avoid ReLU boundary artifacts in numerical gradient
+        let positions = make_dummy_positions(1);
+        let pos_refs: Vec<&LabeledPosition> = positions.iter().collect();
+        let targets: Vec<f32> = positions.iter().map(|p| label_to_target(p.label)).collect();
+        let batch_size = 1;
+        let inv_batch = 1.0f32;
+
+        let mut scratch = FcScratch::new(&hidden, num_params, batch_size, input_size);
+
+        // Compute analytical gradient
+        batch_forward(&net.weights, input_size, &hidden, &pos_refs, &mut scratch, residual_interval);
+        scratch.zero_grad();
+        batch_backward(&net.weights, input_size, &hidden, &pos_refs, &targets, inv_batch, &mut scratch, residual_interval);
+        let analytical_grad = scratch.grad.clone();
+
+        // Numerical gradient check for hidden layer biases (where residual effects are strongest)
+        let eps = 1e-3f32;
+        let mut weights_perturbed = net.weights.clone();
+        let mut max_rel_error = 0.0f64;
+        let mut worst_idx = 0usize;
+
+        // Check biases for layers 1 and 2, plus output layer
+        let out_off = scratch.layer_offsets[hidden.len()];
+        let l2_bias_off = scratch.layer_offsets[2] + hidden[1] * hidden[2];
+        let l1_bias_off = scratch.layer_offsets[1] + hidden[0] * hidden[1];
+
+        let check_indices: Vec<usize> = (out_off..num_params)
+            .chain(l2_bias_off..l2_bias_off + hidden[2])
+            .chain(l1_bias_off..l1_bias_off + hidden[1])
+            .collect();
+
+        for &i in &check_indices {
+            weights_perturbed[i] = net.weights[i] + eps;
+            batch_forward(&weights_perturbed, input_size, &hidden, &pos_refs, &mut scratch, residual_interval);
+            let loss_plus = batch_loss(&scratch, &targets, batch_size);
+
+            weights_perturbed[i] = net.weights[i] - eps;
+            batch_forward(&weights_perturbed, input_size, &hidden, &pos_refs, &mut scratch, residual_interval);
+            let loss_minus = batch_loss(&scratch, &targets, batch_size);
+
+            weights_perturbed[i] = net.weights[i];
+
+            let numerical = (loss_plus - loss_minus) / (2.0 * eps as f64);
+            let analytical = analytical_grad[i] as f64;
+
+            if numerical.abs() > 1e-6 || analytical.abs() > 1e-6 {
+                let denom = numerical.abs().max(analytical.abs());
+                let rel_error = (numerical - analytical).abs() / denom;
+                if rel_error > max_rel_error {
+                    max_rel_error = rel_error;
+                    worst_idx = i;
+                }
+            }
+        }
+
+        assert!(
+            max_rel_error < 0.05,
+            "Residual gradient check failed: max relative error {:.6} at param {}. \
+             Before the fix, dead ReLU neurons leaked gradient through residual \
+             connections, producing 100% relative errors (analytical nonzero, numerical zero).",
+            max_rel_error,
+            worst_idx,
+        );
     }
 }
