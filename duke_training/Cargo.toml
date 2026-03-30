@@ -7,7 +7,7 @@ edition = "2021"
 duke_rust = { path = ".." }
 rand = { version = "0.8", features = ["small_rng"] }
 strum = "0.24"
-burn = { version = "0.16", features = ["wgpu", "autodiff", "ndarray"] }
+burn = { version = "0.16", features = ["tch", "wgpu", "autodiff", "ndarray"] }
 rayon = "1.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 whr = "0.3"

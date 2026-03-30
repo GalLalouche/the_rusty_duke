@@ -3,7 +3,7 @@
 //! Trains a HalfDA value network on positions from trajectory files.
 //! Uses burn for GPU-accelerated training with sparse inputs.
 //!
-//! Architecture: 67392 sparse → 2048 (clipped ReLU) → 1 (sigmoid)
+//! Architecture: 67392 sparse -> 2048 (clipped ReLU) -> 1 (sigmoid)
 //!
 //! The sparse L1 accumulation is done on CPU (summing embedding rows for
 //! active features), then the accumulated 2048-dim vectors are sent to the
@@ -16,11 +16,12 @@
 //!                --batch-size 1024 \
 //!                --lr 0.001 \
 //!                --hidden 2048 \
+//!                --lambda 0.5 \
 //!                --checkpoint-dir D:/temp/halfda
 
 use std::time::Instant;
 
-use burn::backend::{Autodiff, Wgpu};
+use burn::backend::Autodiff;
 use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::{Adam, AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
@@ -38,21 +39,28 @@ use duke_training::supervised_common::label_to_target;
 use duke_training::trajectory_io::load_trajectories;
 
 use duke_rust::game::state::GameResult;
+use duke_rust::game::tile::Owner;
 
-// ── Type aliases ──────────────────────────────────────────────────────────
+// ── Backend selection ────────────────────────────────────────────────────
+//
+// Use LibTorch (tch) backend for native CUDA performance.
+// LibTorch is auto-downloaded by tch-rs if not installed.
+// To use CUDA, set TORCH_CUDA_VERSION=cu121 (or appropriate version) before building.
+// Falls back to CPU if no CUDA device is available.
 
-type TrainBackend = Autodiff<Wgpu>;
-type InferBackend = Wgpu;
+type TrainBackend = Autodiff<burn::backend::LibTorch>;
+#[allow(dead_code)]
+type InferBackend = burn::backend::LibTorch;
 
 // ── Model ─────────────────────────────────────────────────────────────────
 
-/// HalfDA NNUE model: Linear(hidden→1) with sigmoid.
+/// HalfDA NNUE model: Linear(hidden->1) with sigmoid.
 ///
-/// The L1 (sparse → hidden) accumulation is done manually on CPU by summing
+/// The L1 (sparse -> hidden) accumulation is done manually on CPU by summing
 /// embedding rows, so the burn model only handles the dense part.
 #[derive(Module, Debug)]
 struct HalfDAModel<B: Backend> {
-    /// Output layer: hidden → 1.
+    /// Output layer: hidden -> 1.
     output: burn::nn::Linear<B>,
 }
 
@@ -63,7 +71,7 @@ impl<B: Backend> HalfDAModel<B> {
     }
 
     /// Forward pass on pre-accumulated L1 activations.
-    /// `l1_out`: [batch, hidden] — already ReLU-clipped on CPU.
+    /// `l1_out`: [batch, hidden] -- already ReLU-clipped on CPU.
     fn forward(&self, l1_out: Tensor<B, 2>) -> Tensor<B, 2> {
         let logits = self.output.forward(l1_out); // [batch, 1]
         sigmoid(logits)
@@ -99,6 +107,7 @@ impl SparseL1 {
     /// Accumulate active features into a dense vector, add bias, apply clipped ReLU.
     /// Returns a vector of length `hidden`.
     #[inline]
+    #[allow(dead_code)]
     fn accumulate(&self, indices: &[u32]) -> Vec<f32> {
         let h = self.hidden;
         let mut out = self.bias.clone();
@@ -117,6 +126,7 @@ impl SparseL1 {
     }
 
     /// Accumulate a batch of positions into a flat buffer [batch_size * hidden].
+    #[allow(dead_code)]
     fn accumulate_batch(&self, batch_indices: &[&[u32]], out_buf: &mut Vec<f32>) {
         let h = self.hidden;
         let batch_size = batch_indices.len();
@@ -244,7 +254,20 @@ impl SparseAdamState {
 
 struct TrainingPosition {
     halfda_indices: Vec<u32>,
+    /// Combined target: lambda * eval_target + (1 - lambda) * game_outcome
     target: f32,
+}
+
+/// Convert a game result to a target value from the perspective of the current player.
+///
+/// Returns 1.0 for win, 0.0 for loss, 0.5 for draw/ongoing.
+fn game_outcome_target(result: GameResult, current_player: Owner) -> f32 {
+    match result {
+        GameResult::Won(winner) if winner == current_player => 1.0,
+        GameResult::Won(_) => 0.0,
+        GameResult::Tie => 0.5,
+        GameResult::Ongoing => 0.5, // shouldn't happen for completed games
+    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
@@ -256,7 +279,7 @@ fn main() {
         eprintln!(
             "Usage: halfda_train --trajectories <path.dtrj> \
              [--max-positions 100000] [--epochs 5] [--batch-size 1024] \
-             [--lr 0.001] [--hidden 2048] [--seed 42] \
+             [--lr 0.001] [--hidden 2048] [--lambda 0.5] [--seed 42] \
              [--checkpoint-dir D:/temp/halfda]"
         );
         std::process::exit(1);
@@ -267,9 +290,14 @@ fn main() {
     let batch_size: usize = parse_flag(&args, "--batch-size").unwrap_or(1024);
     let lr: f32 = parse_flag(&args, "--lr").unwrap_or(0.001);
     let hidden: usize = parse_flag(&args, "--hidden").unwrap_or(2048);
+    let lambda: f32 = parse_flag(&args, "--lambda").unwrap_or(0.5);
     let seed: u64 = parse_flag(&args, "--seed").unwrap_or(42);
     let checkpoint_dir: String = parse_flag(&args, "--checkpoint-dir")
         .unwrap_or_else(|| "D:/temp/halfda".to_string());
+
+    assert!((0.0..=1.0).contains(&lambda), "--lambda must be in [0.0, 1.0], got {}", lambda);
+
+    let backend_name = "LibTorch (CUDA if available)";
 
     eprintln!("=== HalfDA NNUE Training ===");
     eprintln!("  Trajectories:    {}", traj_path);
@@ -278,10 +306,12 @@ fn main() {
     eprintln!("  Batch size:      {}", batch_size);
     eprintln!("  Learning rate:   {}", lr);
     eprintln!("  Hidden size:     {}", hidden);
+    eprintln!("  Lambda:          {} (eval={:.0}%, outcome={:.0}%)", lambda, lambda * 100.0, (1.0 - lambda) * 100.0);
     eprintln!("  Seed:            {}", seed);
     eprintln!("  Checkpoint dir:  {}", checkpoint_dir);
     eprintln!("  Features:        {} (HalfDA)", HALFDA_FEATURES);
     eprintln!("  Architecture:    {} -> {} (clipped ReLU) -> 1 (sigmoid)", HALFDA_FEATURES, hidden);
+    eprintln!("  Backend:         {}", backend_name);
 
     let total_params = HALFDA_FEATURES * hidden + hidden + hidden + 1;
     eprintln!("  Parameters:      {} ({:.1}M)", total_params, total_params as f64 / 1e6);
@@ -303,6 +333,9 @@ fn main() {
     let mut positions: Vec<TrainingPosition> = Vec::with_capacity(max_positions);
 
     'outer: for game in &trajectories {
+        // Get game outcome for lambda mixing
+        let game_result = game.result;
+
         for gs in &game.states {
             // game_result() requires &mut self, so clone to check
             if gs.clone().game_result() != GameResult::Ongoing {
@@ -311,7 +344,14 @@ fn main() {
 
             let halfda = encode_halfda(gs);
             let raw_label = evaluator.evaluate(gs);
-            let target = label_to_target(raw_label);
+            let eval_target = label_to_target(raw_label);
+
+            // Compute game outcome from current player's perspective
+            let current_player = gs.current_player_turn();
+            let outcome = game_outcome_target(game_result, current_player);
+
+            // Lambda mixing: target = lambda * eval + (1 - lambda) * outcome
+            let target = lambda * eval_target + (1.0 - lambda) * outcome;
 
             positions.push(TrainingPosition {
                 halfda_indices: halfda.as_slice().to_vec(),
@@ -355,7 +395,7 @@ fn main() {
     let mut optimizer: OptimizerAdaptor<Adam, HalfDAModel<TrainBackend>, TrainBackend> =
         AdamConfig::new().init();
 
-    eprintln!("Model initialized. Backend: Wgpu (GPU if available)");
+    eprintln!("Model initialized. Backend: {}", backend_name);
     eprintln!();
 
     // ── Training loop ───────────────────────────────────────────────────
