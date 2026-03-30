@@ -27,7 +27,7 @@ use duke_training::cnn::{apply_diamond_mask, CnnEvaluator, CnnModel, KernelType}
 use duke_training::encoding::BAG_FEATURES;
 use duke_training::match_runner::Player;
 use duke_training::supervised_common::{
-    AdamState, LabeledPosition, LABEL_CLAMP, build_weighted_indices, label_to_target, load_lpos,
+    AdamState, LABEL_CLAMP, build_weighted_indices, label_to_target, load_lpos,
     run_benchmark,
 };
 

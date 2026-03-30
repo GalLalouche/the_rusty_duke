@@ -22,7 +22,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
-use duke_training::encoding::{BOARD_FEATURES, BAG_FEATURES, TOTAL_FEATURES};
+use duke_training::encoding::{BOARD_FEATURES, TOTAL_FEATURES};
 use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
 use duke_training::match_runner::Player;
 use duke_training::supervised_common::{
@@ -797,7 +797,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duke_training::encoding::TOTAL_FEATURES;
+    use duke_training::encoding::{BAG_FEATURES, TOTAL_FEATURES};
     use duke_training::generic_mlp::GenericMlp;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
