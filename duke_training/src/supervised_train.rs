@@ -515,6 +515,7 @@ fn main() {
 
     let residual_interval: usize = parse_flag(&args, "--residual").unwrap_or(0);
     let sparse_init = args.contains(&"--sparse-init".to_string());
+    let val_split: f32 = parse_flag(&args, "--val-split").unwrap_or(0.0);
     let benchmark_str: String = parse_flag(&args, "--benchmark")
         .unwrap_or_else(|| "base,random".to_string());
     let benchmark_specs: Vec<String> = benchmark_str.split(',').map(|s| s.trim().to_string()).collect();
@@ -576,6 +577,15 @@ fn main() {
             positions.truncate(max);
         }
     }
+    // Split off validation set if requested
+    let val_positions = if val_split > 0.0 {
+        let val_count = (positions.len() as f32 * val_split) as usize;
+        let val = positions.split_off(positions.len() - val_count);
+        eprintln!("  Val split:      {} train, {} val ({:.0}%)", positions.len(), val.len(), val_split * 100.0);
+        Some(val)
+    } else {
+        None
+    };
     let num_positions = positions.len();
 
     // Build expanded index array weighted by count.
@@ -767,10 +777,39 @@ fn main() {
 
         let epoch_avg_loss = epoch_loss / epoch_samples as f64;
         let epoch_elapsed = epoch_start.elapsed();
+
+        // Compute validation loss if val set exists
+        let val_str = if let Some(ref val_pos) = val_positions {
+            let mut val_loss = 0.0f64;
+            let val_batches = (val_pos.len() + batch_size - 1) / batch_size;
+            for vb in 0..val_batches {
+                let vb_start = vb * batch_size;
+                let vb_end = (vb_start + batch_size).min(val_pos.len());
+                let actual = vb_end - vb_start;
+                batch_positions.clear();
+                for i in vb_start..vb_end {
+                    batch_positions.push(&val_pos[i]);
+                }
+                for (i, pos) in batch_positions.iter().enumerate() {
+                    batch_targets[i] = label_to_target(pos.label);
+                }
+                batch_forward(
+                    &net.weights, input_size, &hidden_layers,
+                    &batch_positions, &mut scratch, residual_interval,
+                );
+                val_loss += batch_loss(&scratch, &batch_targets[..actual], actual);
+            }
+            let val_avg = val_loss / val_pos.len() as f64;
+            format!(", val_loss={}", fmt_loss(val_avg))
+        } else {
+            String::new()
+        };
+
         eprintln!(
-            "Epoch {} complete: avg_loss={}, {:.1}s ({:.0} pos/s)",
+            "Epoch {} complete: avg_loss={}{}, {:.1}s ({:.0} pos/s)",
             epoch + 1,
             fmt_loss(epoch_avg_loss),
+            val_str,
             epoch_elapsed.as_secs_f64(),
             epoch_samples as f64 / epoch_elapsed.as_secs_f64(),
         );
