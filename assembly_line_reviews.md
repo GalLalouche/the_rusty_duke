@@ -1,39 +1,72 @@
-# Assembly Line Reviews Log
+# Assembly Line Reviews
 
-## Overview
-4 review focuses requested. 2 completed in worktrees, 2 hit rate limit bug (#40273).
+**Date:** 2026-03-30
+**Baseline tests:** duke_rust: 210 | duke_training lib: 188 | supervised_train bin: 7 | **Total: 405**
 
-## Reviewer 1: Test Coverage + Assertions
-- **Status**: Completed
-- **Findings**: 4 bugs found in pre-existing code, 57 tests added
-- **Bugs found**:
-  1. `assert_not!` macro lost negation -- `assert!($b)` instead of `assert!(!$b)`
-  2. `to_absolute_coordinate` used `src.x` for y-offset calculation
-  3. `can_apply` rejected moves to empty squares (`map_or(false,...)` should be `map_or(true,...)`)
-  4. `diff_or_zero` had inverted branches causing usize underflow
-- **Outcome**: All 4 bugs exist in pre-existing code from before our refactors. Our current HEAD has either fixed them or refactored the code away entirely. No changes needed.
-- **Tests added**: 57 tests across board, utils, offset, token modules (in worktree only, not merged)
+## Review 1: Test Coverage
+*Status: complete*
 
-## Reviewer 2: Software Design
-- **Status**: Hit rate limit bug, did not execute
-- **Action**: Skipped
+**24 new tests added:**
+- `bag.rs` (6): remove_specific, DiscardBag::remove — previously untested
+- `board.rs` (6): can_reach_square_ignoring_friendly — the defended-fix function had no direct tests
+- `tests.rs` (12): encoding plane indices, bag feature counting, no duplicate features, flat encoding zeroing, forward_sparse vs forward_f32 consistency, sigmoid range, param_count, save/load roundtrip, L1Accumulator consistency, negamax terminal/depth-0/depth-1
 
-## Reviewer 3: Performance
-- **Status**: Hit rate limit bug, did not execute
-- **Action**: Skipped
+**No bugs found.** Heuristic features audited — no issues similar to the defended bug.
 
-## Reviewer 4: Bugs + Correctness
-- **Status**: Completed
-- **Findings**: Same 4 bugs as Reviewer 1 (independent confirmation)
-- **Outcome**: Same -- bugs don't exist in current HEAD
-- **Action**: No changes needed
+**Tests after: 430**
 
-## Actions NOT Taken
-- Did not merge worktree branches -- they branched from an old commit and had massive divergence from current HEAD (80+ file conflicts)
-- Did not port the 57 new tests -- they test pre-existing code that was refactored, so the tests would need rewriting for our current codebase
-- Did not run software design or performance reviews due to rate limit bug
-- Did not re-run reviews on current HEAD after worktree failure
+## Review 2: Performance Optimizations
+*Status: complete*
 
-## Lessons Learned
-- Worktree isolation branches from whatever commit is HEAD at launch time. If the main branch has uncommitted changes or is actively modified, the worktree diverges immediately.
-- Running `git add -A` from a worktree directory and committing to the main branch is catastrophic -- it stages the worktree's file set, not the main repo's.
+**6 issues fixed:**
+1. CNN per-batch gradient allocation (400KB/batch) — hoisted before loop
+2. CNN per-batch target Vec allocation — pre-allocated, reused
+3. FC per-batch position ref Vec allocation — pre-allocated, reused
+4. CNN repeated offset Vec allocations (~512/batch) — cached in CnnLayout struct
+5. CNN Adam powf → running multiply + 3-pass split
+6. CNN apply_diamond_mask — precomputed const non-diamond positions
+
+**Est. impact:** CNN +15-30%, FC +2-5%. No test count change.
+
+**Tests after: 430**
+
+## Review 3: Software Design
+*Status: complete*
+
+**Extracted `supervised_common.rs` module:**
+- LabeledPosition struct (was in 3 files)
+- load_lpos with LPOS+FLPS support (was in 3 files)
+- AdamState optimizer (was in 2 files)
+- label_to_target + LABEL_CLAMP (was in 3 files)
+- COMBINED_FEATURE_NAMES (was in 3 files)
+- build_weighted_indices (was in 2 files)
+- run_benchmark evaluation loop (was in 3 files)
+
+**Net: -370 lines of duplication.**
+
+**5 recommendations for future refactoring (not done — would exceed 500 lines each):**
+1. **Split cnn.rs (4458 lines)** into cnn/model.rs, cnn/kernels.rs, cnn/batch_ops.rs, cnn/evaluator.rs
+2. **Move FcScratch + batch_forward/backward** from supervised_train.rs into lib for reuse by other FC trainers
+3. **Unify GenericMlp and CnnModel serialization** via a WeightStore trait (overlapping save/load/param_count)
+4. **Extract adaptive LR into LrScheduler** struct in supervised_common (duplicated between FC and CNN trainers)
+5. **Add model.as_evaluator() trait method** to eliminate clone-based evaluate_model wrappers in each binary
+
+**Tests after: 430**
+
+## Review 4: Bugs and Correctness
+*Status: complete*
+
+**1 bug found and fixed:** Residual gradient leaking through dead ReLU neurons in `batch_backward()`. The skip connection gradient was added AFTER the ReLU mask was applied, causing dead neurons (pre_act <= 0) to receive spurious gradient updates. Fixed by moving residual gradient addition before ReLU mask. Regression test added with numerical gradient verification (analytical vs numerical within 5%).
+
+**Impact:** FC experiments using --residual had corrupted gradients. The 256×8 res2 overnight result (3.0e-4) is likely affected — needs re-run with fixed binary.
+
+**Tests after: duke_rust: 222 | duke_training: 201 | supervised_train: 8 | Total: 431**
+
+## Final Summary
+
+- 4 reviews completed
+- 26 tests added (405 → 431)
+- 1 bug fixed (residual gradient ordering)
+- 6 performance optimizations
+- 370 lines of duplication eliminated
+- 5 design recommendations flagged for future
