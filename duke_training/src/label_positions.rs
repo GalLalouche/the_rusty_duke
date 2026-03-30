@@ -131,34 +131,25 @@ fn label_position(gs: &GameState, evaluator: &CombinedWeights, depth: u32) -> f3
     negamax(&mut gs.clone(), evaluator, depth, &mut rng) as f32
 }
 
-/// Synthetic label: incrementally harder functions of the game state.
-/// Current: (num_pieces * sum_tile_values) + bag_size + num_flipped
-///
-/// num_flipped requires reading the side planes (planes 26-29 in the encoding).
+/// Synthetic label: count legal moves for only duke + footman tiles (current player).
+/// Simpler than full my_moves since footmen have simple 4-directional movement
+/// and dukes have horizontal slides.
 fn synthetic_label(gs: &GameState) -> f32 {
-    use duke_rust::game::tile::CurrentSide;
-    let board = gs.board();
-    let mut num_pieces: f32 = 0.0;
-    let mut sum_tile_values: f32 = 0.0;
-    let mut num_flipped: f32 = 0.0;
-
-    for (_coord, tile) in board.active_coordinates() {
-        num_pieces += 1.0;
-        sum_tile_values += tile.tile_type as u8 as f32;
-        if tile.current_side == CurrentSide::Flipped {
-            num_flipped += 1.0;
+    use duke_rust::game::board::PossibleMove;
+    use duke_rust::game::tile::TileType;
+    let owner = gs.current_player_turn();
+    let mut count = 0u32;
+    let mut gs_clone = gs.clone();
+    for mv in gs_clone.all_valid_game_moves_for(owner) {
+        if let PossibleMove::ApplyNonCommandTileAction { src, .. } = &mv {
+            if let Some(tile) = gs.board().get(*src) {
+                if tile.tile_type == TileType::Duke || tile.tile_type == TileType::Footman {
+                    count += 1;
+                }
+            }
         }
     }
-
-    let bag_size = (gs.bag_for_owner(Owner::TopPlayer).remaining().len()
-        + gs.bag_for_owner(Owner::BottomPlayer).remaining().len()) as f32;
-
-    let duke_coord = gs.current_duke_coordinate();
-    let duke_x = duke_coord.x as f32;
-    let duke_y = duke_coord.y as f32;
-
-    (num_pieces * sum_tile_values) + bag_size + num_flipped
-        + (duke_x * duke_y) / num_flipped.max(1.0)
+    count as f32
 }
 
 fn main() {
