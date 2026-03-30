@@ -929,34 +929,51 @@ impl GameBoard {
         // SAFETY: We apply the move, check guard, then undo — restoring the board to
         // its original state before returning. No other mutable references exist
         // during this window because we're in a single-threaded call chain.
+        #[cfg(debug_assertions)]
+        let snapshot = self.i().clone();
         let inner = unsafe { self.i_mut_unchecked() };
-        inner.move_does_not_put_in_guard(mv, owner)
+        let result = inner.move_does_not_put_in_guard(mv, owner);
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.i(), &snapshot, "does_not_put_in_guard: board not restored after apply/undo");
+        result
     }
 
     pub fn is_valid_placement(&self, owner: Owner, offset: DukeOffset) -> bool {
         match self.is_valid_placement_space(owner, offset) {
             None => false,
             Some(c) => {
+                #[cfg(debug_assertions)]
+                let snapshot = self.i().clone();
                 let inner = unsafe { self.i_mut_unchecked() };
-                inner.placement_does_not_put_in_guard(c, owner)
+                let result = inner.placement_does_not_put_in_guard(c, owner);
+                #[cfg(debug_assertions)]
+                debug_assert_eq!(self.i(), &snapshot, "is_valid_placement: board not restored after apply/undo");
+                result
             }
         }
     }
 
     // Except commands.
     pub fn get_legal_moves(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
+        #[cfg(debug_assertions)]
+        let snapshot = self.i().clone();
         let inner = unsafe { self.i_mut_unchecked() };
         let owner = inner.get(src).unwrap().owner;
         let candidates: Vec<_> = inner.get_legal_moves_no_guard(src).collect();
-        candidates.into_iter()
+        let result = candidates.into_iter()
             .filter(|o| inner.move_does_not_put_in_guard(
                 BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
                 owner,
             ))
-            .collect()
+            .collect();
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.i(), &snapshot, "get_legal_moves: board not restored after apply/undo");
+        result
     }
 
     pub fn all_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+        #[cfg(debug_assertions)]
+        let snapshot = self.i().clone();
         let inner = unsafe { self.i_mut_unchecked() };
         // Collect tile coordinates first to avoid holding references into the board
         // while mutating it during guard checks.
@@ -994,11 +1011,15 @@ impl GameBoard {
             }
         }
 
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.i(), &snapshot, "all_valid_moves: board not restored after apply/undo");
         result
     }
 
     /// Check if there is at least one valid move (short-circuits on first found).
     pub fn has_valid_moves(&self, owner: Owner, new_tiles: WithNewTiles) -> bool {
+        #[cfg(debug_assertions)]
+        let snapshot = self.i().clone();
         let inner = unsafe { self.i_mut_unchecked() };
         let tile_coords: Vec<Coordinates> = inner.get_tiles_for(owner)
             .map(|e| e.0)
@@ -1011,6 +1032,8 @@ impl GameBoard {
                     BoardMove::ApplyNonCommandTileAction { src, dst },
                     owner,
                 ) {
+                    #[cfg(debug_assertions)]
+                    debug_assert_eq!(self.i(), &snapshot, "has_valid_moves: board not restored after apply/undo");
                     return true;
                 }
             }
@@ -1020,12 +1043,16 @@ impl GameBoard {
             for offset in DukeOffset::iter() {
                 if let Some(c) = inner.is_valid_placement_space(owner, offset) {
                     if inner.placement_does_not_put_in_guard(c, owner) {
+                        #[cfg(debug_assertions)]
+                        debug_assert_eq!(self.i(), &snapshot, "has_valid_moves: board not restored after apply/undo");
                         return true;
                     }
                 }
             }
         }
 
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.i(), &snapshot, "has_valid_moves: board not restored after apply/undo");
         false
     }
 }
