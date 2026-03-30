@@ -5,6 +5,9 @@
 
 use std::time::Instant;
 
+use duke_rust::game::state::GameResult;
+use duke_rust::game::tile::Owner;
+
 use crate::encoding::BAG_FEATURES;
 use crate::game_setup::{create_bag, create_initial_state};
 use crate::loaded_model::LoadedModel;
@@ -198,6 +201,21 @@ pub fn label_to_target(label: f32) -> f32 {
     (clamped + LABEL_CLAMP) / (2.0 * LABEL_CLAMP)
 }
 
+// ── Game outcome target ──────────────────────────────────────────────────
+
+/// Convert a game result to a [0, 1] target from the perspective of `current_player`.
+///
+/// Returns `1.0` for win, `0.0` for loss, `0.5` for draw or ongoing.
+/// Used by trainers that need sigmoid-style targets (HalfDA, supervised, etc.).
+pub fn game_outcome_target(result: GameResult, current_player: Owner) -> f32 {
+    match result {
+        GameResult::Won(winner) if winner == current_player => 1.0,
+        GameResult::Won(_) => 0.0,
+        GameResult::Tie => 0.5,
+        GameResult::Ongoing => 0.5,
+    }
+}
+
 // ── Adam optimizer ───────────────────────────────────────────────────────
 
 /// Adam optimizer state for gradient-based training.
@@ -266,6 +284,93 @@ impl AdamState {
         for i in 0..n {
             weights[i] -= lr_t * self.m[i] / (self.v[i].sqrt() + eps);
         }
+    }
+}
+
+// ── Adaptive learning rate scheduler ─────────────────────────────────────
+
+/// Adaptive learning rate scheduler: halves LR on loss spikes, increases on stalls.
+///
+/// Tracks a rolling average of per-batch losses. Every `check_interval` batches,
+/// compares the recent average to the best-seen loss. If loss spiked (>5% above
+/// best), halves the LR. If loss stalled for `stall_threshold` batches, bumps LR
+/// by 1.5x. LR is clamped within `[lr_min, lr_max]`.
+pub struct AdaptiveLrScheduler {
+    best_loss: f64,
+    batches_since_improvement: usize,
+    recent_loss_sum: f64,
+    recent_loss_count: usize,
+    /// How often (in batches) to check for LR adjustments.
+    pub check_interval: usize,
+    /// After this many batches without improvement, bump LR.
+    pub stall_threshold: usize,
+    /// Minimum allowed learning rate.
+    pub lr_min: f32,
+    /// Maximum allowed learning rate.
+    pub lr_max: f32,
+}
+
+impl AdaptiveLrScheduler {
+    /// Create a new scheduler with the given LR bounds.
+    pub fn new(lr_min: f32, lr_max: f32) -> Self {
+        Self {
+            best_loss: f64::INFINITY,
+            batches_since_improvement: 0,
+            recent_loss_sum: 0.0,
+            recent_loss_count: 0,
+            check_interval: 1000,
+            stall_threshold: 5000,
+            lr_min,
+            lr_max,
+        }
+    }
+
+    /// Record a batch's average loss and optionally adjust the Adam LR.
+    ///
+    /// Call this once per batch with the mean loss for that batch.
+    /// Returns `true` if the LR was changed.
+    pub fn record_batch(&mut self, avg_batch_loss: f64, adam: &mut AdamState) -> bool {
+        self.recent_loss_sum += avg_batch_loss;
+        self.recent_loss_count += 1;
+
+        if self.recent_loss_count < self.check_interval {
+            return false;
+        }
+
+        let recent_avg = self.recent_loss_sum / self.recent_loss_count as f64;
+        let mut changed = false;
+
+        if recent_avg < self.best_loss {
+            self.best_loss = recent_avg;
+            self.batches_since_improvement = 0;
+        } else {
+            self.batches_since_improvement += self.recent_loss_count;
+
+            if recent_avg > self.best_loss * 1.05 {
+                // Loss spiked: halve LR
+                let old_lr = adam.lr;
+                adam.lr = (adam.lr * 0.5).max(self.lr_min);
+                if adam.lr != old_lr {
+                    eprintln!("  LR adjusted: {} -> {} (loss increased)", old_lr, adam.lr);
+                    changed = true;
+                }
+                self.batches_since_improvement = 0;
+            } else if self.batches_since_improvement >= self.stall_threshold {
+                // Stuck: bump LR to escape local minimum
+                let old_lr = adam.lr;
+                adam.lr = (adam.lr * 1.5).min(self.lr_max);
+                if adam.lr != old_lr {
+                    eprintln!("  LR adjusted: {} -> {} (loss stalled)", old_lr, adam.lr);
+                    self.best_loss = recent_avg;
+                    changed = true;
+                }
+                self.batches_since_improvement = 0;
+            }
+        }
+
+        self.recent_loss_sum = 0.0;
+        self.recent_loss_count = 0;
+        changed
     }
 }
 

@@ -16,15 +16,26 @@
 use duke_rust::game::state::GameState;
 use duke_rust::game::tile::{CurrentSide, TileType};
 
+use crate::encoding::{BOARD_SIZE, NUM_TILE_TYPES};
+
+/// Number of board squares (BOARD_SIZE * BOARD_SIZE).
+const NUM_SQUARES: usize = BOARD_SIZE * BOARD_SIZE; // 36
+
+/// Number of color values (my piece vs opponent piece).
+const NUM_COLORS: usize = 2;
+
+/// Number of side values (Initial vs Flipped).
+const NUM_SIDES: usize = 2;
+
 /// Total number of HalfDA features.
-pub const HALFDA_FEATURES: usize = 36 * 36 * 13 * 2 * 2; // 67,392
+pub const HALFDA_FEATURES: usize = NUM_SQUARES * NUM_SQUARES * NUM_TILE_TYPES * NUM_COLORS * NUM_SIDES; // 67,392
 
 /// Stride constants for the feature index computation.
 const PIECE_SIDE_STRIDE: usize = 1;
-const PIECE_COLOR_STRIDE: usize = 2 * PIECE_SIDE_STRIDE;           // 2
-const PIECE_TYPE_STRIDE: usize = 2 * PIECE_COLOR_STRIDE;           // 4
-const PIECE_SQUARE_STRIDE: usize = 13 * PIECE_TYPE_STRIDE;         // 52
-const DUKE_SQUARE_STRIDE: usize = 36 * PIECE_SQUARE_STRIDE;        // 1872
+const PIECE_COLOR_STRIDE: usize = NUM_SIDES * PIECE_SIDE_STRIDE;
+const PIECE_TYPE_STRIDE: usize = NUM_COLORS * PIECE_COLOR_STRIDE;
+const PIECE_SQUARE_STRIDE: usize = NUM_TILE_TYPES * PIECE_TYPE_STRIDE;
+const DUKE_SQUARE_STRIDE: usize = NUM_SQUARES * PIECE_SQUARE_STRIDE;
 
 /// Maximum number of non-duke pieces on the board.
 /// In The Duke, the board is 6x6=36 squares. With 2 dukes, at most 34 non-duke pieces.
@@ -81,7 +92,7 @@ pub fn encode_halfda(gs: &GameState) -> HalfDABuffer {
     let duke_coords = board
         .find(|t| t.owner == current_player && t.tile_type == TileType::Duke)
         .expect("Current player's duke must be on the board");
-    let duke_square = duke_coords.y as usize * 6 + duke_coords.x as usize;
+    let duke_square = duke_coords.y as usize * BOARD_SIZE +duke_coords.x as usize;
 
     let mut buf = HalfDABuffer::new();
 
@@ -91,7 +102,7 @@ pub fn encode_halfda(gs: &GameState) -> HalfDABuffer {
             continue;
         }
 
-        let piece_square = coords.y as usize * 6 + coords.x as usize;
+        let piece_square = coords.y as usize * BOARD_SIZE +coords.x as usize;
         let piece_type = placed_tile.tile_type.index();
         let piece_color = if placed_tile.owner == current_player { 0 } else { 1 };
         let piece_side = match placed_tile.current_side {

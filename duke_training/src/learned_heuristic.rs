@@ -14,6 +14,7 @@ use duke_rust::game::state::GameState;
 use duke_rust::game::tile::TileType;
 use strum::EnumCount;
 
+use crate::encoding::BOARD_SIZE;
 use crate::game_setup::GameEvaluator;
 
 /// Total number of features in the full polynomial expansion.
@@ -318,8 +319,8 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
     let my_duke_coord = gs.duke_coordinate(owner);
     let opp_duke_coord = gs.duke_coordinate(opp);
 
-    let mut my_reach = [false; 36];
-    let mut opp_reach = [false; 36];
+    let mut my_reach = [false; BOARD_SIZE * BOARD_SIZE];
+    let mut opp_reach = [false; BOARD_SIZE * BOARD_SIZE];
 
     // Only count tile-movement moves (not placements) so that approx_moves
     // is consistent with reachable_squares -- both measure on-board tile actions.
@@ -331,8 +332,8 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
             if *src == my_duke_coord {
                 my_duke_moves += 1;
             }
-            let idx = dst.y as usize * 6 + dst.x as usize;
-            debug_assert!(idx < 36, "move destination ({}, {}) maps to index {} outside 6x6 board", dst.x, dst.y, idx);
+            let idx = dst.y as usize * BOARD_SIZE +dst.x as usize;
+            debug_assert!(idx < BOARD_SIZE * BOARD_SIZE, "move destination ({}, {}) maps to index {} outside {}x{} board", dst.x, dst.y, idx, BOARD_SIZE, BOARD_SIZE);
             my_reach[idx] = true;
         }
     }
@@ -345,8 +346,8 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
             if *src == opp_duke_coord {
                 opp_duke_moves += 1;
             }
-            let idx = dst.y as usize * 6 + dst.x as usize;
-            debug_assert!(idx < 36, "move destination ({}, {}) maps to index {} outside 6x6 board", dst.x, dst.y, idx);
+            let idx = dst.y as usize * BOARD_SIZE +dst.x as usize;
+            debug_assert!(idx < BOARD_SIZE * BOARD_SIZE, "move destination ({}, {}) maps to index {} outside {}x{} board", dst.x, dst.y, idx, BOARD_SIZE, BOARD_SIZE);
             opp_reach[idx] = true;
         }
     }
@@ -391,7 +392,7 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
 
     // Threatened: enemy tiles on squares I can reach (via legal captures)
     for (coords, _) in &opp_tiles {
-        let idx = coords.y as usize * 6 + coords.x as usize;
+        let idx = coords.y as usize * BOARD_SIZE +coords.x as usize;
         if my_reach[idx] {
             my_threatened += 1;
         }
@@ -401,7 +402,7 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
         }
     }
     for (coords, _) in &my_tiles {
-        let idx = coords.y as usize * 6 + coords.x as usize;
+        let idx = coords.y as usize * BOARD_SIZE +coords.x as usize;
         if opp_reach[idx] {
             opp_threatened += 1;
         }

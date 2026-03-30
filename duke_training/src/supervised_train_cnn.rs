@@ -27,8 +27,8 @@ use duke_training::cnn::{apply_diamond_mask, CnnEvaluator, CnnModel, KernelType}
 use duke_training::encoding::BAG_FEATURES;
 use duke_training::match_runner::Player;
 use duke_training::supervised_common::{
-    AdamState, LABEL_CLAMP, build_weighted_indices, label_to_target, load_lpos,
-    run_benchmark,
+    AdamState, AdaptiveLrScheduler, LABEL_CLAMP, build_weighted_indices,
+    label_to_target, load_lpos, run_benchmark,
 };
 
 // ── Evaluation ───────────────────────────────────────────────────────────
@@ -191,15 +191,8 @@ fn main() {
     let mut total_samples = 0usize;
     let mut shuffled_indices = indices.clone();
 
-    // Adaptive learning rate state
-    let mut best_loss: f64 = f64::INFINITY;
-    let mut batches_since_improvement: usize = 0;
-    let mut recent_loss_sum: f64 = 0.0;
-    let mut recent_loss_count: usize = 0;
-    let lr_check_interval: usize = 1000;
-    let lr_stall_threshold: usize = 5000;
-    let lr_min: f32 = 1e-6;
-    let lr_max: f32 = 0.1;
+    // Adaptive learning rate scheduler
+    let mut lr_scheduler = AdaptiveLrScheduler::new(1e-6, 0.1);
 
     for epoch in 0..epochs {
         let epoch_start = Instant::now();
@@ -273,35 +266,7 @@ fn main() {
 
             // Adaptive learning rate
             let avg_batch_loss = batch_loss / actual_batch_size as f64;
-            recent_loss_sum += avg_batch_loss;
-            recent_loss_count += 1;
-
-            if recent_loss_count >= lr_check_interval {
-                let recent_avg = recent_loss_sum / recent_loss_count as f64;
-                if recent_avg < best_loss {
-                    best_loss = recent_avg;
-                    batches_since_improvement = 0;
-                } else {
-                    batches_since_improvement += recent_loss_count;
-                    if recent_avg > best_loss * 1.05 {
-                        let old_lr = adam.lr;
-                        adam.lr = (adam.lr * 0.5).max(lr_min);
-                        if adam.lr != old_lr {
-                            eprintln!("  LR adjusted: {} -> {} (loss increased)", old_lr, adam.lr);
-                        }
-                        batches_since_improvement = 0;
-                    } else if batches_since_improvement >= lr_stall_threshold {
-                        let old_lr = adam.lr;
-                        adam.lr = (adam.lr * 1.5).min(lr_max);
-                        if adam.lr != old_lr {
-                            eprintln!("  LR adjusted: {} -> {} (loss stalled)", old_lr, adam.lr);
-                        }
-                        batches_since_improvement = 0;
-                    }
-                }
-                recent_loss_sum = 0.0;
-                recent_loss_count = 0;
-            }
+            lr_scheduler.record_batch(avg_batch_loss, &mut adam);
 
             // Progress logging
             if (batch_idx + 1) % 1000 == 0 || batch_idx + 1 == num_batches {

@@ -35,11 +35,10 @@ use duke_training::cli::parse_flag;
 use duke_training::game_setup::StaticHeuristicEvaluator;
 use duke_training::game_setup::GameEvaluator;
 use duke_training::halfda::{encode_halfda, HALFDA_FEATURES};
-use duke_training::supervised_common::label_to_target;
+use duke_training::supervised_common::{game_outcome_target, label_to_target};
 use duke_training::trajectory_io::load_trajectories;
 
 use duke_rust::game::state::GameResult;
-use duke_rust::game::tile::Owner;
 
 // ── Backend selection ────────────────────────────────────────────────────
 //
@@ -254,18 +253,6 @@ struct TrainingPosition {
     halfda_indices: Vec<u32>,
     /// Combined target: lambda * eval_target + (1 - lambda) * game_outcome
     target: f32,
-}
-
-/// Convert a game result to a target value from the perspective of the current player.
-///
-/// Returns 1.0 for win, 0.0 for loss, 0.5 for draw/ongoing.
-fn game_outcome_target(result: GameResult, current_player: Owner) -> f32 {
-    match result {
-        GameResult::Won(winner) if winner == current_player => 1.0,
-        GameResult::Won(_) => 0.0,
-        GameResult::Tie => 0.5,
-        GameResult::Ongoing => 0.5, // shouldn't happen for completed games
-    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────

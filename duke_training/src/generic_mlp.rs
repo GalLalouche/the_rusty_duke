@@ -711,11 +711,11 @@ pub struct QuantizedEvaluator {
 impl GameEvaluator for QuantizedEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
         match self.qnet.input_size {
-            1106 => self.qnet.forward_sparse(gs, false),
-            1147 => self.qnet.forward_sparse(gs, true),
+            TOTAL_FEATURES => self.qnet.forward_sparse(gs, false),
+            APPENDED_INPUT_SIZE => self.qnet.forward_sparse(gs, true),
             other => panic!(
-                "QuantizedEvaluator: unsupported input_size {}. Expected 1106 or 1147.",
-                other
+                "QuantizedEvaluator: unsupported input_size {}. Expected {} or {}.",
+                other, TOTAL_FEATURES, APPENDED_INPUT_SIZE,
             ),
         }
     }
@@ -930,8 +930,12 @@ impl L1Accumulator {
     }
 }
 
+/// Total input size for the "appended" mode:
+/// NNUE features + combined features (e.g. 1106 + 41 = 1147).
+pub const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES;
+
 /// Total input size for the "all appended" mode:
-/// 1106 NNUE features + 41 combined + 24 expensive = 1171.
+/// NNUE features + combined + expensive guard features (e.g. 1106 + 41 + 24 = 1171).
 pub const ALL_APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES + LH_NUM_FEATURES;
 
 /// Unified evaluator that wraps a GenericMlp, dispatching by input_size.
@@ -946,33 +950,34 @@ pub struct GenericEvaluator {
 impl GameEvaluator for GenericEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
         match self.net.input_size {
-            41 => {
+            NUM_COMBINED_FEATURES => {
                 let features = extract_combined_features(gs);
                 self.net.forward_f64(&features)
             }
-            65 => {
-                let expensive = extract_features(gs);       // 24 values
-                let combined = extract_combined_features(gs); // 41 values
+            NUM_GUARD_ALL_FEATURES => {
+                let expensive = extract_features(gs);
+                let combined = extract_combined_features(gs);
                 let mut features = [0.0f64; NUM_GUARD_ALL_FEATURES];
-                features[..24].copy_from_slice(&expensive);
-                features[24..].copy_from_slice(&combined);
+                features[..LH_NUM_FEATURES].copy_from_slice(&expensive);
+                features[LH_NUM_FEATURES..].copy_from_slice(&combined);
                 self.net.forward_f64(&features)
             }
-            1106 => self.net.forward_sparse(gs, false),
-            1147 => self.net.forward_sparse(gs, true),
-            1171 => self.net.forward_sparse_all(gs),
+            TOTAL_FEATURES => self.net.forward_sparse(gs, false),
+            APPENDED_INPUT_SIZE => self.net.forward_sparse(gs, true),
+            ALL_APPENDED_INPUT_SIZE => self.net.forward_sparse_all(gs),
             other => panic!(
-                "GenericEvaluator: unknown input_size {}. Expected 41, 65, 1106, 1147, or 1171.",
-                other
+                "GenericEvaluator: unknown input_size {}. Expected {}, {}, {}, {}, or {}.",
+                other, NUM_COMBINED_FEATURES, NUM_GUARD_ALL_FEATURES,
+                TOTAL_FEATURES, APPENDED_INPUT_SIZE, ALL_APPENDED_INPUT_SIZE,
             ),
         }
     }
 
     fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> {
         match self.net.input_size {
-            1106 => Some((&self.net, false)),
-            1147 => Some((&self.net, true)),
-            _ => None, // dense (41, 65) and 1171 don't support incremental
+            TOTAL_FEATURES => Some((&self.net, false)),
+            APPENDED_INPUT_SIZE => Some((&self.net, true)),
+            _ => None, // dense and all-appended don't support incremental
         }
     }
 }

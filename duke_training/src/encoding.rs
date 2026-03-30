@@ -10,8 +10,8 @@ pub const NUM_BOARD_PLANES: usize = NUM_TILE_TYPES * 2 + 4;
 pub const BOARD_FEATURES: usize = NUM_BOARD_PLANES * BOARD_SIZE * BOARD_SIZE; // 1080
 /// Bag features: 13 tile types × 2 (my bag / opponent bag) = 26 scalars
 pub const BAG_FEATURES: usize = NUM_TILE_TYPES * 2;
-/// Max board features: up to 36 tiles on 6x6 board × 2 features each
-pub const MAX_BOARD_FEATURE_COUNT: usize = 72;
+/// Max board features: up to BOARD_SIZE^2 tiles on board, each producing 2 features (type + side).
+pub const MAX_BOARD_FEATURE_COUNT: usize = BOARD_SIZE * BOARD_SIZE * 2;
 /// Total input size for the flat FC model.
 pub const TOTAL_FEATURES: usize = BOARD_FEATURES + BAG_FEATURES; // 1106
 

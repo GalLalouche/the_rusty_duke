@@ -217,7 +217,7 @@ fn main() {
         .collect::<Vec<_>>()
         .join(",");
     println!("TD(lambda) Self-Play Training");
-    println!("  network: 1106->{}->1", arch_str.replace(",", "->"));
+    println!("  network: {}->{}->1", TOTAL_FEATURES, arch_str.replace(",", "->"));
     println!("  games={}, lr={}, lambda={}, epsilon={}", total_games, lr, lambda, epsilon);
     println!("  batch_size={}, eval_interval={}, eval_games={}", batch_size, eval_interval, eval_games);
     println!("  benchmark={}, checkpoint_dir={}", benchmark_str, checkpoint_dir);

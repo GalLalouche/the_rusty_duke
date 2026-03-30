@@ -16,7 +16,6 @@
 
 use std::time::Instant;
 
-use rand::Rng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -26,8 +25,8 @@ use duke_training::encoding::{BOARD_FEATURES, TOTAL_FEATURES};
 use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
 use duke_training::match_runner::Player;
 use duke_training::supervised_common::{
-    AdamState, LabeledPosition, LABEL_CLAMP, build_weighted_indices, label_to_target, load_lpos,
-    run_benchmark,
+    AdamState, AdaptiveLrScheduler, LabeledPosition, LABEL_CLAMP,
+    build_weighted_indices, label_to_target, load_lpos, run_benchmark,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -638,14 +637,10 @@ fn main() {
     let mut shuffled_indices = indices.clone();
 
     // Adaptive learning rate: halve on loss spike, increase on stall, with bounds.
-    let mut best_loss: f64 = f64::INFINITY;
-    let mut batches_since_improvement: usize = 0;
-    let mut recent_loss_sum: f64 = 0.0;
-    let mut recent_loss_count: usize = 0;
-    let lr_check_interval: usize = 1000;
-    let lr_stall_threshold: usize = 5000;
-    let lr_min: f32 = lr / 10.0;  // Never drop below 10% of initial LR
-    let lr_max: f32 = lr * 3.0;   // Never exceed 3x initial LR (was 10x, too aggressive)
+    let mut lr_scheduler = AdaptiveLrScheduler::new(
+        lr / 10.0,  // Never drop below 10% of initial LR
+        lr * 3.0,   // Never exceed 3x initial LR
+    );
 
     for epoch in 0..epochs {
         let epoch_start = Instant::now();
@@ -710,46 +705,7 @@ fn main() {
 
             // Adaptive learning rate
             let avg_batch_loss = batch_loss_val / actual_batch_size as f64;
-            recent_loss_sum += avg_batch_loss;
-            recent_loss_count += 1;
-
-            if recent_loss_count >= lr_check_interval {
-                let recent_avg = recent_loss_sum / recent_loss_count as f64;
-                if recent_avg < best_loss {
-                    best_loss = recent_avg;
-                    batches_since_improvement = 0;
-                } else {
-                    batches_since_improvement += recent_loss_count;
-
-                    if recent_avg > best_loss * 1.05 {
-                        // Loss spiked: halve LR (with floor)
-                        let old_lr = adam.lr;
-                        adam.lr = (adam.lr * 0.5).max(lr_min);
-                        if adam.lr != old_lr {
-                            eprintln!(
-                                "  LR adjusted: {} -> {} (loss increased)",
-                                old_lr, adam.lr
-                            );
-                        }
-                        batches_since_improvement = 0;
-                    } else if batches_since_improvement >= lr_stall_threshold {
-                        // Stuck: bump LR to escape local minimum (with ceiling)
-                        let old_lr = adam.lr;
-                        adam.lr = (adam.lr * 1.5).min(lr_max);
-                        if adam.lr != old_lr {
-                            eprintln!(
-                                "  LR adjusted: {} -> {} (loss stalled)",
-                                old_lr, adam.lr
-                            );
-                            // Reset best_loss so higher LR gets a fair chance
-                            best_loss = recent_avg;
-                        }
-                        batches_since_improvement = 0;
-                    }
-                }
-                recent_loss_sum = 0.0;
-                recent_loss_count = 0;
-            }
+            lr_scheduler.record_batch(avg_batch_loss, &mut adam);
 
             // Progress logging
             if (batch_idx + 1) % 1000 == 0 || batch_idx + 1 == num_batches {

@@ -23,7 +23,7 @@ use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
 
 use duke_training::cli::parse_flag;
-use duke_training::encoding::encode_state_flat;
+use duke_training::encoding::{encode_state_flat, TOTAL_FEATURES};
 use duke_training::fc_td_training::FcTdTrainer;
 use duke_training::game_setup::{
     create_bag, create_initial_state, play_two_player_game,
@@ -64,7 +64,7 @@ fn main() {
     }
 
     println!("RL Training: NNUE vs Heuristic");
-    println!("  network: 1106→{}→{}→1", l1_size, l2_size);
+    println!("  network: {}→{}→{}→1", TOTAL_FEATURES, l1_size, l2_size);
     println!("  games_per_iter={}, iterations={}, lr={}->{}, epsilon={}",
         games_per_iter, iterations, lr_start, lr_end, epsilon);
     if resume_path.is_none() {

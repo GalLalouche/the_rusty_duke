@@ -34,7 +34,6 @@ use duke_rust::game::state::{GameResult, GameState};
 use duke_rust::game::tile::Owner;
 
 use duke_training::cli::parse_flag;
-use duke_training::encoding::TOTAL_FEATURES;
 use duke_training::game_setup::{
     create_bag, create_initial_state, greedy_move, GameEvaluator, StaticHeuristicEvaluator,
 };
@@ -115,15 +114,10 @@ fn last_layer_count(l2_size: usize) -> usize {
     l2_size + 1  // l3_weight (l2_size) + l3_bias (1)
 }
 
-// ── Appended NNUE evaluator (1147 inputs) ────────────────────────────────
-
-/// Total input size: 1106 NNUE features + 41 combined features = 1147
-const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES; // 1147
-
 // Old AppendedNnueEvaluator code removed; appended mode now uses GenericMlp via run_generic_sparse_training.
 
 use duke_training::generic_mlp::{
-    GenericMlp, GenericEvaluator, ALL_APPENDED_INPUT_SIZE,
+    GenericMlp, GenericEvaluator, APPENDED_INPUT_SIZE, ALL_APPENDED_INPUT_SIZE,
 };
 use duke_training::loaded_model::{LoadedModel, NUM_GUARD_ALL_FEATURES};
 use duke_training::model_registry::{ModelRegistry, TrainingInfo, BenchmarkRecord};

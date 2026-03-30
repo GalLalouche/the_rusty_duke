@@ -3,8 +3,9 @@
 //! These are consumers of GenericMlp, not part of it. Separated from generic_mlp.rs
 //! to keep that module focused on the network implementation and evaluator wrappers.
 
+use crate::encoding::TOTAL_FEATURES;
 use crate::generic_mlp::{
-    GenericMlp, GenericEvaluator, QuantizedEvaluator,
+    GenericMlp, GenericEvaluator, QuantizedEvaluator, APPENDED_INPUT_SIZE,
 };
 use crate::game_setup::{GameEvaluator, StaticHeuristicEvaluator};
 use crate::learned_heuristic::{
@@ -15,8 +16,8 @@ use crate::learned_heuristic::{
 use crate::model_registry::ModelRegistry;
 use crate::nnue::{NnueEvaluator, NnueWeights, NUM_FEATURES};
 
-/// Total guard feature count: 24 expensive + 41 combined = 65.
-pub const NUM_GUARD_ALL_FEATURES: usize = 24 + NUM_COMBINED_FEATURES;
+/// Total guard feature count: expensive + combined.
+pub const NUM_GUARD_ALL_FEATURES: usize = LR_NUM_FEATURES + NUM_COMBINED_FEATURES;
 
 /// A loaded model ready for evaluation. Can represent a DB-registered model,
 /// a file-based model, or a built-in player (base/random).
@@ -128,7 +129,7 @@ pub fn load_opponent_quantized(spec: &str) -> (Option<Box<dyn GameEvaluator + Sy
         path if path.ends_with(".gmlp") => {
             let net = GenericMlp::load(path).expect("Failed to load .gmlp opponent");
             match net.input_size {
-                1106 | 1147 => {
+                TOTAL_FEATURES | APPENDED_INPUT_SIZE => {
                     let qnet = net.quantize();
                     let desc = format!("GMLP-Q ({})", qnet.arch_string());
                     let eval: Box<dyn GameEvaluator + Sync + Send> = Box::new(QuantizedEvaluator { qnet });
