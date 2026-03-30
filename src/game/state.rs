@@ -305,7 +305,7 @@ impl GameState {
     }
 
     pub fn get_tiles_for_owner(&self, o: Owner) -> Vec<(Coordinates, &PlacedTile)> {
-        self.board.get_tiles_for(o)
+        self.board.get_tiles_for(o).collect()
     }
 
     // Except commands
@@ -333,7 +333,7 @@ impl GameState {
         self.board.duke_coordinates(o)
     }
 
-    pub fn empty_spaces_near_current_duke(&self) -> Vec<Coordinates> {
+    pub fn empty_spaces_near_current_duke(&self) -> crate::game::board::DukeNeighbors {
         self.board.empty_spaces_near_current_duke(self.current_player_turn)
     }
 

@@ -99,10 +99,12 @@ impl<'a> minimax_alpha_beta::strategy::Strategy for HeuristicAlphaBetaPlayerStra
 
     fn get_available_moves(&self) -> Vec<Self::Move> {
         let mut clone = self.state.clone();
+        // Reuse a single rng instead of calling thread_rng() per move.
+        let mut rng = rand::thread_rng();
         let mut result = Vec::new();
         AiMove::all_moves(&self.state)
             .for_each(|mv: AiMove| {
-                play_aux(&mv, &mut clone, &mut thread_rng());
+                play_aux(&mv, &mut clone, &mut rng);
                 let res = self.player.evaluator.cheap_evaluate(&clone);
                 // TODO reduce duplication with below
                 if let Some(um) = mv.to_undo_move() {

@@ -117,6 +117,7 @@ pub struct NnueAccumulator {
 }
 
 impl NnueAccumulator {
+    #[inline(always)]
     pub fn from_features(weights: &NnueWeights, features: &[usize]) -> Self {
         let l1 = weights.l1_size;
         assert!(l1 <= MAX_L1);

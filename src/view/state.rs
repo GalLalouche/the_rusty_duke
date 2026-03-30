@@ -207,8 +207,9 @@ impl ViewState {
             Basic::Placing(
                 MoveView::relative_direction(
                     self.game_state.current_duke_coordinate(),
-                    *self.game_state.empty_spaces_near_current_duke()
-                        .first()
+                    self.game_state.empty_spaces_near_current_duke()
+                        .iter()
+                        .next()
                         .expect("No empty space near duke"),
                 ).expect("ASSERTION ERROR: empty space near duke isn't near duke"),
             ));

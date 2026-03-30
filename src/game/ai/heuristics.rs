@@ -31,7 +31,14 @@ pub enum Heuristics {
 }
 
 impl Heuristic for Heuristics {
-    fn name(&self) -> String { format!("{:?}", self) }
+    fn name(&self) -> String {
+        match self {
+            Heuristics::DukeMovementOptions => "DukeMovementOptions",
+            Heuristics::TotalTilesOnBoard => "TotalTilesOnBoard",
+            Heuristics::TotalMovementOptions => "TotalMovementOptions",
+            Heuristics::DiscardedUnits => "DiscardedUnits",
+        }.to_owned()
+    }
 
     fn evaluate_for_owner(&self, o: Owner, gs: &GameState) -> f64 {
         match self {

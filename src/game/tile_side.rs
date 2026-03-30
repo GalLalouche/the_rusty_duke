@@ -150,7 +150,7 @@ impl TileSide {
     }
 
     fn actions_aux(board: &Board<TileAction>) -> Vec<(Offsets, TileAction)> {
-        board.active_coordinates().map(|e| (e.0.into(), e.1.clone())).collect()
+        board.active_coordinates().map(|e| (e.0.into(), *e.1)).collect()
     }
 
     pub fn board(&self) -> &Board<TileAction> { &self.board }

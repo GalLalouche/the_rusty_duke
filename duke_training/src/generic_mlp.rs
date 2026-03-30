@@ -850,9 +850,18 @@ impl L1Accumulator {
         let l1_w = &net.weights[0..net.input_size * h1];
 
         // --- Board features diff (binary: just add/remove weight rows) ---
+        // Use bitmaps for O(1) set membership instead of O(n) contains() per feature.
+        let mut old_set = [0u64; (BOARD_FEATURES + 63) / 64];
+        for &feat in old_board.as_slice() {
+            old_set[feat / 64] |= 1u64 << (feat % 64);
+        }
+        let mut new_set = [0u64; (BOARD_FEATURES + 63) / 64];
+        for &feat in new_board.as_slice() {
+            new_set[feat / 64] |= 1u64 << (feat % 64);
+        }
         // Remove old board features not in new set
         for &feat in old_board.as_slice() {
-            if !new_board.as_slice().contains(&feat) {
+            if new_set[feat / 64] & (1u64 << (feat % 64)) == 0 {
                 let col = &l1_w[feat * h1..(feat + 1) * h1];
                 for j in 0..h1 {
                     self.hidden[j] -= col[j];
@@ -861,7 +870,7 @@ impl L1Accumulator {
         }
         // Add new board features not in old set
         for &feat in new_board.as_slice() {
-            if !old_board.as_slice().contains(&feat) {
+            if old_set[feat / 64] & (1u64 << (feat % 64)) == 0 {
                 let col = &l1_w[feat * h1..(feat + 1) * h1];
                 for j in 0..h1 {
                     self.hidden[j] += col[j];

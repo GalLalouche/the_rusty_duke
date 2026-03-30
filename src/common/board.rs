@@ -84,7 +84,8 @@ impl<A: Copy> Board<A> {
     }
 
     fn coordinates(&self) -> impl Iterator<Item=Coordinates> + '_ {
-        (0..self.width).flat_map(move |x| (0..self.height).map(move |y| Coordinates { x, y }))
+        // Iterate row-major (y then x) to match the board's memory layout for cache locality.
+        (0..self.height).flat_map(move |y| (0..self.width).map(move |x| Coordinates { x, y }))
     }
 
     pub fn all_coordinated_values(&self) -> Vec<(Coordinates, Option<&A>)> {

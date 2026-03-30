@@ -21,7 +21,8 @@ impl TileBag {
             None
         } else {
             let index = rng.gen_range(0..self.bag.len());
-            Some(self.bag.remove(index))
+            // swap_remove is O(1) vs O(n) shift; bag order doesn't matter since draws are random.
+            Some(self.bag.swap_remove(index))
         }
     }
 
@@ -29,7 +30,7 @@ impl TileBag {
         &self.bag
     }
     pub fn is_empty(&self) -> bool {
-        self.remaining().len() == 0
+        self.bag.is_empty()
     }
     pub fn non_empty(&self) -> bool {
         !self.is_empty()

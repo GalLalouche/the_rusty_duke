@@ -36,15 +36,13 @@ impl Display for AiMove {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             AiMove::Sentinel | AiMove::PullTileFormBagAndPlay { .. } => write!(f, "{:?}", self),
-            AiMove::ApplyNonCommandTileAction { src, dst, capturing } =>
-                write!(f, "ApplyNonCommandTileAction {{ src: {:?}, dst: {:?}{}}}",
-                       src,
-                       dst,
-                       match &capturing {
-                           None => "".to_owned(),
-                           Some(t) => format!("capturing: {}", t.tile_type.get_name()),
-                       }
-                )
+            AiMove::ApplyNonCommandTileAction { src, dst, capturing } => {
+                write!(f, "ApplyNonCommandTileAction {{ src: {:?}, dst: {:?}", src, dst)?;
+                if let Some(t) = capturing {
+                    write!(f, ", capturing: {}", t.tile_type.get_name())?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

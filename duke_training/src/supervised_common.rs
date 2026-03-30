@@ -160,11 +160,19 @@ pub fn load_lpos(path: &str, label_index: usize) -> (Vec<LabeledPosition>, f32, 
         positions.len(), file_mb, elapsed.as_secs_f64()
     );
 
-    let labels: Vec<f32> = positions.iter().map(|p| p.label).collect();
-    let min = labels.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max = labels.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let mean = labels.iter().map(|l| *l as f64).sum::<f64>() / labels.len() as f64;
-    let total_count: u64 = positions.iter().map(|p| p.count as u64).sum();
+    // Single-pass label stats computation instead of 3 separate iterations.
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0f64;
+    let mut total_count = 0u64;
+    for p in &positions {
+        let l = p.label;
+        if l < min { min = l; }
+        if l > max { max = l; }
+        sum += l as f64;
+        total_count += p.count as u64;
+    }
+    let mean = sum / positions.len() as f64;
     eprintln!(
         "  Label stats: min={:.2}, max={:.2}, mean={:.4}, total_count={}",
         min, max, mean, total_count

@@ -4,7 +4,6 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand::rngs::{SmallRng, StdRng};
 
-use std::collections::HashMap;
 
 use duke_rust::game::ai::player::{AiMove, EvaluatingPlayer};
 use duke_rust::game::ai::player::ArtificialPlayer;
@@ -296,15 +295,24 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
         let total_tiles = bag.len() as f64;
         debug_assert!(total_tiles > 0.0);
 
-        // Count distinct tile types and their frequencies.
-        let mut tile_counts: HashMap<TileType, usize> = HashMap::new();
+        // Count distinct tile types and their frequencies using a fixed-size array
+        // indexed by TileType discriminant, avoiding HashMap allocation.
+        let mut tile_counts = [0usize; 13];
         for &tile in bag {
-            *tile_counts.entry(tile).or_insert(0) += 1;
+            tile_counts[tile.index()] += 1;
         }
 
         // Expected value = sum over tile types of P(tile) * max_offset(value(tile, offset))
         let mut draw_value = 0.0;
-        for (&tile_type, &count) in &tile_counts {
+        let tile_types = [
+            TileType::Duke, TileType::Footman, TileType::Pikeman, TileType::Knight,
+            TileType::Champion, TileType::Dragoon, TileType::Wizard, TileType::General,
+            TileType::Marshall, TileType::Assassin, TileType::Priest, TileType::Bowman,
+            TileType::Longbowman,
+        ];
+        for &tile_type in &tile_types {
+            let count = tile_counts[tile_type.index()];
+            if count == 0 { continue; }
             let prob = count as f64 / total_tiles;
 
             // For this tile type, find the best placement offset.

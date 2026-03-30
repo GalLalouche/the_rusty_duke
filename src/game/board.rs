@@ -35,15 +35,13 @@ impl Display for PossibleMove {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             PossibleMove::PlaceNewTile { .. } => write!(f, "{:?}", self),
-            PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } =>
-                write!(f, "ApplyNonCommandTileAction {{ src: {:?}, dst: {:?}{}}}",
-                       src,
-                       dst,
-                       match &capturing {
-                           None => "".to_owned(),
-                           Some(t) => format!("capturing: {}", t.tile_type.get_name()),
-                       }
-                )
+            PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
+                write!(f, "ApplyNonCommandTileAction {{ src: {:?}, dst: {:?}", src, dst)?;
+                if let Some(t) = capturing {
+                    write!(f, ", capturing: {}", t.tile_type.get_name())?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -51,6 +49,9 @@ impl Display for PossibleMove {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GameBoard {
     board: Board<PlacedTile>,
+    /// Cached duke positions per player. Updated on place/remove/mv to avoid O(36) scans.
+    /// None if the duke for that player hasn't been placed yet (only during initial setup).
+    duke_cache: [Option<Coordinates>; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,13 +144,43 @@ impl Iterator for TargetCoordsIter {
     }
 }
 
+/// Stack-allocated buffer for empty spaces near a duke (at most 4 cardinal neighbors).
+#[derive(Clone, Copy)]
+pub struct DukeNeighbors {
+    coords: [Coordinates; 4],
+    len: u8,
+}
+
+impl DukeNeighbors {
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    #[inline(always)]
+    pub fn iter(&self) -> impl Iterator<Item = Coordinates> + '_ {
+        self.coords[..self.len as usize].iter().copied()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPubAction { Movement, Strike, Invalid }
 
 impl GameBoard {
     pub const BOARD_SIZE: u8 = 6;
 
-    pub(super) fn new(board: Board<PlacedTile>) -> Self { GameBoard { board } }
+    pub(super) fn new(board: Board<PlacedTile>) -> Self {
+        // Scan for duke positions when constructing from an existing board.
+        let top = board.find(|a| a.owner == Owner::TopPlayer && a.tile_type.is_duke());
+        let bottom = board.find(|a| a.owner == Owner::BottomPlayer && a.tile_type.is_duke());
+        GameBoard { board, duke_cache: [top, bottom] }
+    }
+
+    #[inline(always)]
+    fn owner_index(o: Owner) -> usize {
+        match o {
+            Owner::TopPlayer => 0,
+            Owner::BottomPlayer => 1,
+        }
+    }
     fn absolute_duke_offset(&self, offset: DukeOffset, c: Coordinates) -> Option<Coordinates> {
         fn or_none<P>(b: bool, c: P) -> Option<Coordinates> where P: Fn() -> Coordinates {
             if b { Some(c()) } else { None }
@@ -171,14 +202,21 @@ impl GameBoard {
     }
 
     pub fn empty() -> GameBoard {
-        GameBoard { board: Board::square(GameBoard::BOARD_SIZE) }
+        GameBoard { board: Board::square(GameBoard::BOARD_SIZE), duke_cache: [None, None] }
     }
     pub fn place(&mut self, c: Coordinates, t: PlacedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
+        if t.tile_type.is_duke() {
+            self.duke_cache[Self::owner_index(t.owner)] = Some(c);
+        }
         self.board.put(c, t);
     }
     fn remove(&mut self, c: Coordinates) -> PlacedTile {
-        self.board.remove(c).expect(format!("Cannot remove tile from empty space {:?}", c).as_str())
+        let tile = self.board.remove(c).unwrap_or_else(|| panic!("Cannot remove tile from empty space {:?}", c));
+        if tile.tile_type.is_duke() {
+            self.duke_cache[Self::owner_index(tile.owner)] = None;
+        }
+        tile
     }
 
     pub fn get(&self, c: Coordinates) -> Option<&PlacedTile> {
@@ -277,15 +315,26 @@ impl GameBoard {
     }
 
     pub fn can_place_new_tile_near_duke(&self, o: Owner) -> bool {
-        !self.empty_spaces_near_current_duke(o).is_empty()
-    }
-
-    pub fn empty_spaces_near_current_duke(&self, o: Owner) -> Vec<Coordinates> {
         let duke_location = self.duke_coordinates(o);
         DukeOffset::iter()
             .filter_map(|offset| self.absolute_duke_offset(offset, duke_location))
-            .filter(|c| self.board.is_empty(*c))
-            .collect()
+            .any(|c| self.board.is_empty(c))
+    }
+
+    /// Returns empty spaces adjacent to the duke. At most 4 results (cardinal directions),
+    /// stack-allocated to avoid heap allocation.
+    pub fn empty_spaces_near_current_duke(&self, o: Owner) -> DukeNeighbors {
+        let duke_location = self.duke_coordinates(o);
+        let mut result = DukeNeighbors { coords: [Coordinates { x: 0, y: 0 }; 4], len: 0 };
+        for offset in DukeOffset::iter() {
+            if let Some(c) = self.absolute_duke_offset(offset, duke_location) {
+                if self.board.is_empty(c) {
+                    result.coords[result.len as usize] = c;
+                    result.len += 1;
+                }
+            }
+        }
+        result
     }
 
     #[inline(always)]
@@ -361,9 +410,9 @@ impl GameBoard {
 // }
 //
     pub fn duke_coordinates(&self, o: Owner) -> Coordinates {
-        self.board
-            .find(|a| a.owner == o && a.tile_type.is_duke())
-            .expect(format!("Could not find the duke for {:?}", o).as_str())
+        // O(1) lookup via cached duke position, instead of scanning all 36 cells.
+        self.duke_cache[Self::owner_index(o)]
+            .unwrap_or_else(|| panic!("Could not find the duke for {:?}", o))
     }
 
     fn flip(&mut self, c: Coordinates) -> () {
@@ -386,8 +435,8 @@ impl GameBoard {
                     false
                 } else {
                     cfg.if_check(|| {
-                        // Cannot use does_not_put_in_guard as that will cause an infinite recursion.
-                        // TODO cache this footman, stop cloning for guard checks.
+                        // Clone is still needed here since is_valid_placement_aux takes &self.
+                        // The duke cache makes is_guard inside the clone much cheaper (O(1) duke lookup).
                         let mut clone = self.clone();
                         clone.place(c, PlacedTile::new(owner, TileType::Footman));
                         !clone.is_guard(owner)
@@ -408,10 +457,28 @@ impl GameBoard {
             BoardMove::ApplyNonCommandTileAction { src, dst } => {
                 match self.can_apply(src, dst) {
                     AppliedPubAction::Movement => {
+                        // Update duke cache if a duke is being moved.
+                        if let Some(tile) = self.board.get(src) {
+                            if tile.tile_type.is_duke() {
+                                self.duke_cache[Self::owner_index(tile.owner)] = Some(dst);
+                            }
+                        }
+                        // If capturing a duke at dst, clear its cache.
+                        if let Some(captured) = self.board.get(dst) {
+                            if captured.tile_type.is_duke() {
+                                self.duke_cache[Self::owner_index(captured.owner)] = None;
+                            }
+                        }
                         self.flip(src);
                         self.board.mv(src, dst)
                     }
                     AppliedPubAction::Strike => {
+                        // If striking a duke at dst, clear its cache.
+                        if let Some(target) = self.board.get(dst) {
+                            if target.tile_type.is_duke() {
+                                self.duke_cache[Self::owner_index(target.owner)] = None;
+                            }
+                        }
                         self.flip(src);
                         self.board.remove(dst)
                     }
@@ -439,13 +506,11 @@ impl GameBoard {
         }
     }
 
-    // TODO should also return an iterator
-    pub fn get_tiles_for(&self, o: Owner) -> Vec<(Coordinates, &PlacedTile)> {
+    pub fn get_tiles_for(&self, o: Owner) -> impl Iterator<Item = (Coordinates, &PlacedTile)> {
         self.board
             .active_coordinates()
             .into_iter()
-            .filter(|e| e.1.owner.same_team(&o))
-            .collect()
+            .filter(move |e| e.1.owner.same_team(&o))
     }
 
     // Except commands.
@@ -663,13 +728,14 @@ impl GameBoard {
     pub fn undo(&mut self, mv: PossibleMove) -> Option<PlacedTile> {
         match mv {
             PossibleMove::PlaceNewTile(offset, owner) => {
+                let duke_pos = self.duke_coordinates(owner);
                 let absolute_coordinate = self
                     .to_absolute_duke_offset(offset, owner)
-                    .expect(format!(
+                    .unwrap_or_else(|| panic!(
                         "Invalid tile placement {:?} relative to duke {:?}",
                         offset,
-                        self.duke_coordinates(owner),
-                    ).as_str());
+                        duke_pos,
+                    ));
                 Some(self.remove(absolute_coordinate))
             }
             PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
@@ -1282,10 +1348,10 @@ mod test {
         board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
         board.place(Coordinates { x: 1, y: 1 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
         board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
-        let top_tiles = board.get_tiles_for(Owner::TopPlayer);
+        let top_tiles: Vec<_> = board.get_tiles_for(Owner::TopPlayer).collect();
         assert_eq!(top_tiles.len(), 2);
         assert!(top_tiles.iter().all(|(_, t)| t.owner == Owner::TopPlayer));
-        let bot_tiles = board.get_tiles_for(Owner::BottomPlayer);
+        let bot_tiles: Vec<_> = board.get_tiles_for(Owner::BottomPlayer).collect();
         assert_eq!(bot_tiles.len(), 1);
     }
 
