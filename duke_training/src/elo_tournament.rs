@@ -149,9 +149,11 @@ fn load_players(models: &[String], registry: &ModelRegistry, quantize: bool) -> 
                 eprintln!("Error loading model ID {}: {}", model_id, e);
                 std::process::exit(1);
             })
+        } else if entry.ends_with(".gmlp") || entry.ends_with(".nnue") || entry.ends_with(".json") {
+            LoadedModel::from_spec(entry, quantize)
         } else {
             eprintln!(
-                "Error: unrecognized model entry '{}'. Expected a number (DB model ID), \"base\", or \"random\".",
+                "Error: unrecognized model entry '{}'. Expected a number (DB model ID), \"base\", \"random\", or a file path (.gmlp/.nnue/.json).",
                 entry
             );
             std::process::exit(1);
