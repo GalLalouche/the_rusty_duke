@@ -131,16 +131,15 @@ fn label_position(gs: &GameState, evaluator: &CombinedWeights, depth: u32) -> f3
     negamax(&mut gs.clone(), evaluator, depth, &mut rng) as f32
 }
 
-/// Synthetic label: count legal moves for only duke + footman tiles (current player).
-/// Simpler than full my_moves since footmen have simple 4-directional movement
-/// and dukes have horizontal slides.
+/// Synthetic label: count moves for only duke + footman tiles (current player),
+/// ignoring guard. Same semantics as the my_moves feature (feature 4) but
+/// filtered to only the simplest piece types.
 fn synthetic_label(gs: &GameState) -> f32 {
     use duke_rust::game::board::PossibleMove;
     use duke_rust::game::tile::TileType;
     let owner = gs.current_player_turn();
     let mut count = 0u32;
-    let mut gs_clone = gs.clone();
-    for mv in gs_clone.all_valid_game_moves_for(owner) {
+    for mv in gs.all_valid_game_moves_for_ignoring_guard(owner) {
         if let PossibleMove::ApplyNonCommandTileAction { src, .. } = &mv {
             if let Some(tile) = gs.board().get(*src) {
                 if tile.tile_type == TileType::Duke || tile.tile_type == TileType::Footman {
