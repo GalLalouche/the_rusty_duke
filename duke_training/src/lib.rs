@@ -6,6 +6,7 @@ pub mod fc_model;
 pub mod fc_td_training;
 pub mod feature_cache;
 pub mod generic_mlp;
+pub mod halfda;
 pub mod learned_heuristic;
 pub mod loaded_model;
 pub mod match_runner;

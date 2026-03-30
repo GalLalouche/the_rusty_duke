@@ -76,3 +76,7 @@ path = "src/cnn_train.rs"
 [[bin]]
 name = "supervised_train_cnn"
 path = "src/supervised_train_cnn.rs"
+
+[[bin]]
+name = "halfda_train"
+path = "src/halfda_train.rs"
