@@ -1288,4 +1288,88 @@ mod test {
         let bot_tiles = board.get_tiles_for(Owner::BottomPlayer);
         assert_eq!(bot_tiles.len(), 1);
     }
+
+    // ── can_reach_square_ignoring_friendly ────────────────────────────
+
+    #[test]
+    fn can_reach_ignoring_friendly_duke_slide_to_friendly_square() {
+        // Duke (initial side) slides horizontally. Normally can't move to a
+        // friendly-occupied square, but ignoring_friendly should return true.
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 3, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+
+        // Duke at (0,0) slides right to (3,0) where friendly footman sits
+        assert!(board.can_reach_square_ignoring_friendly(
+            Coordinates { x: 0, y: 0 }, Coordinates { x: 3, y: 0 }),
+            "Duke should be able to reach friendly-occupied square ignoring friendly");
+    }
+
+    #[test]
+    fn can_reach_ignoring_friendly_blocked_by_intervening_piece() {
+        // Duke slide should still be blocked by an intervening piece
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 2, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+
+        // Duke at (0,0) tries to slide to (3,0) but footman at (2,0) blocks
+        assert!(!board.can_reach_square_ignoring_friendly(
+            Coordinates { x: 0, y: 0 }, Coordinates { x: 3, y: 0 }),
+            "Duke slide should be blocked by intervening piece even when ignoring friendly");
+    }
+
+    #[test]
+    fn can_reach_ignoring_friendly_footman_move_to_friendly() {
+        // Footman (initial side) has Move in 4 cardinal directions.
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 2, y: 2 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(Coordinates { x: 3, y: 2 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+
+        // Footman at (2,2) moves right to (3,2) where friendly duke sits
+        assert!(board.can_reach_square_ignoring_friendly(
+            Coordinates { x: 2, y: 2 }, Coordinates { x: 3, y: 2 }),
+            "Footman should reach friendly-occupied adjacent square");
+    }
+
+    #[test]
+    fn can_reach_ignoring_friendly_returns_false_for_empty_src() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+
+        assert!(!board.can_reach_square_ignoring_friendly(
+            Coordinates { x: 3, y: 3 }, Coordinates { x: 0, y: 0 }),
+            "Empty source should return false");
+    }
+
+    #[test]
+    fn can_reach_ignoring_friendly_returns_false_for_out_of_range() {
+        // Footman can only move 1 square, not 3
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(Coordinates { x: 0, y: 5 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+
+        assert!(!board.can_reach_square_ignoring_friendly(
+            Coordinates { x: 0, y: 0 }, Coordinates { x: 3, y: 0 }),
+            "Footman should not reach a square 3 away");
+    }
+
+    #[test]
+    fn can_reach_ignoring_friendly_champion_jump_over_friendly() {
+        // Champion (initial side) has Jump actions. Jumps ignore obstruction.
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 2, y: 2 }, PlacedTile::new(Owner::TopPlayer, TileType::Champion));
+        board.place(Coordinates { x: 2, y: 1 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        // Champion jumps to (2,0) — friendly at (2,1) doesn't block jump
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+
+        assert!(board.can_reach_square_ignoring_friendly(
+            Coordinates { x: 2, y: 2 }, Coordinates { x: 2, y: 0 }),
+            "Champion jump should reach (2,0) over friendly at (2,1)");
+    }
 }

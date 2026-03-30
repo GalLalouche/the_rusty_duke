@@ -194,4 +194,52 @@ mod tests {
             vec![TileType::Footman, TileType::Knight, TileType::Pikeman],
         );
     }
+
+    // ── remove_specific tests ────────────────────────────────────────
+
+    #[test]
+    fn remove_specific_removes_tile_and_returns_true() {
+        let mut bag = TileBag::new(vec![TileType::Footman, TileType::Knight, TileType::Pikeman]);
+        assert!(bag.remove_specific(TileType::Knight));
+        assert_eq!(bag.remaining().len(), 2);
+        assert!(!bag.remaining().contains(&TileType::Knight));
+    }
+
+    #[test]
+    fn remove_specific_returns_false_if_not_found() {
+        let mut bag = TileBag::new(vec![TileType::Footman, TileType::Knight]);
+        assert!(!bag.remove_specific(TileType::Pikeman));
+        assert_eq!(bag.remaining().len(), 2);
+    }
+
+    #[test]
+    fn remove_specific_removes_only_one_duplicate() {
+        let mut bag = TileBag::new(vec![TileType::Pikeman, TileType::Pikeman, TileType::Pikeman]);
+        assert!(bag.remove_specific(TileType::Pikeman));
+        assert_eq!(bag.remaining().len(), 2);
+        assert!(bag.remaining().iter().all(|t| *t == TileType::Pikeman));
+    }
+
+    #[test]
+    fn remove_specific_from_empty_bag_returns_false() {
+        let mut bag = TileBag::empty();
+        assert!(!bag.remove_specific(TileType::Footman));
+    }
+
+    // ── DiscardBag::remove tests ─────────────────────────────────────
+
+    #[test]
+    fn discard_bag_remove_existing_tile() {
+        let mut bag = DiscardBag::from_tiles(vec![TileType::Footman, TileType::Knight]);
+        bag.remove(TileType::Footman);
+        assert_eq!(bag.len(), 1);
+        assert_eq!(bag.existing(), &vec![TileType::Knight]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Tried to remove a tile from discard")]
+    fn discard_bag_remove_nonexistent_panics() {
+        let mut bag = DiscardBag::from_tiles(vec![TileType::Footman]);
+        bag.remove(TileType::Knight);
+    }
 }

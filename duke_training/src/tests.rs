@@ -3222,3 +3222,409 @@ fn export_weights_non_default_layer_sizes() {
     assert!((0.0..=1.0).contains(&score),
         "NNUE output should be in [0,1] due to sigmoid, got {}", score);
 }
+
+// ── encoding: specific tile position tests ──────────────────────────
+
+#[test]
+fn encoding_specific_tile_positions() {
+    use crate::encoding::{
+        active_board_features, bag_features, BOARD_FEATURES, BOARD_SIZE, NUM_TILE_TYPES,
+        BAG_FEATURES, TOTAL_FEATURES,
+    };
+    use duke_rust::game::bag::{DiscardBag, TileBag};
+    use duke_rust::game::tile::{Owner, PlacedTile, TileType};
+    use duke_rust::common::coordinates::Coordinates;
+
+    // Create a known board position via snapshot.
+    // TopPlayer: Duke at (3,0), Footman at (4,0)
+    // BottomPlayer: Duke at (3,5)
+    // Current turn: TopPlayer
+    let tiles = vec![
+        (Coordinates { x: 3, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+        (Coordinates { x: 4, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+        (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+    ];
+    let gs = GameState::from_snapshot(GameSnapshot {
+        tiles,
+        top_bag: TileBag::new(vec![]),
+        bottom_bag: TileBag::new(vec![]),
+        top_discard: DiscardBag::empty(),
+        bottom_discard: DiscardBag::empty(),
+        current_turn: Owner::TopPlayer,
+        idle_move_count: 0,
+    });
+
+    let feats = active_board_features(&gs);
+    let indices: Vec<usize> = feats.as_slice().to_vec();
+
+    // TopPlayer is current player -> "my" tiles go in planes 0..13
+    // Duke = type index 0, my plane = 0
+    // cell for (3,0) = 0 * 6 + 3 = 3
+    let duke_type_feat = 0 * BOARD_SIZE * BOARD_SIZE + 3;
+    assert!(indices.contains(&duke_type_feat),
+        "My duke at (3,0) should produce feature index {}, got {:?}", duke_type_feat, indices);
+
+    // Footman = type index 1, my plane = 1
+    // cell for (4,0) = 0 * 6 + 4 = 4
+    let footman_type_feat = 1 * BOARD_SIZE * BOARD_SIZE + 4;
+    assert!(indices.contains(&footman_type_feat),
+        "My footman at (4,0) should produce feature index {}", footman_type_feat);
+
+    // BottomPlayer Duke = type index 0, opponent plane = 0 + 13 = 13
+    // cell for (3,5) = 5 * 6 + 3 = 33
+    let opp_duke_feat = (0 + NUM_TILE_TYPES) * BOARD_SIZE * BOARD_SIZE + 33;
+    assert!(indices.contains(&opp_duke_feat),
+        "Opponent duke at (3,5) should produce feature index {}", opp_duke_feat);
+
+    // 3 tiles -> 6 features (2 per tile: type plane + side plane)
+    assert_eq!(feats.len(), 6,
+        "3 tiles should produce 6 active features, got {}", feats.len());
+
+    // All indices should be within BOARD_FEATURES
+    for &idx in feats.as_slice() {
+        assert!(idx < BOARD_FEATURES,
+            "Feature index {} exceeds BOARD_FEATURES {}", idx, BOARD_FEATURES);
+    }
+}
+
+#[test]
+fn encoding_bag_features_counts_correctly() {
+    use crate::encoding::{bag_features, NUM_TILE_TYPES};
+    use duke_rust::game::bag::{DiscardBag, TileBag};
+    use duke_rust::game::tile::{Owner, PlacedTile, TileType};
+    use duke_rust::common::coordinates::Coordinates;
+
+    // TopPlayer bag has 2 Footmen and 1 Knight, BottomPlayer bag has 1 Pikeman
+    let tiles = vec![
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+        (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+    ];
+    let gs = GameState::from_snapshot(GameSnapshot {
+        tiles,
+        top_bag: TileBag::new(vec![TileType::Footman, TileType::Footman, TileType::Knight]),
+        bottom_bag: TileBag::new(vec![TileType::Pikeman]),
+        top_discard: DiscardBag::empty(),
+        bottom_discard: DiscardBag::empty(),
+        current_turn: Owner::TopPlayer,
+        idle_move_count: 0,
+    });
+
+    let bag = bag_features(&gs);
+
+    // My (TopPlayer) bag: Footman(index 1) = 2, Knight(index 3) = 1
+    assert_eq!(bag[TileType::Footman.index()], 2.0, "my bag should have 2 footmen");
+    assert_eq!(bag[TileType::Knight.index()], 1.0, "my bag should have 1 knight");
+    assert_eq!(bag[TileType::Duke.index()], 0.0, "my bag should have 0 dukes");
+
+    // Opponent (BottomPlayer) bag: Pikeman(index 2) = 1
+    assert_eq!(bag[NUM_TILE_TYPES + TileType::Pikeman.index()], 1.0,
+        "opp bag should have 1 pikeman");
+    assert_eq!(bag[NUM_TILE_TYPES + TileType::Footman.index()], 0.0,
+        "opp bag should have 0 footmen");
+}
+
+#[test]
+fn encoding_no_duplicate_feature_indices() {
+    use crate::encoding::active_board_features;
+    use std::collections::HashSet;
+
+    // Play a few moves and verify no duplicate indices at each state
+    let gs = create_test_state();
+    let mut game = gs;
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(77);
+
+    for turn in 0..12 {
+        if game.game_result() != GameResult::Ongoing { break; }
+
+        let feats = active_board_features(&game);
+        let indices: Vec<usize> = feats.as_slice().to_vec();
+        let unique: HashSet<usize> = indices.iter().copied().collect();
+        assert_eq!(indices.len(), unique.len(),
+            "Turn {}: duplicate feature indices found: {:?}", turn, indices);
+
+        ai.play_next_move(&mut rng, &mut game);
+    }
+}
+
+// ── generic_mlp tests ───────────────────────────────────────────────
+
+#[test]
+fn generic_mlp_forward_f32_matches_sparse() {
+    use crate::generic_mlp::GenericMlp;
+    use crate::encoding::{TOTAL_FEATURES, encode_state_flat_into};
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(TOTAL_FEATURES, vec![64, 32], &mut rng);
+
+    let gs = create_test_state();
+
+    // forward_sparse (optimized path)
+    let sparse_out = net.forward_sparse(&gs, false);
+
+    // forward_f32 (dense path)
+    let mut dense_input = [0.0f32; TOTAL_FEATURES];
+    encode_state_flat_into(&gs, &mut dense_input);
+    let dense_out = net.forward_f32(&dense_input);
+
+    let diff = (sparse_out - dense_out).abs();
+    assert!(diff < 1e-5,
+        "forward_sparse ({}) should match forward_f32 ({}), diff={}", sparse_out, dense_out, diff);
+}
+
+#[test]
+fn generic_mlp_output_in_sigmoid_range() {
+    use crate::generic_mlp::GenericMlp;
+    use crate::encoding::TOTAL_FEATURES;
+
+    let mut rng = StdRng::seed_from_u64(99);
+    let net = GenericMlp::random(TOTAL_FEATURES, vec![64, 32], &mut rng);
+
+    // Test across multiple game states
+    let gs = create_test_state();
+    let mut game = gs;
+    let ai = StupidSyncAi {};
+
+    for _ in 0..10 {
+        if game.game_result() != GameResult::Ongoing { break; }
+        let score = net.forward_sparse(&game, false);
+        assert!((0.0..=1.0).contains(&score),
+            "GenericMlp output should be in [0,1] due to sigmoid, got {}", score);
+        ai.play_next_move(&mut rng, &mut game);
+    }
+}
+
+#[test]
+fn generic_mlp_param_count_matches_weights() {
+    use crate::generic_mlp::GenericMlp;
+
+    let hidden = vec![64, 32, 16];
+    let input_size = 100;
+    let expected = GenericMlp::param_count(input_size, &hidden);
+
+    let mut rng = StdRng::seed_from_u64(0);
+    let net = GenericMlp::random(input_size, hidden.clone(), &mut rng);
+    assert_eq!(net.weights.len(), expected,
+        "Weight vector length should match param_count");
+
+    // Manual calculation: 100*64+64 + 64*32+32 + 32*16+16 + 16+1 = 6400+64+2048+32+512+16+16+1 = 9089
+    let manual = 100*64 + 64 + 64*32 + 32 + 32*16 + 16 + 16 + 1;
+    assert_eq!(expected, manual, "param_count should match manual calculation");
+}
+
+#[test]
+fn generic_mlp_save_load_roundtrip_with_forward_check() {
+    use crate::generic_mlp::GenericMlp;
+    use crate::encoding::TOTAL_FEATURES;
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(TOTAL_FEATURES, vec![64, 32], &mut rng);
+
+    let path = format!("test_gmlp_fwd_roundtrip_{}.gmlp", std::process::id());
+    let _guard = TempFileGuard::new(&path);
+    net.save(&path).expect("save failed");
+    let loaded = GenericMlp::load(&path).expect("load failed");
+
+    assert_eq!(net.input_size, loaded.input_size);
+    assert_eq!(net.hidden_layers, loaded.hidden_layers);
+    assert_eq!(net.weights.len(), loaded.weights.len());
+
+    // Verify weights are identical
+    for i in 0..net.weights.len() {
+        assert_eq!(net.weights[i], loaded.weights[i],
+            "Weight mismatch at index {}", i);
+    }
+
+    // Verify forward pass produces identical output
+    let gs = create_test_state();
+    let out1 = net.forward_sparse(&gs, false);
+    let out2 = loaded.forward_sparse(&gs, false);
+    assert_eq!(out1, out2, "Loaded model should produce identical output");
+}
+
+#[test]
+fn generic_mlp_l1_accumulator_matches_full() {
+    use crate::generic_mlp::{GenericMlp, L1Accumulator};
+    use crate::encoding::TOTAL_FEATURES;
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(TOTAL_FEATURES, vec![64, 32], &mut rng);
+
+    let gs = create_test_state();
+
+    // Full forward
+    let full_out = net.forward_sparse(&gs, false);
+
+    // Via L1 accumulator
+    let acc = L1Accumulator::from_state(&net, &gs, false);
+    let acc_out = acc.forward(&net);
+
+    let diff = (full_out - acc_out).abs();
+    assert!(diff < 1e-5,
+        "L1Accumulator forward ({}) should match full forward ({}), diff={}",
+        acc_out, full_out, diff);
+}
+
+#[test]
+fn generic_mlp_l1_incremental_matches_full_rebuild() {
+    use crate::generic_mlp::{GenericMlp, L1Accumulator};
+    use crate::encoding::{active_board_features, bag_features, TOTAL_FEATURES};
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let net = GenericMlp::random(TOTAL_FEATURES, vec![64, 32], &mut rng);
+
+    let gs = create_test_state();
+    let ai = StupidSyncAi {};
+
+    // Build base accumulator and features
+    let base_acc = L1Accumulator::from_state(&net, &gs, false);
+    let base_board = active_board_features(&gs);
+    let base_bag = bag_features(&gs);
+
+    // Play a move
+    let mut gs2 = gs.clone();
+    ai.play_next_move(&mut rng, &mut gs2);
+
+    let new_board = active_board_features(&gs2);
+    let new_bag = bag_features(&gs2);
+
+    // Incremental update
+    let mut inc_acc = base_acc.clone();
+    inc_acc.update_features(&net, &base_board, &new_board, &base_bag, &new_bag, None, None);
+    let inc_out = inc_acc.forward(&net);
+
+    // Full rebuild
+    let full_acc = L1Accumulator::from_state(&net, &gs2, false);
+    let full_out = full_acc.forward(&net);
+
+    let diff = (inc_out - full_out).abs();
+    assert!(diff < 1e-4,
+        "Incremental L1 ({}) should match full rebuild ({}), diff={}",
+        inc_out, full_out, diff);
+}
+
+// ── negamax tests ───────────────────────────────────────────────────
+
+#[test]
+fn negamax_returns_terminal_score_for_won_position() {
+    use crate::game_setup::{negamax, StaticHeuristicEvaluator, TERMINAL_WIN_SCORE, TERMINAL_LOSS_SCORE};
+    use duke_rust::game::bag::{DiscardBag, TileBag};
+    use duke_rust::game::tile::{Owner, PlacedTile, TileType};
+    use duke_rust::common::coordinates::Coordinates;
+
+    // Create a position where TopPlayer's duke is captured (BottomPlayer wins).
+    // BottomPlayer footman at (0,1) can capture TopPlayer duke at (0,0).
+    // But actually we need a state where the game is already decided.
+    // Simplest: create a state where one player's duke is captured.
+    // We can do this by having BottomPlayer footman capture TopPlayer duke.
+    let tiles = vec![
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+        (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        (Coordinates { x: 0, y: 1 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+    ];
+    let mut gs = GameState::from_snapshot(GameSnapshot {
+        tiles,
+        top_bag: TileBag::new(vec![]),
+        bottom_bag: TileBag::new(vec![]),
+        top_discard: DiscardBag::empty(),
+        bottom_discard: DiscardBag::empty(),
+        current_turn: Owner::BottomPlayer,
+        idle_move_count: 0,
+    });
+
+    // BottomPlayer footman captures TopPlayer duke
+    gs.make_a_move(duke_rust::game::state::GameMove::ApplyNonCommandTileAction {
+        src: Coordinates { x: 0, y: 1 },
+        dst: Coordinates { x: 0, y: 0 },
+    }, &mut StdRng::seed_from_u64(0));
+
+    // Now it's TopPlayer's turn, but the game is won by BottomPlayer.
+    assert!(matches!(gs.game_result(), GameResult::Won(Owner::BottomPlayer)));
+
+    let evaluator = StaticHeuristicEvaluator::new();
+    let mut rng = StdRng::seed_from_u64(0);
+    // From TopPlayer's perspective (current player), this is a loss
+    let score = negamax(&gs, &evaluator, 3, &mut rng);
+    assert_eq!(score, TERMINAL_LOSS_SCORE,
+        "Negamax should return TERMINAL_LOSS_SCORE for a lost position, got {}", score);
+}
+
+#[test]
+fn negamax_depth_0_returns_static_eval() {
+    use crate::game_setup::{negamax, StaticHeuristicEvaluator, GameEvaluator};
+
+    let evaluator = StaticHeuristicEvaluator::new();
+    let gs = create_test_state();
+    let mut rng = StdRng::seed_from_u64(0);
+
+    let score_d0 = negamax(&gs, &evaluator, 0, &mut rng);
+    let static_eval = evaluator.evaluate(&gs) as f64;
+
+    assert_eq!(score_d0, static_eval,
+        "Negamax at depth 0 ({}) should equal static eval ({})", score_d0, static_eval);
+}
+
+#[test]
+fn negamax_finds_forced_capture() {
+    use crate::game_setup::{greedy_move_deep, StaticHeuristicEvaluator};
+    use duke_rust::game::bag::{DiscardBag, TileBag};
+    use duke_rust::game::tile::{Owner, PlacedTile, TileType};
+    use duke_rust::common::coordinates::Coordinates;
+    use duke_rust::game::ai::player::AiMove;
+
+    // TopPlayer footman at (3,4) can capture BottomPlayer duke at (3,5).
+    // This is a forced win in 1 move.
+    let tiles = vec![
+        (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+        (Coordinates { x: 3, y: 4 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+        (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+    ];
+    let gs = GameState::from_snapshot(GameSnapshot {
+        tiles,
+        top_bag: TileBag::new(vec![]),
+        bottom_bag: TileBag::new(vec![]),
+        top_discard: DiscardBag::empty(),
+        bottom_discard: DiscardBag::empty(),
+        current_turn: Owner::TopPlayer,
+        idle_move_count: 0,
+    });
+
+    let evaluator = StaticHeuristicEvaluator::new();
+    let mut rng = StdRng::seed_from_u64(42);
+    let best = greedy_move_deep(&gs, &evaluator, 1, &mut rng);
+
+    // The best move should capture the enemy duke
+    match &best {
+        AiMove::ApplyNonCommandTileAction { src, dst, capturing } => {
+            assert_eq!(*dst, Coordinates { x: 3, y: 5 },
+                "Best move should capture duke at (3,5), but moves to {:?}", dst);
+            assert!(capturing.is_some(),
+                "Move should be a capture");
+        }
+        other => panic!("Expected ApplyNonCommandTileAction to capture duke, got {:?}", other),
+    }
+}
+
+// ── encoding: encode_state_flat_into correctness ────────────────────
+
+#[test]
+fn encode_state_flat_into_zeroes_previous_data() {
+    use crate::encoding::{encode_state_flat_into, TOTAL_FEATURES};
+
+    let gs = create_test_state();
+
+    // Fill buffer with junk
+    let mut buf = [999.0f32; TOTAL_FEATURES];
+    encode_state_flat_into(&gs, &mut buf);
+
+    // No entry should remain at 999.0
+    for (i, &val) in buf.iter().enumerate() {
+        assert_ne!(val, 999.0,
+            "encode_state_flat_into should have overwritten index {}", i);
+    }
+
+    // Most values should be 0.0 (sparse encoding)
+    let nonzero_count = buf.iter().filter(|&&v| v != 0.0).count();
+    assert!(nonzero_count < 100,
+        "Sparse encoding should have few nonzero entries, got {}", nonzero_count);
+}
