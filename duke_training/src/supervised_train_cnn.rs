@@ -285,7 +285,8 @@ fn main() {
                  [--fc-sizes 128] [--kernel box|diamond|cross] [--lr 0.001] \
                  [--epochs 10] [--batch-size 256] [--label-index 0] \
                  [--eval-interval 50000] [--eval-games 500] [--benchmark base,random] \
-                 [--checkpoint-dir D:/temp/supervised_cnn] [--seed 42]"
+                 [--checkpoint-dir D:/temp/supervised_cnn] [--seed 42] \
+                 [--max-positions N]"
             );
             std::process::exit(1);
         });
@@ -324,10 +325,11 @@ fn main() {
     let benchmark_str: String = parse_flag(&args, "--benchmark")
         .unwrap_or_else(|| "base,random".to_string());
     let benchmark_specs: Vec<String> = benchmark_str.split(',').map(|s| s.trim().to_string()).collect();
+    let max_positions: Option<usize> = parse_flag(&args, "--max-positions");
 
     // Print configuration
     eprintln!("=== Supervised CNN Training ===");
-    let (positions, _label_min, _label_max) = load_lpos(&input_path, label_index);
+    let (mut positions, _label_min, _label_max) = load_lpos(&input_path, label_index);
 
     let input_channels = duke_training::encoding::NUM_BOARD_PLANES;
     let board_size = duke_training::encoding::BOARD_SIZE;
@@ -351,9 +353,20 @@ fn main() {
     eprintln!("  Benchmark:      {:?}", benchmark_specs);
     eprintln!("  Checkpoint dir: {}", checkpoint_dir);
     eprintln!("  Seed:           {}", seed);
+    if let Some(max) = max_positions {
+        eprintln!("  Max positions:  {}", max);
+    }
     eprintln!();
 
     std::fs::create_dir_all(&checkpoint_dir).expect("Failed to create checkpoint directory");
+
+    // Optionally truncate to --max-positions
+    if let Some(max) = max_positions {
+        if positions.len() > max {
+            eprintln!("Truncating {} positions to {} ...", positions.len(), max);
+            positions.truncate(max);
+        }
+    }
     let num_positions = positions.len();
 
     // Build weighted index array
