@@ -35,10 +35,9 @@ use duke_training::encoding::{
     active_board_features, bag_features as compute_bag_features, BAG_FEATURES, BOARD_FEATURES,
     BOARD_SIZE, NUM_BOARD_PLANES,
 };
-use duke_training::game_setup::{create_bag, create_initial_state, GameEvaluator};
-use duke_training::loaded_model::LoadedModel;
-use duke_training::match_runner::{run_matches, win_rate, Player};
-use duke_training::supervised_common::{LabeledPosition, LABEL_CLAMP, label_to_target, load_lpos};
+use duke_training::game_setup::GameEvaluator;
+use duke_training::match_runner::Player;
+use duke_training::supervised_common::{LabeledPosition, LABEL_CLAMP, label_to_target, load_lpos, run_benchmark};
 
 use duke_rust::game::state::GameState;
 
@@ -161,9 +160,6 @@ fn evaluate_model(
     benchmark_specs: &[String],
     eval_games: u32,
 ) {
-    let bag = create_bag();
-    let gs = create_initial_state(&bag);
-
     // Convert autodiff model to inner (inference) model
     use burn::module::AutodiffModule;
     let inner_model = model.clone().valid();
@@ -174,28 +170,7 @@ fn evaluate_model(
         device: inner_device,
     };
     let model_player = Player::Evaluator(&evaluator);
-
-    for spec in benchmark_specs {
-        let opponent = LoadedModel::from_spec(spec, false);
-        let opp_player = opponent.as_player();
-        let label = &opponent.label;
-        let result = run_matches(
-            &gs,
-            &model_player,
-            &opp_player,
-            eval_games,
-            &format!("vs {}", label),
-        );
-        let wr = win_rate(result.player_a_wins, result.ties, eval_games);
-        eprintln!(
-            "  vs {}: {:.1}% win rate ({} W / {} L / {} T)",
-            label,
-            wr * 100.0,
-            result.player_a_wins,
-            result.player_b_wins,
-            result.ties,
-        );
-    }
+    run_benchmark(&model_player, benchmark_specs, eval_games);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────

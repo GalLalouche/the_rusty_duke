@@ -23,12 +23,11 @@ use rand::SeedableRng;
 
 use duke_training::cli::parse_flag;
 use duke_training::encoding::{BOARD_FEATURES, BAG_FEATURES, TOTAL_FEATURES};
-use duke_training::game_setup::{create_bag, create_initial_state};
 use duke_training::generic_mlp::{GenericMlp, GenericEvaluator, MAX_HIDDEN};
-use duke_training::loaded_model::LoadedModel;
-use duke_training::match_runner::{run_matches, win_rate, Player};
+use duke_training::match_runner::Player;
 use duke_training::supervised_common::{
     AdamState, LabeledPosition, LABEL_CLAMP, build_weighted_indices, label_to_target, load_lpos,
+    run_benchmark,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -466,37 +465,13 @@ fn evaluate_model(
     benchmark_specs: &[String],
     eval_games: u32,
 ) {
-    let bag = create_bag();
-    let gs = create_initial_state(&bag);
-
     let model_eval = GenericEvaluator { net: GenericMlp::from_flat(
         net.weights.clone(),
         net.input_size,
         net.hidden_layers.clone(),
     )};
     let model_player = Player::Evaluator(&model_eval);
-
-    for spec in benchmark_specs {
-        let opponent = LoadedModel::from_spec(spec, false);
-        let opp_player = opponent.as_player();
-        let label = &opponent.label;
-        let result = run_matches(
-            &gs,
-            &model_player,
-            &opp_player,
-            eval_games,
-            &format!("vs {}", label),
-        );
-        let wr = win_rate(result.player_a_wins, result.ties, eval_games);
-        eprintln!(
-            "  vs {}: {:.1}% win rate ({} W / {} L / {} T)",
-            label,
-            wr * 100.0,
-            result.player_a_wins,
-            result.player_b_wins,
-            result.ties,
-        );
-    }
+    run_benchmark(&model_player, benchmark_specs, eval_games);
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────

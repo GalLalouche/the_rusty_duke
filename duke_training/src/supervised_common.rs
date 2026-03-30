@@ -6,6 +6,9 @@
 use std::time::Instant;
 
 use crate::encoding::BAG_FEATURES;
+use crate::game_setup::{create_bag, create_initial_state};
+use crate::loaded_model::LoadedModel;
+use crate::match_runner::{run_matches, win_rate, Player};
 
 // ── Labeled position data ────────────────────────────────────────────────
 
@@ -294,5 +297,43 @@ pub fn build_weighted_indices(positions: &[LabeledPosition]) -> (Vec<u32>, usize
         }
         let len = indices.len();
         (indices, len)
+    }
+}
+
+// ── Benchmark evaluation ─────────────────────────────────────────────────
+
+/// Run benchmark matches between a model player and a set of opponent specs.
+///
+/// Plays `eval_games` matches against each opponent specified in `benchmark_specs`
+/// and prints win rates to stderr. The `model_player` should be a `Player::Evaluator`
+/// wrapping the model under test.
+pub fn run_benchmark(
+    model_player: &Player<'_>,
+    benchmark_specs: &[String],
+    eval_games: u32,
+) {
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    for spec in benchmark_specs {
+        let opponent = LoadedModel::from_spec(spec, false);
+        let opp_player = opponent.as_player();
+        let label = &opponent.label;
+        let result = run_matches(
+            &gs,
+            model_player,
+            &opp_player,
+            eval_games,
+            &format!("vs {}", label),
+        );
+        let wr = win_rate(result.player_a_wins, result.ties, eval_games);
+        eprintln!(
+            "  vs {}: {:.1}% win rate ({} W / {} L / {} T)",
+            label,
+            wr * 100.0,
+            result.player_a_wins,
+            result.player_b_wins,
+            result.ties,
+        );
     }
 }

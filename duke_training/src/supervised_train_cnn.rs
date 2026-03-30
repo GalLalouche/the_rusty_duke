@@ -25,11 +25,10 @@ use rand::SeedableRng;
 use duke_training::cli::parse_flag;
 use duke_training::cnn::{apply_diamond_mask, CnnEvaluator, CnnModel, KernelType};
 use duke_training::encoding::BAG_FEATURES;
-use duke_training::game_setup::{create_bag, create_initial_state};
-use duke_training::loaded_model::LoadedModel;
-use duke_training::match_runner::{run_matches, win_rate, Player};
+use duke_training::match_runner::Player;
 use duke_training::supervised_common::{
     AdamState, LabeledPosition, LABEL_CLAMP, build_weighted_indices, label_to_target, load_lpos,
+    run_benchmark,
 };
 
 // ── Evaluation ───────────────────────────────────────────────────────────
@@ -39,9 +38,6 @@ fn evaluate_model(
     benchmark_specs: &[String],
     eval_games: u32,
 ) {
-    let bag = create_bag();
-    let gs = create_initial_state(&bag);
-
     // Clone the model for evaluation
     let eval_model = CnnModel {
         kernel_type: model.kernel_type,
@@ -54,28 +50,7 @@ fn evaluate_model(
     };
     let model_eval = CnnEvaluator { model: eval_model };
     let model_player = Player::Evaluator(&model_eval);
-
-    for spec in benchmark_specs {
-        let opponent = LoadedModel::from_spec(spec, false);
-        let opp_player = opponent.as_player();
-        let label = &opponent.label;
-        let result = run_matches(
-            &gs,
-            &model_player,
-            &opp_player,
-            eval_games,
-            &format!("vs {}", label),
-        );
-        let wr = win_rate(result.player_a_wins, result.ties, eval_games);
-        eprintln!(
-            "  vs {}: {:.1}% win rate ({} W / {} L / {} T)",
-            label,
-            wr * 100.0,
-            result.player_a_wins,
-            result.player_b_wins,
-            result.ties,
-        );
-    }
+    run_benchmark(&model_player, benchmark_specs, eval_games);
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
