@@ -496,7 +496,7 @@ impl GameBoard {
     }
 
     pub(super) fn make_a_move(&mut self, gm: BoardMove) -> Option<PlacedTile> {
-        match gm {
+        let result = match gm {
             BoardMove::PlaceNewTile(tile_type, duke_offset, owner) => {
                 let c = self.absolute_duke_offset(duke_offset, self.duke_coordinates(owner))
                     .expect("Request duke location is out of bounds");
@@ -553,7 +553,19 @@ impl GameBoard {
             //     self.flip(commander_src);
             //     self.board.mv(unit_src, unit_dst);
             // }
-        }
+        };
+        // Verify duke cache is consistent after make_a_move.
+        debug_assert_eq!(
+            self.duke_cache[Self::owner_index(Owner::TopPlayer)],
+            self.board.find(|t| t.owner == Owner::TopPlayer && t.tile_type.is_duke()),
+            "Duke cache inconsistent for TopPlayer after make_a_move",
+        );
+        debug_assert_eq!(
+            self.duke_cache[Self::owner_index(Owner::BottomPlayer)],
+            self.board.find(|t| t.owner == Owner::BottomPlayer && t.tile_type.is_duke()),
+            "Duke cache inconsistent for BottomPlayer after make_a_move",
+        );
+        result
     }
 
     pub fn get_tiles_for(&self, o: Owner) -> impl Iterator<Item = (Coordinates, &PlacedTile)> {
@@ -759,7 +771,7 @@ impl GameBoard {
     // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,
     // undoing the action would remove the new tile from the board.
     pub fn undo(&mut self, mv: PossibleMove) -> Option<PlacedTile> {
-        match mv {
+        let result = match mv {
             PossibleMove::PlaceNewTile(offset, owner) => {
                 let duke_pos = self.duke_coordinates(owner);
                 let absolute_coordinate = self
@@ -786,7 +798,19 @@ impl GameBoard {
                 }
                 None
             }
-        }
+        };
+        // Verify duke cache is consistent after undo.
+        debug_assert_eq!(
+            self.duke_cache[Self::owner_index(Owner::TopPlayer)],
+            self.board.find(|t| t.owner == Owner::TopPlayer && t.tile_type.is_duke()),
+            "Duke cache inconsistent for TopPlayer after undo",
+        );
+        debug_assert_eq!(
+            self.duke_cache[Self::owner_index(Owner::BottomPlayer)],
+            self.board.find(|t| t.owner == Owner::BottomPlayer && t.tile_type.is_duke()),
+            "Duke cache inconsistent for BottomPlayer after undo",
+        );
+        result
     }
 
     pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {

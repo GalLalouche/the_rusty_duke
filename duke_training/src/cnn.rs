@@ -52,7 +52,7 @@ pub fn diamond_mask_5x5() -> [bool; 25] {
 
 /// Precomputed list of (ky, kx, flat_index) for the 13 active diamond positions.
 /// Avoids checking the mask in inner loops.
-const DIAMOND_OFFSETS: [(i32, i32, usize); 13] = [
+pub(crate) const DIAMOND_OFFSETS: [(i32, i32, usize); 13] = [
     (0, 2, 2),
     (1, 1, 6),
     (1, 2, 7),

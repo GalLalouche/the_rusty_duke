@@ -3628,3 +3628,260 @@ fn encode_state_flat_into_zeroes_previous_data() {
     assert!(nonzero_count < 100,
         "Sparse encoding should have few nonzero entries, got {}", nonzero_count);
 }
+
+// ── Serialization roundtrip tests ────────────────────────────────────
+
+#[test]
+fn serialization_write_read_roundtrip_all_variants() {
+    use crate::serialization::{write_result, read_result};
+
+    let variants = [
+        GameResult::Won(Owner::TopPlayer),
+        GameResult::Won(Owner::BottomPlayer),
+        GameResult::Tie,
+        GameResult::Ongoing,
+    ];
+
+    for &expected in &variants {
+        let mut buf = Vec::new();
+        write_result(&mut buf, &expected).expect("write failed");
+        assert_eq!(buf.len(), 1, "GameResult should be encoded as 1 byte");
+
+        let mut cursor = &buf[..];
+        let got = read_result(&mut cursor).expect("read failed");
+        assert_eq!(expected, got, "roundtrip failed for {:?}", expected);
+    }
+}
+
+// ── Encoding edge case tests ─────────────────────────────────────────
+
+#[test]
+fn encoding_no_duplicate_board_features() {
+    // Play a few moves and verify no duplicate indices in active_board_features
+    use crate::encoding::active_board_features;
+    let gs = create_test_state();
+    let mut game = gs;
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(77);
+
+    for _ in 0..12 {
+        if game.game_result() != GameResult::Ongoing { break; }
+
+        let features = active_board_features(&game);
+        let mut seen = std::collections::HashSet::new();
+        for &idx in features.as_slice() {
+            assert!(seen.insert(idx),
+                "Duplicate board feature index: {}", idx);
+        }
+
+        // Each tile produces exactly 2 features (type plane + side plane)
+        let board_tiles = game.board().active_coordinates().count();
+        assert_eq!(features.len(), board_tiles * 2,
+            "Expected {} features for {} tiles, got {}",
+            board_tiles * 2, board_tiles, features.len());
+
+        ai.play_next_move(&mut rng, &mut game);
+    }
+}
+
+#[test]
+fn encoding_board_feature_indices_within_bounds() {
+    use crate::encoding::{active_board_features, BOARD_FEATURES};
+    let gs = create_test_state();
+    let mut game = gs;
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(99);
+
+    for _ in 0..10 {
+        if game.game_result() != GameResult::Ongoing { break; }
+
+        let features = active_board_features(&game);
+        for &idx in features.as_slice() {
+            assert!(idx < BOARD_FEATURES,
+                "Board feature index {} out of bounds (max {})", idx, BOARD_FEATURES);
+        }
+
+        ai.play_next_move(&mut rng, &mut game);
+    }
+}
+
+#[test]
+fn encoding_minimal_board_two_dukes_only() {
+    // Minimal board: just two dukes, no other pieces
+    use crate::encoding::{active_board_features, bag_features, BAG_FEATURES};
+    let gs = GameState::from_snapshot(GameSnapshot {
+        tiles: vec![
+            (duke_rust::common::coordinates::Coordinates { x: 0, y: 0 },
+             duke_rust::game::tile::PlacedTile::new(Owner::TopPlayer, duke_rust::game::tile::TileType::Duke)),
+            (duke_rust::common::coordinates::Coordinates { x: 5, y: 5 },
+             duke_rust::game::tile::PlacedTile::new(Owner::BottomPlayer, duke_rust::game::tile::TileType::Duke)),
+        ],
+        current_turn: Owner::TopPlayer,
+        top_bag: duke_rust::game::bag::TileBag::new(vec![]),
+        bottom_bag: duke_rust::game::bag::TileBag::new(vec![]),
+        top_discard: duke_rust::game::bag::DiscardBag::empty(),
+        bottom_discard: duke_rust::game::bag::DiscardBag::empty(),
+        idle_move_count: 0,
+    });
+
+    let features = active_board_features(&gs);
+    // 2 dukes * 2 features each = 4
+    assert_eq!(features.len(), 4, "Two dukes should produce 4 features, got {}", features.len());
+
+    let bag = bag_features(&gs);
+    // Empty bags -> all zeros
+    assert!(bag.iter().all(|&v| v == 0.0),
+        "Empty bags should produce all-zero bag features");
+}
+
+// ── CNN diamond mask consistency test ────────────────────────────────
+
+#[test]
+fn diamond_mask_matches_precomputed_offsets() {
+    use crate::cnn::{diamond_mask_5x5, DIAMOND_OFFSETS};
+    let mask = diamond_mask_5x5();
+
+    // Verify DIAMOND_OFFSETS lists exactly the active mask positions
+    let active_from_mask: Vec<(i32, i32, usize)> = (0..5i32)
+        .flat_map(|dy| (0..5i32).map(move |dx| (dy, dx)))
+        .filter(|&(dy, dx)| mask[(dy * 5 + dx) as usize])
+        .map(|(dy, dx)| (dy, dx, (dy * 5 + dx) as usize))
+        .collect();
+
+    assert_eq!(active_from_mask.len(), DIAMOND_OFFSETS.len(),
+        "DIAMOND_OFFSETS has {} entries but mask has {} active positions",
+        DIAMOND_OFFSETS.len(), active_from_mask.len());
+
+    for (expected, &actual) in active_from_mask.iter().zip(DIAMOND_OFFSETS.iter()) {
+        assert_eq!(*expected, actual,
+            "DIAMOND_OFFSETS mismatch: expected {:?}, got {:?}", expected, actual);
+    }
+}
+
+#[test]
+fn diamond_mask_has_13_active_positions() {
+    use crate::cnn::diamond_mask_5x5;
+    let mask = diamond_mask_5x5();
+    let active = mask.iter().filter(|&&b| b).count();
+    assert_eq!(active, 13, "Diamond mask should have 13 active positions, got {}", active);
+}
+
+#[test]
+fn diamond_mask_is_symmetric() {
+    use crate::cnn::diamond_mask_5x5;
+    let mask = diamond_mask_5x5();
+    // Horizontal symmetry
+    for y in 0..5 {
+        for x in 0..5 {
+            assert_eq!(mask[y * 5 + x], mask[y * 5 + (4 - x)],
+                "Diamond mask not horizontally symmetric at ({}, {})", y, x);
+        }
+    }
+    // Vertical symmetry
+    for y in 0..5 {
+        for x in 0..5 {
+            assert_eq!(mask[y * 5 + x], mask[(4 - y) * 5 + x],
+                "Diamond mask not vertically symmetric at ({}, {})", y, x);
+        }
+    }
+}
+
+// ── GenericMlp tests ─────────────────────────────────────────────────
+
+#[test]
+fn generic_mlp_forward_output_is_sigmoid() {
+    use crate::encoding::TOTAL_FEATURES;
+    use crate::generic_mlp::GenericMlp;
+    let mut rng = StdRng::seed_from_u64(42);
+    let mlp = GenericMlp::random(TOTAL_FEATURES, vec![32, 16], &mut rng);
+
+    // Evaluate on initial state
+    let gs = create_test_state();
+    let output = mlp.forward_sparse(&gs, false);
+    assert!(output > 0.0 && output < 1.0,
+        "MLP output should be in (0,1) for initial state, got {}", output);
+
+    // Evaluate on minimal state
+    let gs2 = create_small_state();
+    let output2 = mlp.forward_sparse(&gs2, false);
+    assert!(output2 > 0.0 && output2 < 1.0,
+        "MLP output should be in (0,1) for small state, got {}", output2);
+}
+
+#[test]
+fn generic_mlp_param_count_matches_weight_vector() {
+    use crate::generic_mlp::GenericMlp;
+    let configs = vec![
+        (100, vec![32]),
+        (100, vec![64, 32]),
+        (1106, vec![256, 32]),
+        (50, vec![16, 8, 4]),
+    ];
+    let mut rng = StdRng::seed_from_u64(42);
+    for (input_size, hidden_layers) in configs {
+        let expected = GenericMlp::param_count(input_size, &hidden_layers);
+        let mlp = GenericMlp::random(input_size, hidden_layers.clone(), &mut rng);
+        assert_eq!(mlp.weights.len(), expected,
+            "Param count mismatch for input={}, hidden={:?}: expected {}, got {}",
+            input_size, hidden_layers, expected, mlp.weights.len());
+    }
+}
+
+// ── Negamax terminal position tests ──────────────────────────────────
+
+#[test]
+fn negamax_depth0_returns_evaluator_score() {
+    use crate::game_setup::{negamax, GameEvaluator, StaticHeuristicEvaluator};
+    let evaluator = StaticHeuristicEvaluator::new();
+    let bag = create_bag();
+    let mut gs = create_initial_state(&bag);
+    let mut rng = StdRng::seed_from_u64(42);
+
+    let score = negamax(&mut gs, &evaluator, 0, &mut rng);
+    let direct = evaluator.evaluate(&gs) as f64;
+    assert!((score - direct).abs() < 1e-6,
+        "negamax depth=0 should return evaluator score: {} vs {}", score, direct);
+}
+
+#[test]
+fn game_result_target_values() {
+    use crate::game_setup::game_result_target;
+    assert_eq!(game_result_target(GameResult::Won(Owner::TopPlayer), Owner::TopPlayer), Some(1.0));
+    assert_eq!(game_result_target(GameResult::Won(Owner::TopPlayer), Owner::BottomPlayer), Some(-1.0));
+    assert_eq!(game_result_target(GameResult::Won(Owner::BottomPlayer), Owner::TopPlayer), Some(-1.0));
+    assert_eq!(game_result_target(GameResult::Won(Owner::BottomPlayer), Owner::BottomPlayer), Some(1.0));
+    assert_eq!(game_result_target(GameResult::Tie, Owner::TopPlayer), Some(0.0));
+    assert_eq!(game_result_target(GameResult::Ongoing, Owner::TopPlayer), None);
+}
+
+// ── NNUE weight save/load preserves evaluation ───────────────────────
+
+#[test]
+fn nnue_weights_roundtrip_preserves_evaluation() {
+    use burn::backend::NdArray;
+
+    let device = Default::default();
+    let model = FcValueNetwork::<NdArray>::new(&device, &[DEFAULT_L1, DEFAULT_L2]);
+    let weights = export_weights(&model, DEFAULT_L1, DEFAULT_L2);
+    let evaluator_before = NnueEvaluator::new(weights.clone());
+
+    let path = format!("test_nnue_eval_roundtrip_{}.nnue", std::process::id());
+    let _guard = TempFileGuard::new(&path);
+    weights.save(&path).expect("save failed");
+    let loaded = NnueWeights::load(&path).expect("load failed");
+    let evaluator_after = NnueEvaluator::new(loaded);
+
+    // Evaluate on multiple states and verify exact match
+    let mut game = create_test_state();
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(0);
+
+    for turn in 0..8 {
+        if game.game_result() != GameResult::Ongoing { break; }
+        let before = evaluator_before.evaluate_state(&game);
+        let after = evaluator_after.evaluate_state(&game);
+        assert!((before - after).abs() < 1e-6,
+            "Turn {}: evaluation changed after save/load: {} vs {}", turn, before, after);
+        ai.play_next_move(&mut rng, &mut game);
+    }
+}

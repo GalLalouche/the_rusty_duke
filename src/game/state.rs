@@ -270,6 +270,8 @@ impl GameState {
         if self.is_waiting_for_tile_placement() {
             self.pulled_tile = None
         }
+        debug_assert!(!self.moves_without_capture_or_placement_stack.is_empty(),
+            "moves_without_capture_or_placement_stack should never be empty after make_a_move");
     }
 
     fn game_move_to_board_move(&self, gm: &GameMove) -> BoardMove {
@@ -1045,5 +1047,213 @@ mod tests {
         assert!(discard.contains(&TileType::Knight));
         // TopPlayer didn't lose any
         assert_eq!(gs.player_1_discard().len(), 0);
+    }
+
+    // ── Make/undo symmetry and invariant tests ───────────────────────
+
+    /// Play every legal non-placement move and undo it, verifying state is restored exactly.
+    /// (Placement moves use swap_remove in the bag, so bag element order may change
+    /// after pull+undo. This is semantically correct since bag order is irrelevant
+    /// for random draws, but causes PartialEq to fail.)
+    #[test]
+    fn undo_symmetry_every_non_placement_move_from_initial_position() {
+        let bag = TileBag::new(vec![TileType::Knight, TileType::Pikeman, TileType::Champion]);
+        let gs = GameState::new(
+            &bag,
+            (DukeInitialLocation::Left, FootmenSetup::Left),
+            (DukeInitialLocation::Right, FootmenSetup::Right),
+        );
+        let mut gs_mut = gs.clone();
+        let moves: Vec<PossibleMove> = gs_mut.all_valid_game_moves_for_current_player().collect();
+        assert!(!moves.is_empty(), "Initial position should have legal moves");
+
+        for mv in &moves {
+            // Skip placement moves (bag ordering is not preserved by swap_remove + push)
+            if matches!(mv, PossibleMove::PlaceNewTile(..)) {
+                continue;
+            }
+            let gm: GameMove = mv.into();
+            let undo = gs_mut.to_undo(&gm);
+            gs_mut.make_a_move(gm, &mut test_rng());
+            gs_mut.undo(undo);
+            assert_eq!(gs, gs_mut, "State not restored after undo of {:?}", mv);
+        }
+    }
+
+    /// Play every legal placement move and undo it, verifying board and discard piles
+    /// are restored (bag ordering may differ due to swap_remove, so we compare sorted bags).
+    #[test]
+    fn undo_symmetry_placement_moves_restore_board_and_sorted_bag() {
+        let bag = TileBag::new(vec![TileType::Knight, TileType::Pikeman, TileType::Champion]);
+        let gs = GameState::new(
+            &bag,
+            (DukeInitialLocation::Left, FootmenSetup::Left),
+            (DukeInitialLocation::Right, FootmenSetup::Right),
+        );
+        let mut gs_mut = gs.clone();
+        let moves: Vec<PossibleMove> = gs_mut.all_valid_game_moves_for_current_player().collect();
+
+        for mv in &moves {
+            if !matches!(mv, PossibleMove::PlaceNewTile(..)) {
+                continue;
+            }
+            let gm: GameMove = mv.into();
+            let undo = gs_mut.to_undo(&gm);
+            gs_mut.make_a_move(gm, &mut test_rng());
+            gs_mut.undo(undo);
+            // Board and discard should match exactly
+            assert_eq!(gs.board(), gs_mut.board(), "Board not restored after undo of {:?}", mv);
+            assert_eq!(gs.player_1_discard(), gs_mut.player_1_discard());
+            assert_eq!(gs.player_2_discard(), gs_mut.player_2_discard());
+            assert_eq!(gs.current_player_turn(), gs_mut.current_player_turn());
+            // Bag contents should be the same (order may differ)
+            let mut expected_bag: Vec<TileType> = gs.top_player_bag().remaining().clone();
+            expected_bag.sort_by_key(|t| t.index());
+            let mut actual_bag: Vec<TileType> = gs_mut.top_player_bag().remaining().clone();
+            actual_bag.sort_by_key(|t| t.index());
+            assert_eq!(expected_bag, actual_bag, "Bag contents differ after undo of {:?}", mv);
+            // Reset for next iteration
+            gs_mut = gs.clone();
+        }
+    }
+
+    /// Play multiple moves then undo all, verifying full roundtrip.
+    #[test]
+    fn undo_chain_restores_original_state() {
+        let bag = TileBag::new(vec![TileType::Knight]);
+        let gs = GameState::new(
+            &bag,
+            (DukeInitialLocation::Right, FootmenSetup::Sides),
+            (DukeInitialLocation::Left, FootmenSetup::Right),
+        );
+        let mut gs_mut = gs.clone();
+        let mut undo_stack: Vec<PossibleMove> = Vec::new();
+
+        // Play 4 moves
+        for _ in 0..4 {
+            let moves: Vec<PossibleMove> = gs_mut.all_valid_game_moves_for_current_player().collect();
+            let mv = moves.first().expect("Should have moves").clone();
+            let gm: GameMove = (&mv).into();
+            let undo = gs_mut.to_undo(&gm);
+            gs_mut.make_a_move(gm, &mut test_rng());
+            undo_stack.push(undo);
+        }
+
+        // Undo all 4
+        while let Some(undo) = undo_stack.pop() {
+            gs_mut.undo(undo);
+        }
+
+        assert_eq!(gs, gs_mut, "State not restored after undoing all moves");
+    }
+
+    /// After every legal move, the total tile count (board + bags + discards)
+    /// should remain constant.
+    #[test]
+    fn tile_count_invariant_after_moves() {
+        let bag = TileBag::new(vec![TileType::Knight, TileType::Pikeman]);
+        let mut gs = GameState::new(
+            &bag,
+            (DukeInitialLocation::Left, FootmenSetup::Left),
+            (DukeInitialLocation::Right, FootmenSetup::Right),
+        );
+
+        let count_all_tiles = |gs: &GameState| -> usize {
+            let board_tiles = gs.board().active_coordinates().count();
+            let top_bag = gs.top_player_bag().remaining().len();
+            let bot_bag = gs.bottom_player_bag().remaining().len();
+            let top_dis = gs.player_1_discard().len();
+            let bot_dis = gs.player_2_discard().len();
+            board_tiles + top_bag + bot_bag + top_dis + bot_dis
+        };
+
+        let initial_count = count_all_tiles(&gs);
+
+        // Play several random moves
+        let ai = crate::game::ai::stupid_sync_ai::StupidSyncAi {};
+        for _ in 0..20 {
+            if gs.game_result() != GameResult::Ongoing {
+                break;
+            }
+            crate::game::ai::player::ArtificialPlayer::play_next_move(&ai, &mut test_rng(), &mut gs);
+            assert_eq!(
+                count_all_tiles(&gs), initial_count,
+                "Total tile count changed after a move!",
+            );
+        }
+    }
+
+    /// Undo of a capture must restore the discard pile exactly.
+    #[test]
+    fn undo_capture_restores_discard_pile() {
+        let mut board = GameBoard::empty();
+        board.place(Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke));
+        board.place(Coordinates { x: 1, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman));
+        board.place(Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke));
+        board.place(Coordinates { x: 1, y: 1 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman));
+
+        let gs = GameState::from_board(board, Owner::TopPlayer);
+        let mut gs_mut = gs.clone();
+
+        let gm = GameMove::ApplyNonCommandTileAction {
+            src: Coordinates { x: 1, y: 0 },
+            dst: Coordinates { x: 1, y: 1 },
+        };
+        let undo = gs_mut.to_undo(&gm);
+        gs_mut.make_a_move(gm, &mut test_rng());
+
+        // After capture, discard should have 1 tile
+        assert_eq!(gs_mut.player_2_discard().len(), 1);
+
+        gs_mut.undo(undo);
+
+        // After undo, discard should be empty again
+        assert_eq!(gs_mut.player_2_discard().len(), 0);
+        assert_eq!(gs, gs_mut, "State not restored after undo of capture");
+    }
+
+    // ── Hash consistency test ────────────────────────────────────────
+
+    /// GameState Hash only includes the board (not player turn), which is
+    /// intentional for transposition-table-style lookups. Verify the documented
+    /// property: same board, different turn -> same hash.
+    #[test]
+    fn hash_depends_only_on_board() {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        let tiles = vec![
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs1 = GameState::from_snapshot(GameSnapshot {
+            tiles: tiles.clone(),
+            current_turn: Owner::TopPlayer,
+            top_bag: TileBag::new(vec![]),
+            bottom_bag: TileBag::new(vec![]),
+            top_discard: DiscardBag::empty(),
+            bottom_discard: DiscardBag::empty(),
+            idle_move_count: 0,
+        });
+        let gs2 = GameState::from_snapshot(GameSnapshot {
+            tiles,
+            current_turn: Owner::BottomPlayer,
+            top_bag: TileBag::new(vec![TileType::Footman]),
+            bottom_bag: TileBag::new(vec![]),
+            top_discard: DiscardBag::empty(),
+            bottom_discard: DiscardBag::empty(),
+            idle_move_count: 0,
+        });
+
+        let hash = |gs: &GameState| {
+            let mut h = DefaultHasher::new();
+            gs.hash(&mut h);
+            h.finish()
+        };
+
+        // Same board -> same hash (even though bags/turn differ)
+        assert_eq!(hash(&gs1), hash(&gs2));
+        // But they should NOT be equal via PartialEq (different turn/bags)
+        assert_ne!(gs1, gs2);
     }
 }
