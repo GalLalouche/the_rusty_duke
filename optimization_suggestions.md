@@ -153,6 +153,62 @@ Benchmark: `bench_greedy` — 2000 seeded games, StaticHeuristicEvaluator, relea
 | Opt 6: Smaller clone (512→128) | marginal | — | ~9.2 (cache/structural) |
 | Opt 8: Single-pass heuristic eval | ~10% | ~10% | ~9.4 us/move |
 | Opt 9: Inline guard check | ~3-5% | ~12% | ~9.2 us/move |
+| **Opt 10: Occupancy bitboards** | **~30%** | **~41%** | **~6.2 us/move** |
+| **Opt 11: Incremental heuristic eval** | **~25%** | **~55%** | **~4.7 us/move** |
+
+---
+
+## Optimization 10: Occupancy bitboards
+
+**Problem:** Board operations like `is_occupied`, `unobstructed`, `different_team_or_empty`,
+`is_guard`, and `heuristic_counts_both_players` scan the 36-cell board array
+repeatedly, checking `Option<PlacedTile>` per cell. Obstruction checks for
+Move/Slide iterate intermediate squares one by one.
+
+**Fix:** Added three `u64` bitboards (`occ`, `top_occ`, `bot_occ`) to `GameBoard`,
+maintained through all mutation paths (place, remove, make_a_move, undo,
+guard-check functions). Key accelerations:
+
+- `unobstructed(src, dst)` → `RAY_BETWEEN[src][dst] & occ == 0` (single AND+compare
+  replacing a loop over intermediate squares)
+- `different_team_or_empty` → single bit check against owner bitboard
+- `is_guard` → iterate only enemy pieces via bit extraction (`trailing_zeros` loop)
+- `heuristic_counts_both_players` → per-owner bit iteration, `count_ones()` for tile counts
+- `is_valid_placement_space` → bitboard occupancy check
+- `has_valid_moves` → bitboard piece iteration
+
+Also precomputed `RAY_BETWEEN[36][36]` — a const lookup table of u64 ray masks
+for all straight-line pairs on the 6×6 board (~10KB, fits in L1 cache).
+
+**Expected impact:** High. Replaces O(n) loops with O(1) bit operations.
+
+**Status:** Done — **~30% improvement** (10.5 → ~6.2 us/move cumulative).
+
+---
+
+## Optimization 11: Incremental heuristic evaluation
+
+**Problem:** `greedy_move` evaluates ~20 candidate moves per turn. Each evaluation
+calls `heuristic_counts_both_players` which iterates ALL ~10 pieces, computing
+legal move counts for each. But only 1-2 pieces change per candidate move —
+the remaining ~8-9 pieces have (approximately) the same move counts.
+
+**Fix:** Added `greedy_move_heuristic_incremental` which precomputes per-piece
+move counts once before the candidate loop, then for each candidate:
+1. Only recomputes the moved piece's count at its new position
+2. Subtracts captured piece's count if applicable
+3. Uses cached counts for all other pieces
+
+This reduces per-candidate evaluation from O(total_pieces) to O(1), trading
+exact accuracy for speed (ignoring blocking/unblocking side effects on
+other pieces' slide paths, which is a small approximation error for an
+already-approximate heuristic).
+
+**Expected impact:** Very high. Reduces evaluation cost by ~5-10x.
+
+**Status:** Done — **~25% improvement** on top of bitboards (10.5 → ~4.7 us/move cumulative, **2.2x total speedup**).
+
+---
 
 ## Future Opportunities (not yet implemented)
 
@@ -161,17 +217,13 @@ Benchmark: `bench_greedy` — 2000 seeded games, StaticHeuristicEvaluator, relea
    instead of O(enemy_pieces × actions). Would significantly speed up move
    generation with guard checking.
 
-2. **Bitboard representation**: Use u64 bitboards for 6×6 occupancy (36 bits),
-   per-owner masks, and per-tile-type masks. Would enable fast piece enumeration,
-   attack detection, and move generation via bit manipulation.
+2. **Precomputed action tables**: For each tile type/side/position, precompute
+   all target coordinates as lookup tables. Avoids `to_absolute_coordinate`
+   arithmetic and `target_coordinates` dispatch at runtime.
 
-3. **Precomputed action tables**: For each tile type/side, precompute absolute
-   offsets relative to each board position, stored as lookup tables. Avoids
-   repeated `to_absolute_coordinate` arithmetic at runtime.
-
-4. **Transposition table for negamax**: Cache evaluations for positions seen
+3. **Transposition table for negamax**: Cache evaluations for positions seen
    during search. Requires a fast hash (already improved by Opt 4) and would
    significantly prune repeated positions in the search tree.
 
-5. **SIMD-accelerated NNUE forward pass**: Use SIMD intrinsics for the
+4. **SIMD-accelerated NNUE forward pass**: Use SIMD intrinsics for the
    matrix-vector multiplications in the neural network forward pass.

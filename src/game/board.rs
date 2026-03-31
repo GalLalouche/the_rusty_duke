@@ -15,6 +15,42 @@ use crate::game::tile::{Owner, Ownership, PlacedTile, TileType};
 use crate::game::tile_side::TileAction;
 use crate::time_it_macro;
 
+/// Precomputed ray masks for obstruction checking on a 6x6 board.
+/// `RAY_BETWEEN[src][dst]` is a bitmask of intermediate squares between src and dst
+/// on a straight line (horizontal, vertical, or diagonal). 0 if not on a line or adjacent.
+static RAY_BETWEEN: [[u64; 36]; 36] = {
+    let mut table = [[0u64; 36]; 36];
+    let mut src = 0usize;
+    while src < 36 {
+        let sx = (src % 6) as i32;
+        let sy = (src / 6) as i32;
+        let mut dst = 0usize;
+        while dst < 36 {
+            let dx = (dst % 6) as i32;
+            let dy = (dst / 6) as i32;
+            let diffx = dx - sx;
+            let diffy = dy - sy;
+            let on_line = diffx == 0 || diffy == 0 || diffx.abs() == diffy.abs();
+            if on_line && src != dst {
+                let stepx = if diffx > 0 { 1 } else if diffx < 0 { -1 } else { 0 };
+                let stepy = if diffy > 0 { 1 } else if diffy < 0 { -1 } else { 0 };
+                let mut mask = 0u64;
+                let mut cx = sx + stepx;
+                let mut cy = sy + stepy;
+                while cx != dx || cy != dy {
+                    mask |= 1u64 << (cy * 6 + cx);
+                    cx += stepx;
+                    cy += stepy;
+                }
+                table[src][dst] = mask;
+            }
+            dst += 1;
+        }
+        src += 1;
+    }
+    table
+};
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumIter)]
 pub enum DukeOffset { Top, Bottom, Left, Right }
 
@@ -52,6 +88,10 @@ pub(super) struct GameBoard {
     /// Cached duke positions per player. Updated on place/remove/mv to avoid O(36) scans.
     /// None if the duke for that player hasn't been placed yet (only during initial setup).
     duke_cache: [Option<Coordinates>; 2],
+    /// Occupancy bitboards for 6x6 board (bits 0..35, row-major: bit = y*6+x).
+    occ: u64,
+    top_occ: u64,
+    bot_occ: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,11 +248,26 @@ impl GameBoard {
     pub(super) fn new(board: Board<PlacedTile>) -> Self {
         let top = board.find(|a| a.owner == Owner::TopPlayer && a.tile_type.is_duke());
         let bottom = board.find(|a| a.owner == Owner::BottomPlayer && a.tile_type.is_duke());
-        GameBoard { board, duke_cache: [top, bottom] }
+        let mut occ = 0u64;
+        let mut top_occ = 0u64;
+        let mut bot_occ = 0u64;
+        for (c, tile) in board.active_coordinates() {
+            let bit = Self::coord_bit(c);
+            occ |= bit;
+            match tile.owner {
+                Owner::TopPlayer => top_occ |= bit,
+                Owner::BottomPlayer => bot_occ |= bit,
+            }
+        }
+        GameBoard { board, duke_cache: [top, bottom], occ, top_occ, bot_occ }
     }
 
     pub fn empty() -> GameBoard {
-        GameBoard { board: Board::square(GameBoard::BOARD_SIZE), duke_cache: [None, None] }
+        GameBoard {
+            board: Board::square(GameBoard::BOARD_SIZE),
+            duke_cache: [None, None],
+            occ: 0, top_occ: 0, bot_occ: 0,
+        }
     }
 
     #[inline(always)]
@@ -220,6 +275,24 @@ impl GameBoard {
         match o {
             Owner::TopPlayer => 0,
             Owner::BottomPlayer => 1,
+        }
+    }
+
+    #[inline(always)]
+    fn coord_bit(c: Coordinates) -> u64 {
+        1u64 << (c.y as u32 * 6 + c.x as u32)
+    }
+
+    #[inline(always)]
+    fn coord_idx(c: Coordinates) -> usize {
+        c.y as usize * 6 + c.x as usize
+    }
+
+    #[inline(always)]
+    fn owner_occ(&self, o: Owner) -> u64 {
+        match o {
+            Owner::TopPlayer => self.top_occ,
+            Owner::BottomPlayer => self.bot_occ,
         }
     }
     fn absolute_duke_offset(&self, offset: DukeOffset, c: Coordinates) -> Option<Coordinates> {
@@ -242,11 +315,27 @@ impl GameBoard {
         &self.board
     }
 
+    #[inline(always)]
+    pub fn owner_pieces_bitboard(&self, owner: Owner) -> u64 {
+        self.owner_occ(owner)
+    }
+
+    #[inline(always)]
+    pub fn piece_count(&self, owner: Owner) -> u32 {
+        self.owner_occ(owner).count_ones()
+    }
+
     #[inline]
     pub fn place(&mut self, c: Coordinates, t: PlacedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
         if t.tile_type.is_duke() {
             self.duke_cache[Self::owner_index(t.owner)] = Some(c);
+        }
+        let bit = Self::coord_bit(c);
+        self.occ |= bit;
+        match t.owner {
+            Owner::TopPlayer => self.top_occ |= bit,
+            Owner::BottomPlayer => self.bot_occ |= bit,
         }
         self.board.put(c, t);
     }
@@ -255,6 +344,12 @@ impl GameBoard {
         let tile = self.board.remove(c).unwrap_or_else(|| panic!("Cannot remove tile from empty space {:?}", c));
         if tile.tile_type.is_duke() {
             self.duke_cache[Self::owner_index(tile.owner)] = None;
+        }
+        let bit = Self::coord_bit(c);
+        self.occ &= !bit;
+        match tile.owner {
+            Owner::TopPlayer => self.top_occ &= !bit,
+            Owner::BottomPlayer => self.bot_occ &= !bit,
         }
         tile
     }
@@ -353,7 +448,7 @@ impl GameBoard {
 
     #[inline]
     fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
-        !src.on_the_linear_path_to(dst, |x, y| self.board.is_occupied(Coordinates { x, y }))
+        RAY_BETWEEN[Self::coord_idx(src)][Self::coord_idx(dst)] & self.occ == 0
     }
 
     pub fn can_place_new_tile_near_duke(&self, o: Owner) -> bool {
@@ -381,8 +476,8 @@ impl GameBoard {
 
     #[inline(always)]
     fn different_team_or_empty(&self, src: Coordinates, dst: Coordinates) -> bool {
-        let src_tile = self.board.get(src).expect("No unit found in src to apply an action with");
-        self.board.get(dst).for_all(|c| src_tile.different_team(c))
+        let src_owner = self.board.get(src).expect("No unit found in src").owner;
+        Self::coord_bit(dst) & self.owner_occ(src_owner) == 0
     }
 
     #[inline]
@@ -399,25 +494,48 @@ impl GameBoard {
                 src.is_straight_line_to(dst) && self.unobstructed(src, dst),
             TileAction::Command => panic!("Commands shouldn't have been used here"),
             TileAction::JumpSlide => {
-                // Like Slide but can jump over one adjacent tile in the direction.
-                // Skip the first intermediate square (adjacent to src) in obstruction check.
                 if !src.is_straight_line_to(dst) {
                     return false;
                 }
-                // Avoid Vec allocation: check intermediate squares after the first one.
-                // The first intermediate square (adjacent to src) may be jumped over.
-                let skip = std::cell::Cell::new(true);
-                !src.on_the_linear_path_to(dst, |x, y| {
-                    if skip.get() {
-                        skip.set(false);
-                        false // skip first square (the one being jumped over)
-                    } else {
-                        self.board.is_occupied(Coordinates { x, y })
-                    }
-                })
+                self.unobstructed_jump_slide(src, dst)
             }
             TileAction::Strike => self.get(dst).exists(|o| o.different_team(&self.get(src).unwrap())),
         }
+    }
+
+    /// Like `can_apply_action` but uses bitboards for friendly/obstruction checks.
+    #[inline]
+    fn can_apply_action_fast(&self, src: Coordinates, dst: Coordinates, action: TileAction) -> bool {
+        if Self::coord_bit(dst) & self.owner_occ(self.board.get(src).unwrap().owner) != 0 {
+            return false;
+        }
+        match action {
+            TileAction::Move | TileAction::Slide =>
+                src.is_straight_line_to(dst) && self.unobstructed(src, dst),
+            TileAction::Jump => true,
+            TileAction::JumpSlide =>
+                src.is_straight_line_to(dst) && self.unobstructed_jump_slide(src, dst),
+            TileAction::Strike => Self::coord_bit(dst) & self.occ != 0,
+            _ => false,
+        }
+    }
+
+    /// JumpSlide obstruction: skip the first intermediate square (the one being jumped over).
+    #[inline]
+    fn unobstructed_jump_slide(&self, src: Coordinates, dst: Coordinates) -> bool {
+        let si = Self::coord_idx(src);
+        let di = Self::coord_idx(dst);
+        let ray = RAY_BETWEEN[si][di];
+        if ray == 0 { return true; }
+        // The first intermediate square is the one adjacent to src in the direction of dst.
+        let dx = (di % 6) as i32 - (si % 6) as i32;
+        let dy = (di / 6) as i32 - (si / 6) as i32;
+        let sx = if dx > 0 { 1 } else if dx < 0 { -1i32 } else { 0 };
+        let sy = if dy > 0 { 1 } else if dy < 0 { -1i32 } else { 0 };
+        let adj_x = (si % 6) as i32 + sx;
+        let adj_y = (si / 6) as i32 + sy;
+        let adj_bit = 1u64 << (adj_y * 6 + adj_x);
+        (ray & !adj_bit) & self.occ == 0
     }
 
     fn can_apply(
@@ -471,7 +589,7 @@ impl GameBoard {
     fn is_valid_placement_space(&self, owner: Owner, offset: DukeOffset) -> Option<Coordinates> {
         match self.absolute_duke_offset(offset, self.duke_coordinates(owner)) {
             None => None,
-            Some(c) => if self.board.is_occupied(c) { None } else { Some(c) }
+            Some(c) => if Self::coord_bit(c) & self.occ != 0 { None } else { Some(c) }
         }
     }
 
@@ -488,27 +606,39 @@ impl GameBoard {
     fn tile_action_does_not_put_in_guard(
         &mut self, src: Coordinates, dst: Coordinates, action: TileAction, owner: Owner,
     ) -> bool {
+        let saved_duke = self.duke_cache;
+        let saved_occ = self.occ;
+        let saved_top = self.top_occ;
+        let saved_bot = self.bot_occ;
+
         let is_strike = action == TileAction::Strike;
         if is_strike {
-            let old_duke_cache = self.duke_cache;
             if let Some(target) = self.board.get(dst) {
                 if target.tile_type.is_duke() {
                     self.duke_cache[Self::owner_index(target.owner)] = None;
                 }
             }
             self.flip(src);
+            if let Some(target) = self.board.get(dst) {
+                let bit = Self::coord_bit(dst);
+                self.occ &= !bit;
+                match target.owner {
+                    Owner::TopPlayer => self.top_occ &= !bit,
+                    Owner::BottomPlayer => self.bot_occ &= !bit,
+                }
+            }
             let captured = self.board.remove(dst);
             let in_guard = self.is_guard(owner);
-            // Undo.
             self.flip(src);
             if let Some(cap) = captured {
-                self.place(dst, cap);
+                self.board.put(dst, cap);
             }
-            self.duke_cache = old_duke_cache;
+            self.duke_cache = saved_duke;
+            self.occ = saved_occ;
+            self.top_occ = saved_top;
+            self.bot_occ = saved_bot;
             !in_guard
         } else {
-            // Movement (Move, Jump, Slide, JumpSlide)
-            let old_duke_cache = self.duke_cache;
             if let Some(tile) = self.board.get(src) {
                 if tile.tile_type.is_duke() {
                     self.duke_cache[Self::owner_index(tile.owner)] = Some(dst);
@@ -519,17 +649,35 @@ impl GameBoard {
                     self.duke_cache[Self::owner_index(captured.owner)] = None;
                 }
             }
+            // Update bitboards for the move: clear src, handle dst capture, set dst.
+            let src_bit = Self::coord_bit(src);
+            let dst_bit = Self::coord_bit(dst);
+            let src_owner = self.board.get(src).unwrap().owner;
+            self.occ = (self.occ & !src_bit) | dst_bit;
+            match src_owner {
+                Owner::TopPlayer => self.top_occ = (self.top_occ & !src_bit) | dst_bit,
+                Owner::BottomPlayer => self.bot_occ = (self.bot_occ & !src_bit) | dst_bit,
+            }
+            if let Some(captured) = self.board.get(dst) {
+                match captured.owner {
+                    Owner::TopPlayer => self.top_occ &= !dst_bit,
+                    Owner::BottomPlayer => self.bot_occ &= !dst_bit,
+                }
+            }
             self.flip(src);
             let captured = self.board.mv(src, dst);
             let in_guard = self.is_guard(owner);
-            // Undo.
-            let mut mover = self.remove(dst);
+            // Undo via board directly, restore bitboards from saved state.
+            let mut mover = self.board.remove(dst).unwrap();
             mover.flip();
-            self.place(src, mover);
+            self.board.put(src, mover);
             if let Some(cap) = captured {
-                self.place(dst, cap);
+                self.board.put(dst, cap);
             }
-            self.duke_cache = old_duke_cache;
+            self.duke_cache = saved_duke;
+            self.occ = saved_occ;
+            self.top_occ = saved_top;
+            self.bot_occ = saved_bot;
             !in_guard
         }
     }
@@ -547,9 +695,12 @@ impl GameBoard {
             }
             BoardMove::ApplyNonCommandTileAction { src, dst } => {
                 let action = self.can_apply(src, dst);
-                match action {
+                let saved_duke = self.duke_cache;
+                let saved_occ = self.occ;
+                let saved_top = self.top_occ;
+                let saved_bot = self.bot_occ;
+                let result = match action {
                     AppliedPubAction::Movement => {
-                        let old_duke_cache = self.duke_cache;
                         if let Some(tile) = self.board.get(src) {
                             if tile.tile_type.is_duke() {
                                 self.duke_cache[Self::owner_index(tile.owner)] = Some(dst);
@@ -560,40 +711,60 @@ impl GameBoard {
                                 self.duke_cache[Self::owner_index(captured.owner)] = None;
                             }
                         }
+                        let src_bit = Self::coord_bit(src);
+                        let dst_bit = Self::coord_bit(dst);
+                        let src_owner = self.board.get(src).unwrap().owner;
+                        self.occ = (self.occ & !src_bit) | dst_bit;
+                        match src_owner {
+                            Owner::TopPlayer => self.top_occ = (self.top_occ & !src_bit) | dst_bit,
+                            Owner::BottomPlayer => self.bot_occ = (self.bot_occ & !src_bit) | dst_bit,
+                        }
+                        if let Some(captured) = self.board.get(dst) {
+                            match captured.owner {
+                                Owner::TopPlayer => self.top_occ &= !dst_bit,
+                                Owner::BottomPlayer => self.bot_occ &= !dst_bit,
+                            }
+                        }
                         self.flip(src);
                         let captured = self.board.mv(src, dst);
                         let in_guard = self.is_guard(owner);
-                        // Undo.
-                        let mut mover = self.remove(dst);
+                        let mut mover = self.board.remove(dst).unwrap();
                         mover.flip();
-                        self.place(src, mover);
+                        self.board.put(src, mover);
                         if let Some(cap) = captured {
-                            self.place(dst, cap);
+                            self.board.put(dst, cap);
                         }
-                        self.duke_cache = old_duke_cache;
                         !in_guard
                     }
                     AppliedPubAction::Strike => {
-                        let old_duke_cache = self.duke_cache;
                         if let Some(target) = self.board.get(dst) {
                             if target.tile_type.is_duke() {
                                 self.duke_cache[Self::owner_index(target.owner)] = None;
+                            }
+                            let bit = Self::coord_bit(dst);
+                            self.occ &= !bit;
+                            match target.owner {
+                                Owner::TopPlayer => self.top_occ &= !bit,
+                                Owner::BottomPlayer => self.bot_occ &= !bit,
                             }
                         }
                         self.flip(src);
                         let captured = self.board.remove(dst);
                         let in_guard = self.is_guard(owner);
-                        // Undo.
                         self.flip(src);
                         if let Some(cap) = captured {
-                            self.place(dst, cap);
+                            self.board.put(dst, cap);
                         }
-                        self.duke_cache = old_duke_cache;
                         !in_guard
                     }
                     AppliedPubAction::Invalid =>
                         panic!("Cannot move unit in {:?} to {:?} (invalid action)", &src, &dst)
-                }
+                };
+                self.duke_cache = saved_duke;
+                self.occ = saved_occ;
+                self.top_occ = saved_top;
+                self.bot_occ = saved_bot;
+                result
             }
         }
     }
@@ -610,26 +781,43 @@ impl GameBoard {
             BoardMove::ApplyNonCommandTileAction { src, dst } => {
                 match self.can_apply(src, dst) {
                     AppliedPubAction::Movement => {
+                        let src_bit = Self::coord_bit(src);
+                        let dst_bit = Self::coord_bit(dst);
+                        let src_owner = self.board.get(src).unwrap().owner;
                         // Update duke cache if a duke is being moved.
-                        if let Some(tile) = self.board.get(src) {
-                            if tile.tile_type.is_duke() {
-                                self.duke_cache[Self::owner_index(tile.owner)] = Some(dst);
-                            }
+                        if self.board.get(src).unwrap().tile_type.is_duke() {
+                            self.duke_cache[Self::owner_index(src_owner)] = Some(dst);
                         }
                         // If capturing a duke at dst, clear its cache.
                         if let Some(captured) = self.board.get(dst) {
                             if captured.tile_type.is_duke() {
                                 self.duke_cache[Self::owner_index(captured.owner)] = None;
                             }
+                            // Clear captured piece from owner's bitboard.
+                            match captured.owner {
+                                Owner::TopPlayer => self.top_occ &= !dst_bit,
+                                Owner::BottomPlayer => self.bot_occ &= !dst_bit,
+                            }
+                        }
+                        // Move mover: clear src, set dst.
+                        self.occ = (self.occ & !src_bit) | dst_bit;
+                        match src_owner {
+                            Owner::TopPlayer => self.top_occ = (self.top_occ & !src_bit) | dst_bit,
+                            Owner::BottomPlayer => self.bot_occ = (self.bot_occ & !src_bit) | dst_bit,
                         }
                         self.flip(src);
                         self.board.mv(src, dst)
                     }
                     AppliedPubAction::Strike => {
-                        // If striking a duke at dst, clear its cache.
                         if let Some(target) = self.board.get(dst) {
                             if target.tile_type.is_duke() {
                                 self.duke_cache[Self::owner_index(target.owner)] = None;
+                            }
+                            let bit = Self::coord_bit(dst);
+                            self.occ &= !bit;
+                            match target.owner {
+                                Owner::TopPlayer => self.top_occ &= !bit,
+                                Owner::BottomPlayer => self.bot_occ &= !bit,
                             }
                         }
                         self.flip(src);
@@ -703,7 +891,7 @@ impl GameBoard {
             }
             let targets = self.target_coordinates(src, *offset, *action, center_offset);
             for c in targets.into_iter() {
-                if self.can_apply_action(src, c, *action) {
+                if self.can_apply_action_fast(src, c, *action) {
                     buf.push(c, *action);
                 }
             }
@@ -716,16 +904,39 @@ impl GameBoard {
         let tile = self.get(src).unwrap();
         let tile_side = tile.get_current_side();
         let center_offset = tile_side.center_offset();
+        let my_occ = self.owner_occ(tile.owner);
         let mut count = 0usize;
         for (offset, action) in tile_side.actions().iter() {
-            if *action == TileAction::Command || *action == TileAction::Unit {
-                continue;
-            }
-            let targets = self.target_coordinates(src, *offset, *action, center_offset);
-            for c in targets.into_iter() {
-                if self.can_apply_action(src, c, *action) {
-                    count += 1;
+            match *action {
+                TileAction::Move | TileAction::Jump | TileAction::Strike => {
+                    if let Some(dst) = self.to_absolute_coordinate(src, *offset, center_offset) {
+                        let dst_bit = Self::coord_bit(dst);
+                        if dst_bit & my_occ != 0 { continue; }
+                        match *action {
+                            TileAction::Move => {
+                                if src.is_straight_line_to(dst)
+                                    && RAY_BETWEEN[Self::coord_idx(src)][Self::coord_idx(dst)] & self.occ == 0
+                                {
+                                    count += 1;
+                                }
+                            }
+                            TileAction::Jump => { count += 1; }
+                            TileAction::Strike => {
+                                if dst_bit & self.occ != 0 { count += 1; }
+                            }
+                            _ => unreachable!()
+                        }
+                    }
                 }
+                TileAction::Slide | TileAction::JumpSlide => {
+                    let targets = self.target_coordinates(src, *offset, *action, center_offset);
+                    for c in targets.into_iter() {
+                        if self.can_apply_action_fast(src, c, *action) {
+                            count += 1;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         count
@@ -771,10 +982,20 @@ impl GameBoard {
     pub fn is_guard(&self, owner: Owner) -> bool {
         time_it_macro!("is_guard", {
             let duke_pos = self.duke_coordinates(owner);
-            self.get_board()
-                .active_coordinates()
-                .filter(|e| e.1.owner.different_team(&owner))
-                .any(|(_attacker_pos, _)| self.can_attack_square(_attacker_pos, duke_pos))
+            let enemy_occ = match owner {
+                Owner::TopPlayer => self.bot_occ,
+                Owner::BottomPlayer => self.top_occ,
+            };
+            let mut bits = enemy_occ;
+            while bits != 0 {
+                let idx = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let c = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
+                if self.can_attack_square(c, duke_pos) {
+                    return true;
+                }
+            }
+            false
         })
     }
 
@@ -796,25 +1017,22 @@ impl GameBoard {
                 TileAction::Unit | TileAction::Command => continue,
                 TileAction::Move | TileAction::Jump | TileAction::Strike => {
                     if let Some(dst) = self.to_absolute_coordinate(src, *offset, center_offset) {
-                        if dst == target && self.can_apply_action(src, dst, *action) {
+                        if dst == target && self.can_apply_action_fast(src, dst, *action) {
                             return true;
                         }
                     }
                 }
                 TileAction::Slide => {
-                    // Check if target is on the slide line from src in this direction,
-                    // within bounds, and the path is unobstructed.
                     if self.is_target_on_slide(src, *offset, target)
-                        && self.can_apply_action(src, target, TileAction::Slide)
+                        && self.can_apply_action_fast(src, target, TileAction::Slide)
                     {
                         return true;
                     }
                 }
                 TileAction::JumpSlide => {
-                    // JumpSlide uses "far" offsets; map to "near" to get the direction.
                     let near_offset = Offsets::new(offset.x.to_near(), offset.y.to_near());
                     if self.is_target_on_slide(src, near_offset, target)
-                        && self.can_apply_action(src, target, TileAction::JumpSlide)
+                        && self.can_apply_action_fast(src, target, TileAction::JumpSlide)
                     {
                         return true;
                     }
@@ -954,7 +1172,7 @@ impl GameBoard {
                 Some(self.remove(absolute_coordinate))
             }
             PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } => {
-                if !self.board.is_occupied(dst) { // Strike
+                if Self::coord_bit(dst) & self.occ == 0 { // Strike
                     let captured = capturing.expect("No captured but attacker didn't move");
                     self.flip(src);
                     self.place(dst, captured);
@@ -985,7 +1203,11 @@ impl GameBoard {
 
     pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
         let mut result = Vec::new();
-        for (src, _) in self.get_tiles_for(owner) {
+        let mut bits = self.owner_occ(owner);
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let src = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
             let buf = self.get_legal_moves_no_guard(src);
             for &(dst, _) in buf.as_slice() {
                 result.push(PossibleMove::ApplyNonCommandTileAction {
@@ -1051,25 +1273,35 @@ impl GameBoard {
             Owner::BottomPlayer => Owner::TopPlayer,
         };
         let opp_duke = self.duke_coordinates(other);
+        let own_occ = self.owner_occ(owner);
+        let opp_occ = self.owner_occ(other);
 
         let mut own_total = 0usize;
         let mut own_duke_moves = 0usize;
-        let mut own_tiles = 0usize;
+        let own_tiles = own_occ.count_ones() as usize;
         let mut opp_total = 0usize;
         let mut opp_duke_moves = 0usize;
-        let mut opp_tiles = 0usize;
+        let opp_tiles = opp_occ.count_ones() as usize;
 
-        for (src, tile) in self.board.active_coordinates() {
+        // Iterate own pieces via bitboard.
+        let mut bits = own_occ;
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let src = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
             let n = self.count_legal_moves_no_guard(src);
-            if tile.owner == owner {
-                own_total += n;
-                own_tiles += 1;
-                if src == own_duke { own_duke_moves = n; }
-            } else {
-                opp_total += n;
-                opp_tiles += 1;
-                if src == opp_duke { opp_duke_moves = n; }
-            }
+            own_total += n;
+            if src == own_duke { own_duke_moves = n; }
+        }
+        // Iterate opponent pieces via bitboard.
+        let mut bits = opp_occ;
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let src = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
+            let n = self.count_legal_moves_no_guard(src);
+            opp_total += n;
+            if src == opp_duke { opp_duke_moves = n; }
         }
 
         if own_has_bag {
@@ -1209,8 +1441,11 @@ impl GameBoard {
         let snapshot = self.clone();
         let mut tile_coords = [Coordinates { x: 0, y: 0 }; MAX_TILES_PER_PLAYER];
         let mut n_tiles = 0usize;
-        for (c, _) in self.get_tiles_for(owner) {
-            tile_coords[n_tiles] = c;
+        let mut bits = self.owner_occ(owner);
+        while bits != 0 {
+            let idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            tile_coords[n_tiles] = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
             n_tiles += 1;
         }
 

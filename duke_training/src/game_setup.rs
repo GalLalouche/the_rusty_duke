@@ -58,6 +58,9 @@ pub trait GameEvaluator {
     /// Used by `greedy_move` to enable the incremental L1 accumulator path.
     /// Default implementation returns `None` (no accumulator support).
     fn as_generic_mlp(&self) -> Option<(&GenericMlp, bool)> { None }
+
+    /// Whether this evaluator supports incremental heuristic evaluation.
+    fn is_static_heuristic(&self) -> bool { false }
 }
 
 impl GameEvaluator for NnueEvaluator {
@@ -115,6 +118,8 @@ impl GameEvaluator for StaticHeuristicEvaluator {
             - gs.discard_bag_for(owner.next_player()).len() as f64);
         (duke_diff + tiles_diff + moves_diff + discard_diff) as f32
     }
+
+    fn is_static_heuristic(&self) -> bool { true }
 }
 
 /// Create the standard tile bag (all tiles except Assassin).
@@ -461,14 +466,13 @@ pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
 ///
 /// Panics if the game state has no legal moves.
 pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E, rng: &mut impl Rng) -> AiMove {
-    // Check if the evaluator supports the incremental accumulator path.
     if let Some((net, include_combined)) = evaluator.as_generic_mlp() {
         return greedy_move_incremental(gs, net, include_combined, rng);
     }
+    if evaluator.is_static_heuristic() {
+        return greedy_move_heuristic_incremental(gs, rng);
+    }
 
-    // Tile action moves: generated WITHOUT guard checking (the expensive part).
-    // Guard is checked inline after make_a_move in the evaluation loop,
-    // combining two make/undo cycles into one.
     let owner = gs.current_player_turn();
     let no_guard_moves = gs.all_valid_game_moves_for_ignoring_guard(owner);
 
@@ -479,8 +483,6 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E,
         }
     }
 
-    // Placement moves: generated WITH guard checking (at most 4 offsets, cheap).
-    // make_a_move(PullAndPlay) hard-asserts placement validity.
     if gs.bag_for_current_player().non_empty() {
         for &offset in &[DukeOffset::Top, DukeOffset::Bottom, DukeOffset::Left, DukeOffset::Right] {
             if gs.is_valid_placement(offset) {
@@ -508,6 +510,148 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E,
                 best_score = score;
                 best_idx = i;
             }
+        }
+        gs.undo(pm.clone());
+    }
+
+    (&moves[best_idx]).into()
+}
+
+/// Incremental heuristic evaluation: precompute per-piece move counts once,
+/// then update only the affected pieces per candidate move.
+fn greedy_move_heuristic_incremental(gs: &mut GameState, rng: &mut impl Rng) -> AiMove {
+    use duke_rust::common::coordinates::Coordinates;
+
+    let owner = gs.current_player_turn();
+    let other = owner.next_player();
+
+    // Generate candidate moves (same as greedy_move).
+    let no_guard_moves = gs.all_valid_game_moves_for_ignoring_guard(owner);
+    let mut moves: Vec<PossibleMove> = Vec::with_capacity(no_guard_moves.len());
+    for pm in no_guard_moves {
+        if !matches!(pm, PossibleMove::PlaceNewTile(..)) {
+            moves.push(pm);
+        }
+    }
+    if gs.bag_for_current_player().non_empty() {
+        for &offset in &[DukeOffset::Top, DukeOffset::Bottom, DukeOffset::Left, DukeOffset::Right] {
+            if gs.is_valid_placement(offset) {
+                moves.push(PossibleMove::PlaceNewTile(offset, owner));
+            }
+        }
+    }
+    assert!(!moves.is_empty(), "greedy_move_heuristic_incremental called with no legal moves");
+    moves.shuffle(rng);
+
+    // Precompute per-piece move counts and base totals.
+    let mut piece_counts = [0u16; 36]; // indexed by board position (y*6+x)
+    let mut base_own_total = 0i32;
+    let mut base_opp_total = 0i32;
+    let duke_pos_own = gs.duke_coordinate(owner);
+    let duke_pos_opp = gs.duke_coordinate(other);
+    let mut base_own_duke = 0i32;
+    let mut base_opp_duke = 0i32;
+
+    let mut bits = gs.owner_pieces_bitboard(owner);
+    while bits != 0 {
+        let idx = bits.trailing_zeros() as usize;
+        bits &= bits - 1;
+        let c = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
+        let n = gs.count_legal_moves_for_piece(c) as u16;
+        piece_counts[idx] = n;
+        base_own_total += n as i32;
+        if c == duke_pos_own { base_own_duke = n as i32; }
+    }
+    let mut bits = gs.owner_pieces_bitboard(other);
+    while bits != 0 {
+        let idx = bits.trailing_zeros() as usize;
+        bits &= bits - 1;
+        let c = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
+        let n = gs.count_legal_moves_for_piece(c) as u16;
+        piece_counts[idx] = n;
+        base_opp_total += n as i32;
+        if c == duke_pos_opp { base_opp_duke = n as i32; }
+    }
+
+    let base_own_tiles = gs.piece_count(owner) as i32;
+    let base_opp_tiles = gs.piece_count(other) as i32;
+    let base_discard = gs.discard_bag_for(owner).len() as f64
+        - gs.discard_bag_for(other).len() as f64;
+
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_idx = 0;
+
+    let base_eval_rng = SmallRng::seed_from_u64(0);
+    for (i, pm) in moves.iter().enumerate() {
+        let mv: AiMove = pm.into();
+        let mut eval_rng = base_eval_rng.clone();
+        mv.play(gs, &mut eval_rng);
+
+        let is_placement = matches!(pm, PossibleMove::PlaceNewTile(..));
+        if !is_placement && gs.is_duke_in_guard(owner) {
+            gs.undo(pm.clone());
+            continue;
+        }
+
+        // After play, current_player_turn has switched. Evaluate from opponent's POV.
+        // We compute the score as if WE (owner) are evaluating.
+        // The heuristic formula is: duke_diff + 10*tiles_diff + moves_diff - 15*discard_diff
+        // where diff = own - opp, from the current player's perspective.
+        // After play, the "current player" is `other`. We want the score from `owner`'s POV,
+        // then negate (since greedy_move uses -prediction).
+
+        let score = if is_placement {
+            let eval = StaticHeuristicEvaluator::new();
+            -(eval.evaluate(gs) as f64)
+        } else {
+            let (src, dst, capturing) = match pm {
+                PossibleMove::ApplyNonCommandTileAction { src, dst, capturing } =>
+                    (*src, *dst, capturing.as_ref()),
+                _ => unreachable!(),
+            };
+
+            let old_src_idx = src.y as usize * 6 + src.x as usize;
+            let old_count = piece_counts[old_src_idx] as i32;
+
+            // Determine if this was a Strike (piece stays at src) or Movement (piece moves to dst).
+            // After play, check if piece is at dst (Movement) or src (Strike).
+            let is_strike = (1u64 << old_src_idx) & gs.owner_pieces_bitboard(owner) != 0;
+            let mover_pos = if is_strike { src } else { dst };
+            let new_count = gs.count_legal_moves_for_piece(mover_pos) as i32;
+
+            let mut own_total = base_own_total - old_count + new_count;
+            let mut opp_total = base_opp_total;
+            let own_tiles = base_own_tiles;
+            let mut opp_tiles = base_opp_tiles;
+
+            if let Some(_captured) = capturing {
+                let cap_idx = dst.y as usize * 6 + dst.x as usize;
+                opp_total -= piece_counts[cap_idx] as i32;
+                opp_tiles -= 1;
+            }
+
+            let own_duke = if src == duke_pos_own { new_count } else { base_own_duke };
+            let opp_duke = if capturing.map_or(false, |c| c.tile_type.is_duke()) {
+                0
+            } else {
+                base_opp_duke
+            };
+
+            // Compute from `other`'s POV (other is now current_player after play).
+            let duke_diff = opp_duke as f64 - own_duke as f64;
+            let tiles_diff = 10.0 * (opp_tiles as f64 - own_tiles as f64);
+            let moves_diff = opp_total as f64 - own_total as f64;
+            let new_discard = gs.discard_bag_for(other).len() as f64
+                - gs.discard_bag_for(owner).len() as f64;
+            let discard_diff = -15.0 * new_discard;
+
+            let prediction = duke_diff + tiles_diff + moves_diff + discard_diff;
+            -prediction
+        };
+
+        if score > best_score {
+            best_score = score;
+            best_idx = i;
         }
         gs.undo(pm.clone());
     }

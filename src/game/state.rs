@@ -550,6 +550,23 @@ impl GameState {
         )
     }
 
+    /// Count legal moves for a single piece (no guard checking).
+    #[inline]
+    pub fn count_legal_moves_for_piece(&self, src: Coordinates) -> usize {
+        self.board.count_legal_moves_ignoring_guard(src)
+    }
+
+    /// Bitboard of piece positions for an owner. Bits 0..35, row-major (y*6+x).
+    #[inline]
+    pub fn owner_pieces_bitboard(&self, o: Owner) -> u64 {
+        self.board.owner_pieces_bitboard(o)
+    }
+
+    #[inline]
+    pub fn piece_count(&self, o: Owner) -> u32 {
+        self.board.piece_count(o)
+    }
+
     /// Iterate tile-movement moves for `owner` without guard checking,
     /// calling `f(src, dst)` for each. No heap allocation.
     #[inline]
