@@ -223,7 +223,7 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
     }
 }
 
-/// Negamax search with expectimax for tile draws.
+/// Negamax search with alpha-beta pruning and expectimax for tile draws.
 ///
 /// Returns a score from the perspective of the current player (higher = better).
 /// Terminal positions are scored as ±[`TERMINAL_WIN_SCORE`] or 0 (tie).
@@ -239,30 +239,51 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
 pub fn negamax<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> f64 {
-    // Terminal check must happen before depth-0 evaluation, since the
-    // heuristic evaluator may panic on positions where a duke is captured
-    // (duke_coordinates() panics when the duke cache is None).
-    match gs.game_result() {
-        GameResult::Won(winner) => {
-            return if winner == gs.current_player_turn() {
-                TERMINAL_WIN_SCORE
-            } else {
-                TERMINAL_LOSS_SCORE
-            };
-        }
-        GameResult::Tie => return 0.0,
-        GameResult::Ongoing => {}
+    negamax_ab(gs, evaluator, depth, f64::NEG_INFINITY, f64::INFINITY, rng)
+}
+
+/// Negamax with alpha-beta pruning.
+///
+/// `alpha` is the best score the current player can guarantee so far.
+/// `beta` is the best score the opponent can guarantee.
+/// When `alpha >= beta`, the remaining moves are pruned (beta cutoff).
+fn negamax_ab<E: GameEvaluator + ?Sized>(
+    gs: &mut GameState, evaluator: &E, depth: u32,
+    mut alpha: f64, beta: f64,
+    rng: &mut impl Rng,
+) -> f64 {
+    // Check tie first (O(1)) before doing any move generation.
+    if gs.is_tie() {
+        return 0.0;
     }
 
     if depth == 0 {
+        // At the leaf we must still check for terminal positions (e.g. a duke
+        // was captured on the parent's move) because the heuristic evaluator
+        // panics on positions where duke_coordinates() returns None.
+        // Use game_result() here -- it's only called at leaves, not interior
+        // nodes, so the cost is acceptable.
+        match gs.game_result() {
+            GameResult::Won(winner) => {
+                return if winner == gs.current_player_turn() {
+                    TERMINAL_WIN_SCORE
+                } else {
+                    TERMINAL_LOSS_SCORE
+                };
+            }
+            GameResult::Tie => return 0.0,
+            GameResult::Ongoing => {}
+        }
         return evaluator.evaluate(gs) as f64;
     }
 
     // Generate moves with guard checking.
+    // This replaces the old pattern of calling game_result() first (which
+    // internally calls has_valid_moves = redundant move generation) then
+    // generating moves again.
     let moves: Vec<PossibleMove> = gs.all_valid_game_moves_for_current_player().collect();
     if moves.is_empty() {
-        // No legal moves means current player loses (shouldn't happen since
-        // game_result() already returned Won, but kept as safety net).
+        // No legal moves means current player loses.
         return TERMINAL_LOSS_SCORE;
     }
 
@@ -290,17 +311,28 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
                 let game_move = GameMove::ApplyNonCommandTileAction { src: *src, dst: *dst };
                 let undo = pm.clone();
                 gs.make_a_move(game_move, &mut base_rng.clone());
-                let score = -negamax(gs, evaluator, depth - 1, rng);
+                let score = -negamax_ab(gs, evaluator, depth - 1, -beta, -alpha, rng);
                 gs.undo(undo);
                 if score > best {
                     best = score;
+                }
+                if best > alpha {
+                    alpha = best;
+                }
+                if alpha >= beta {
+                    // Beta cutoff: opponent already has a better option.
+                    break;
                 }
             }
         }
     }
 
     // Expectimax for the "draw from bag" option.
-    if n_placements > 0 {
+    // Note: alpha-beta pruning does NOT apply across expectimax branches
+    // because the draw is stochastic (we must evaluate all tile types to
+    // compute the expected value). However, we can still prune within each
+    // tile-type's placement search using the current alpha/beta window.
+    if n_placements > 0 && best < beta {
         let bag = gs.bag_for_current_player().remaining();
         let total_tiles = bag.len() as f64;
         debug_assert!(total_tiles > 0.0);
@@ -331,7 +363,7 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
                 gs.pull_specific_tile_from_bag(tile_type);
                 let undo = PossibleMove::PlaceNewTile(offset, owner);
                 gs.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
-                let score = -negamax(gs, evaluator, depth - 1, rng);
+                let score = -negamax_ab(gs, evaluator, depth - 1, -beta, -alpha, rng);
                 gs.undo(undo);
                 if score > best_for_tile {
                     best_for_tile = score;
@@ -384,7 +416,8 @@ pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
         let undo = mv.to_undo_move().expect("Legal move should be undoable");
         let mut eval_rng = base_eval_rng.clone();
         mv.play(gs, &mut eval_rng);
-        let score = -negamax(gs, evaluator, depth - 1, rng);
+        // Use alpha-beta: alpha = best_score so far, beta = +inf (root never pruned).
+        let score = -negamax_ab(gs, evaluator, depth - 1, f64::NEG_INFINITY, -best_score, rng);
         gs.undo(undo);
         if score > best_score {
             best_score = score;

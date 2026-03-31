@@ -158,6 +158,7 @@ fn count_center_tiles_from(tiles: &[(duke_rust::common::coordinates::Coordinates
 /// - `[1]` enemy_units_near_my_duke: count of enemy tiles within Manhattan distance 2 of my duke
 /// - `[2]` my_units_near_enemy_duke: count of my tiles within Manhattan distance 2 of enemy duke
 /// - `[3]` enemy_units_near_enemy_duke: count of enemy non-duke tiles within Manhattan distance 2 of enemy duke
+#[inline]
 pub fn manhattan_distance_features(gs: &GameState) -> [f64; 4] {
     let me = gs.current_player_turn();
     let opp = me.next_player();
@@ -227,6 +228,7 @@ pub const NUM_COMBINED_FEATURES: usize = 41;
 /// Uses `board_control_features_with_duke_mob` to compute board-control and
 /// duke-mobility in a single move-generation pass per player, avoiding the
 /// redundant second pass that `duke_mobility_no_guard` would perform.
+#[inline]
 pub fn extract_combined_features(gs: &GameState) -> [f64; NUM_COMBINED_FEATURES] {
     let manhattan = manhattan_distance_features(gs);
     let (control, duke_mob) = board_control_features_with_duke_mob(gs);
@@ -253,6 +255,7 @@ impl Default for CombinedWeights {
 }
 
 impl CombinedWeights {
+    #[inline]
     pub fn evaluate_raw(&self, gs: &GameState) -> f64 {
         let features = extract_combined_features(gs);
         let mut score = 0.0;
@@ -311,6 +314,7 @@ impl GameEvaluator for CombinedWeights {
 /// Moves are computed while ignoring the guard constraint (the expensive part),
 /// making this a cheap approximation. Only tile-move destinations (not placements)
 /// contribute to the reachable-squares arrays.
+#[inline]
 pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 2]) {
     let owner = gs.current_player_turn();
     let opp = owner.next_player();

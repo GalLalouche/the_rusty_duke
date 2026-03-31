@@ -16,6 +16,7 @@ impl TileBag {
         TileBag { bag }
     }
 
+    #[inline]
     pub fn pull<R: Rng>(&mut self, rng: &mut R) -> Option<TileType> {
         if self.bag.is_empty() {
             None
@@ -26,12 +27,15 @@ impl TileBag {
         }
     }
 
+    #[inline]
     pub fn remaining(&self) -> &Vec<TileType> {
         &self.bag
     }
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.bag.is_empty()
     }
+    #[inline]
     pub fn non_empty(&self) -> bool {
         !self.is_empty()
     }
@@ -51,6 +55,7 @@ impl TileBag {
     }
 
     // For undoing
+    #[inline]
     pub fn push(&mut self, t: TileType) -> () {
         self.bag.push(t);
     }
@@ -69,12 +74,14 @@ impl DiscardBag {
         DiscardBag { bag }
     }
 
+    #[inline]
     pub fn add(&mut self, t: TileType) -> () {
         self.bag.push(t);
     }
 
     /// Remove one instance of `t` from the discard pile (used when undoing a capture).
     /// Panics if `t` is not present.
+    #[inline]
     pub fn remove(&mut self, t: TileType) {
         let idx = self.bag.iter().rposition(|x| *x == t)
             .expect("Tried to remove a tile from discard that isn't there");

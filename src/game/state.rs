@@ -19,7 +19,14 @@ use crate::game::tile_side::TileAction;
 // Technically not part of the base game rules, but it makes it easier for the AI
 pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 10;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Maximum depth of the idle-move stack (captures + placements reset it).
+/// Each game turn can push 1-2 entries (PullAndPlay pushes twice).
+/// A game can last up to MAX_TURNS (500) plus search depth overhead.
+/// 1536 entries is more than sufficient even for pathological cases.
+/// Uses u8 values (max idle count is 10) to keep the array compact (~1.5KB).
+const IDLE_STACK_CAP: usize = 1536;
+
+#[derive(Debug, Clone, Eq)]
 pub struct GameState {
     board: GameBoard,
     pulled_tile: Option<TileType>,
@@ -28,7 +35,28 @@ pub struct GameState {
     top_player_discard: DiscardBag,
     bottom_player_bag: TileBag,
     bottom_player_discard: DiscardBag,
-    moves_without_capture_or_placement_stack: Vec<usize>,
+    /// Stack tracking the number of consecutive moves without a capture or
+    /// placement.  Uses a fixed-size array instead of Vec to avoid heap
+    /// allocation and improve cache locality (this struct is cloned and
+    /// make/undo'd on every negamax node).
+    /// Values are u8 since the max idle count is MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT (10).
+    idle_stack: [u8; IDLE_STACK_CAP],
+    idle_stack_len: u16,
+}
+
+impl PartialEq for GameState {
+    fn eq(&self, other: &Self) -> bool {
+        self.board == other.board
+            && self.pulled_tile == other.pulled_tile
+            && self.current_player_turn == other.current_player_turn
+            && self.top_player_bag == other.top_player_bag
+            && self.top_player_discard == other.top_player_discard
+            && self.bottom_player_bag == other.bottom_player_bag
+            && self.bottom_player_discard == other.bottom_player_discard
+            && self.idle_stack_len == other.idle_stack_len
+            && self.idle_stack[..self.idle_stack_len as usize]
+                == other.idle_stack[..other.idle_stack_len as usize]
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,10 +110,32 @@ impl GameState {
     pub fn board(&self) -> &Board<PlacedTile> { self.board.get_board() }
 
     pub fn pulled_tile(&self) -> &Option<TileType> { &self.pulled_tile }
+    #[inline]
     pub fn current_player_turn(&self) -> Owner { self.current_player_turn }
+    #[inline]
     pub fn idle_move_count(&self) -> usize {
-        *self.moves_without_capture_or_placement_stack.last()
-            .expect("moves_without_capture_or_placement_stack should never be empty")
+        debug_assert!(self.idle_stack_len > 0, "idle_stack should never be empty");
+        self.idle_stack[self.idle_stack_len as usize - 1] as usize
+    }
+
+    #[inline]
+    fn idle_stack_push(&mut self, val: u8) {
+        let idx = self.idle_stack_len as usize;
+        debug_assert!(idx < IDLE_STACK_CAP, "idle_stack overflow");
+        self.idle_stack[idx] = val;
+        self.idle_stack_len += 1;
+    }
+
+    #[inline]
+    fn idle_stack_pop(&mut self) {
+        debug_assert!(self.idle_stack_len > 0, "idle_stack underflow");
+        self.idle_stack_len -= 1;
+    }
+
+    #[inline]
+    fn idle_stack_last_mut(&mut self) -> &mut u8 {
+        debug_assert!(self.idle_stack_len > 0, "idle_stack empty");
+        &mut self.idle_stack[self.idle_stack_len as usize - 1]
     }
     pub fn top_player_bag(&self) -> &TileBag { &self.top_player_bag }
     pub fn player_1_discard(&self) -> &DiscardBag { &self.top_player_discard }
@@ -107,7 +157,8 @@ impl GameState {
             top_player_discard: DiscardBag::empty(),
             bottom_player_bag: bag,
             bottom_player_discard: DiscardBag::empty(),
-            moves_without_capture_or_placement_stack: vec![0],
+            idle_stack: [0u8; IDLE_STACK_CAP],
+            idle_stack_len: 1,
         }
     }
 
@@ -131,6 +182,8 @@ impl GameState {
             board.get_board().find(|t: &PlacedTile| t.owner == Owner::BottomPlayer && t.tile_type.is_duke()).is_some(),
             "from_snapshot: BottomPlayer duke is missing from the board"
         );
+        let mut idle_stack = [0u8; IDLE_STACK_CAP];
+        idle_stack[0] = snap.idle_move_count as u8;
         GameState {
             board,
             current_player_turn: snap.current_turn,
@@ -139,7 +192,8 @@ impl GameState {
             top_player_discard: snap.top_discard,
             bottom_player_bag: snap.bottom_bag,
             bottom_player_discard: snap.bottom_discard,
-            moves_without_capture_or_placement_stack: vec![snap.idle_move_count],
+            idle_stack,
+            idle_stack_len: 1,
         }
     }
     pub fn new(
@@ -157,7 +211,8 @@ impl GameState {
             top_player_discard: DiscardBag::empty(),
             bottom_player_bag: base_bag.clone(),
             bottom_player_discard: DiscardBag::empty(),
-            moves_without_capture_or_placement_stack: vec![0],
+            idle_stack: [0u8; IDLE_STACK_CAP],
+            idle_stack_len: 1,
         }
     }
 
@@ -214,7 +269,7 @@ impl GameState {
         // pops both entries, mirroring the make_a_move(PullAndPlay) path which
         // also pushes twice (once for PullAndPlay, once for the recursive
         // PlaceNewTile).
-        self.moves_without_capture_or_placement_stack.push(0);
+        self.idle_stack_push(0);
     }
 
     fn is_waiting_for_tile_placement(&self) -> bool {
@@ -233,15 +288,18 @@ impl GameState {
                         self.game_move_to_board_move(&game_move), self.current_player_turn),
         }
     }
+    #[inline]
     pub fn make_a_move<R: Rng>(&mut self, game_move: GameMove, rng: &mut R) -> () {
         match game_move {
             GameMove::PlaceNewTile(_) | GameMove::PullAndPlay(_) =>
-                self.moves_without_capture_or_placement_stack.push(0),
-            GameMove::ApplyNonCommandTileAction { src, dst } =>
-                if self.board.can_move(src, dst) && self.board.get(dst).is_some() {
-                    self.moves_without_capture_or_placement_stack.push(0)
+                self.idle_stack_push(0),
+            GameMove::ApplyNonCommandTileAction { src: _, dst } =>
+                if self.board.get(dst).is_some() {
+                    // Capture: reset idle counter (push new 0).
+                    self.idle_stack_push(0)
                 } else {
-                    *self.moves_without_capture_or_placement_stack.last_mut().unwrap() += 1
+                    // Non-capture: increment current idle counter.
+                    *self.idle_stack_last_mut() += 1
                 },
         };
         if let GameMove::PlaceNewTile(_) = game_move {
@@ -271,13 +329,14 @@ impl GameState {
             self.discard_bag_for_mut(captured_tile.owner)
                 .add(captured_tile.tile_type);
         }
-        assert_not!(self.board.is_guard(self.current_player_turn));
+        debug_assert!(!self.board.is_guard(self.current_player_turn),
+            "make_a_move left current player in guard");
         self.current_player_turn = self.current_player_turn.next_player();
         if self.is_waiting_for_tile_placement() {
             self.pulled_tile = None
         }
-        debug_assert!(!self.moves_without_capture_or_placement_stack.is_empty(),
-            "moves_without_capture_or_placement_stack should never be empty after make_a_move");
+        debug_assert!(self.idle_stack_len > 0,
+            "idle_stack should never be empty after make_a_move");
     }
 
     fn game_move_to_board_move(&self, gm: &GameMove) -> BoardMove {
@@ -367,9 +426,9 @@ impl GameState {
             )
     }
 
+    #[inline]
     pub fn is_tie(&self) -> bool {
-        self.moves_without_capture_or_placement_stack.last().unwrap() >=
-            &MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT
+        self.idle_move_count() >= MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT
     }
     pub fn is_over(&mut self) -> bool {
         !self.board.has_valid_moves(
@@ -378,6 +437,7 @@ impl GameState {
         ) || self.is_tie()
     }
 
+    #[inline]
     pub fn game_result(&mut self) -> GameResult {
         if self.is_tie() {
             GameResult::Tie
@@ -507,6 +567,7 @@ impl GameState {
         self.board.is_guard(o)
     }
 
+    #[inline]
     pub fn bag_for_owner(&self, o: Owner) -> &TileBag {
         match o {
             Owner::TopPlayer => &self.top_player_bag,
@@ -514,6 +575,7 @@ impl GameState {
         }
     }
 
+    #[inline]
     pub fn bag_for_current_player(&self) -> &TileBag {
         self.bag_for_owner(self.current_player_turn)
     }
@@ -538,10 +600,12 @@ impl GameState {
         }
     }
 
+    #[inline]
     fn pop_moves_stack(&mut self) -> () {
-        assert!(self.moves_without_capture_or_placement_stack.len() >= 2);
-        self.moves_without_capture_or_placement_stack.pop();
+        debug_assert!(self.idle_stack_len >= 2, "pop_moves_stack: stack underflow");
+        self.idle_stack_pop();
     }
+    #[inline]
     pub fn undo(&mut self, mv: PossibleMove) -> () {
         self.current_player_turn = self.current_player_turn.next_player();
         // If the move was a capture, remove the captured tile from its owner's discard pile.
@@ -555,8 +619,8 @@ impl GameState {
                 if capturing.is_some() {
                     self.pop_moves_stack()
                 } else {
-                    let moves = self.moves_without_capture_or_placement_stack.last_mut().unwrap();
-                    assert!(*moves >= 1);
+                    let moves = self.idle_stack_last_mut();
+                    debug_assert!(*moves >= 1, "undo non-capture: idle count underflow");
                     *moves -= 1;
                 }
             }
@@ -599,7 +663,7 @@ impl Hash for GameState {
         // Hash the idle-move counter stack to stay consistent with derived PartialEq,
         // which compares this field.  Without this, two states differing only in how
         // close they are to a tie draw would collide in any hash-based data structure.
-        self.moves_without_capture_or_placement_stack.hash(state);
+        self.idle_stack[..self.idle_stack_len as usize].hash(state);
     }
 }
 
@@ -1326,7 +1390,7 @@ mod tests {
     /// Two states that differ only in their idle-move counter should have
     /// different hashes, since the derived PartialEq considers them unequal.
     /// Regression test: the Hash impl previously omitted the
-    /// `moves_without_capture_or_placement_stack` field, causing states near
+    /// `idle_stack` field, causing states near
     /// and far from a tie draw to collide in hash-based data structures.
     #[test]
     fn hash_differs_when_idle_move_count_differs() {
