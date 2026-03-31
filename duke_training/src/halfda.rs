@@ -124,8 +124,8 @@ pub fn encode_halfda(gs: &GameState) -> HalfDABuffer {
 
 // ── Incremental L1 Accumulator ────────────────────────────────────────────
 
-/// Hidden size for the HalfDA accumulator.
-/// Must match the hidden size used during training.
+/// Default hidden size for the HalfDA accumulator.
+/// Models may use different sizes (256, 512, 1024, 2048).
 pub const HALFDA_HIDDEN: usize = 2048;
 
 /// Incremental L1 accumulator for the HalfDA NNUE network.
@@ -152,19 +152,19 @@ impl Clone for HalfDAAccumulator {
 impl HalfDAAccumulator {
     /// Initialize from scratch for a given position.
     ///
-    /// `weights` layout: `weights[feature_idx * HALFDA_HIDDEN + neuron]`
-    /// `bias`: the L1 bias vector of length `HALFDA_HIDDEN`.
+    /// `weights` layout: `weights[feature_idx * hidden_size + neuron]`
+    /// `bias`: the L1 bias vector whose length determines the hidden size.
     pub fn from_position(gs: &GameState, weights: &[f32], bias: &[f32]) -> Self {
-        debug_assert_eq!(weights.len(), HALFDA_FEATURES * HALFDA_HIDDEN);
-        debug_assert_eq!(bias.len(), HALFDA_HIDDEN);
+        let hidden_size = bias.len();
+        debug_assert_eq!(weights.len(), HALFDA_FEATURES * hidden_size);
 
         let buf = encode_halfda(gs);
         let mut hidden = bias.to_vec();
 
         for &idx in buf.as_slice() {
-            let offset = idx as usize * HALFDA_HIDDEN;
-            let row = &weights[offset..offset + HALFDA_HIDDEN];
-            for j in 0..HALFDA_HIDDEN {
+            let offset = idx as usize * hidden_size;
+            let row = &weights[offset..offset + hidden_size];
+            for j in 0..hidden_size {
                 hidden[j] += row[j];
             }
         }
@@ -200,13 +200,15 @@ impl HalfDAAccumulator {
             new_set[i / 64] |= 1u64 << (i % 64);
         }
 
+        let hidden_size = self.hidden.len();
+
         // Subtract removed features (in old but not new)
         for &idx in &self.active {
             let i = idx as usize;
             if new_set[i / 64] & (1u64 << (i % 64)) == 0 {
-                let offset = i * HALFDA_HIDDEN;
-                let row = &weights[offset..offset + HALFDA_HIDDEN];
-                for j in 0..HALFDA_HIDDEN {
+                let offset = i * hidden_size;
+                let row = &weights[offset..offset + hidden_size];
+                for j in 0..hidden_size {
                     self.hidden[j] -= row[j];
                 }
             }
@@ -216,9 +218,9 @@ impl HalfDAAccumulator {
         for &idx in &new_sorted {
             let i = idx as usize;
             if old_set[i / 64] & (1u64 << (i % 64)) == 0 {
-                let offset = i * HALFDA_HIDDEN;
-                let row = &weights[offset..offset + HALFDA_HIDDEN];
-                for j in 0..HALFDA_HIDDEN {
+                let offset = i * hidden_size;
+                let row = &weights[offset..offset + hidden_size];
+                for j in 0..hidden_size {
                     self.hidden[j] += row[j];
                 }
             }
@@ -234,14 +236,15 @@ impl HalfDAAccumulator {
 
     /// Full forward pass through L1 (clipped ReLU) + output layer.
     ///
-    /// `output_weights`: dense output layer weights, length `HALFDA_HIDDEN`.
+    /// `output_weights`: dense output layer weights, length must match hidden size.
     /// `output_bias`: scalar bias for the output neuron.
     ///
     /// Returns sigmoid(dot(clipped_relu(hidden), output_weights) + output_bias).
     pub fn evaluate(&self, output_weights: &[f32], output_bias: f32) -> f32 {
-        debug_assert_eq!(output_weights.len(), HALFDA_HIDDEN);
+        let hidden_size = self.hidden.len();
+        debug_assert_eq!(output_weights.len(), hidden_size);
         let mut logit = output_bias;
-        for j in 0..HALFDA_HIDDEN {
+        for j in 0..hidden_size {
             let activated = self.hidden[j].clamp(0.0, 1.0);
             logit += activated * output_weights[j];
         }
@@ -259,28 +262,33 @@ use crate::game_setup::GameEvaluator;
 /// Implements the `GameEvaluator` trait for use in negamax search and elo tournaments.
 /// Stores the L1 embedding weights/bias and the dense output layer weights/bias.
 pub struct HalfDAEvaluator {
-    /// L1 embedding weights: [HALFDA_FEATURES * HALFDA_HIDDEN] column-major.
+    /// L1 embedding weights: [HALFDA_FEATURES * hidden_size] column-major.
     pub l1_weights: Vec<f32>,
-    /// L1 bias: [HALFDA_HIDDEN].
+    /// L1 bias: [hidden_size].
     pub l1_bias: Vec<f32>,
-    /// Output layer weights: [HALFDA_HIDDEN].
+    /// Output layer weights: [hidden_size].
     pub output_weights: Vec<f32>,
     /// Output layer bias: scalar.
     pub output_bias: f32,
+    /// Hidden layer size (derived from l1_bias.len() at construction time).
+    pub hidden_size: usize,
 }
 
 impl HalfDAEvaluator {
     /// Create a new HalfDAEvaluator from raw weight vectors.
+    ///
+    /// The hidden size is derived from `l1_bias.len()`. All vectors must be
+    /// consistent with this hidden size.
     pub fn new(
         l1_weights: Vec<f32>,
         l1_bias: Vec<f32>,
         output_weights: Vec<f32>,
         output_bias: f32,
     ) -> Self {
-        assert_eq!(l1_weights.len(), HALFDA_FEATURES * HALFDA_HIDDEN);
-        assert_eq!(l1_bias.len(), HALFDA_HIDDEN);
-        assert_eq!(output_weights.len(), HALFDA_HIDDEN);
-        Self { l1_weights, l1_bias, output_weights, output_bias }
+        let hidden_size = l1_bias.len();
+        assert_eq!(l1_weights.len(), HALFDA_FEATURES * hidden_size);
+        assert_eq!(output_weights.len(), hidden_size);
+        Self { l1_weights, l1_bias, output_weights, output_bias, hidden_size }
     }
 
     /// Load from a checkpoint directory containing halfda_l1.bin + halfda_output.bin.
@@ -332,7 +340,6 @@ impl HalfDAEvaluator {
 
         cursor.read_exact(&mut buf4)?;
         let hidden = u32::from_le_bytes(buf4) as usize;
-        assert_eq!(hidden, HALFDA_HIDDEN);
 
         let mut l1_bias = vec![0.0f32; hidden];
         for v in &mut l1_bias {
@@ -381,7 +388,6 @@ pub struct HalfDAIncrementalEvaluator {
     weights: HalfDAEvaluator,
     /// Stack of accumulators for search tree traversal.
     /// Push on make_a_move, pop on undo.
-    /// Uses Mutex for Send+Sync compatibility (search is single-threaded per game).
     acc_stack: Mutex<Vec<HalfDAAccumulator>>,
 }
 
