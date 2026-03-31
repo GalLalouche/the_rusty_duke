@@ -44,6 +44,7 @@ fn main() {
             std::process::exit(1);
         });
     let depth: u32 = parse_flag(&args, "--depth").unwrap_or(3);
+    let max_positions: Option<usize> = parse_flag(&args, "--max-positions");
     let output_path: String = parse_flag(&args, "--output")
         .unwrap_or_else(|| {
             eprintln!("Missing --output flag");
@@ -58,6 +59,26 @@ fn main() {
     let total_states: usize = games.iter().map(|g| g.states.len()).sum();
     eprintln!("Loaded {} games, {} states in {:.1}s",
         games.len(), total_states, t0.elapsed().as_secs_f64());
+
+    // --- Optionally truncate to --max-positions ---
+    let mut games = games;
+    let total_states = if let Some(max) = max_positions {
+        let mut cumulative = 0usize;
+        let mut keep = games.len();
+        for (i, g) in games.iter().enumerate() {
+            cumulative += g.states.len();
+            if cumulative >= max {
+                keep = i + 1;
+                break;
+            }
+        }
+        games.truncate(keep);
+        let actual: usize = games.iter().map(|g| g.states.len()).sum();
+        eprintln!("Truncated to {} games, {} states (--max-positions {})", games.len(), actual, max);
+        actual
+    } else {
+        total_states
+    };
 
     // --- Load evaluator ---
     eprintln!("Loading LR-Cheap evaluator from {} ...", evaluator_path);
