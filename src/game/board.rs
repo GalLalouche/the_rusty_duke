@@ -58,8 +58,10 @@ static RAY_BETWEEN: [[u64; 36]; 36] = {
 /// Splits targets into categories that can be counted via popcount vs per-target checking.
 #[derive(Clone)]
 struct PrecomputedMoves {
-    /// Bitmask of Jump targets + Move targets that are distance-1 (no obstruction check needed).
-    jump_and_near_mask: u64,
+    /// Bitmask of Jump targets.
+    jump_mask: u64,
+    /// Bitmask of Move targets that are distance-1 (no obstruction check needed).
+    near_move_mask: u64,
     /// Bitmask of Strike targets (count = popcount of mask & opp_occ).
     strike_mask: u64,
     /// Move targets that are distance > 1 (need obstruction + straight-line check).
@@ -75,7 +77,8 @@ struct PrecomputedMoves {
 impl PrecomputedMoves {
     fn empty() -> Self {
         PrecomputedMoves {
-            jump_and_near_mask: 0,
+            jump_mask: 0,
+            near_move_mask: 0,
             strike_mask: 0,
             far_move: [0; 8],
             far_move_len: 0,
@@ -122,7 +125,7 @@ impl MoveTable {
                             TileAction::Unit | TileAction::Command => continue,
                             TileAction::Jump => {
                                 if let Some(dst) = Self::abs_coord(src, *offset, center) {
-                                    entry.jump_and_near_mask |= 1u64 << (dst.y * 6 + dst.x);
+                                    entry.jump_mask |= 1u64 << (dst.y * 6 + dst.x);
                                 }
                             }
                             TileAction::Move => {
@@ -134,7 +137,7 @@ impl MoveTable {
                                     let di = dst.y as usize * 6 + dst.x as usize;
                                     if RAY_BETWEEN[si][di] == 0 {
                                         // Distance 1: no obstruction possible.
-                                        entry.jump_and_near_mask |= 1u64 << di;
+                                        entry.near_move_mask |= 1u64 << di;
                                     } else {
                                         entry.far_move[entry.far_move_len as usize] = di as u8;
                                         entry.far_move_len += 1;
@@ -465,6 +468,24 @@ impl GameBoard {
     }
 
     #[inline(always)]
+    fn idx_coord(idx: usize) -> Coordinates {
+        Coordinates {
+            x: (idx % 6) as u8,
+            y: (idx / 6) as u8,
+        }
+    }
+
+    #[inline(always)]
+    fn jump_slide_clear(pos: usize, dst: usize, occ: u64) -> bool {
+        let dx = (dst % 6) as i32 - (pos % 6) as i32;
+        let dy = (dst / 6) as i32 - (pos / 6) as i32;
+        let sx = if dx > 0 { 1 } else if dx < 0 { -1 } else { 0 };
+        let sy = if dy > 0 { 1 } else if dy < 0 { -1 } else { 0 };
+        let adj_bit = 1u64 << (((pos / 6) as i32 + sy) * 6 + ((pos % 6) as i32 + sx));
+        (RAY_BETWEEN[pos][dst] & !adj_bit) & occ == 0
+    }
+
+    #[inline(always)]
     fn owner_occ(&self, o: Owner) -> u64 {
         match o {
             Owner::TopPlayer => self.top_occ,
@@ -499,6 +520,19 @@ impl GameBoard {
     #[inline(always)]
     pub fn piece_count(&self, owner: Owner) -> u32 {
         self.owner_occ(owner).count_ones()
+    }
+
+    #[inline(always)]
+    fn move_table_entry(src: Coordinates, tile: &PlacedTile) -> &'static PrecomputedMoves {
+        let tile_idx = match tile.owner {
+            Owner::BottomPlayer => tile.tile_type.index(),
+            Owner::TopPlayer => TileType::COUNT + tile.tile_type.index(),
+        };
+        let side_idx = match tile.current_side {
+            CurrentSide::Initial => 0,
+            CurrentSide::Flipped => 1,
+        };
+        move_table().lookup(tile_idx, side_idx, Self::coord_idx(src))
     }
 
     #[inline]
@@ -1058,18 +1092,58 @@ impl GameBoard {
     #[inline]
     fn get_legal_moves_no_guard(&self, src: Coordinates) -> LegalMoveBuffer {
         let tile = self.get(src).unwrap();
-        let tile_side = tile.get_current_side();
-        let center_offset = tile_side.center_offset();
+        let entry = Self::move_table_entry(src, tile);
+        let pos = Self::coord_idx(src);
+        let my_occ = self.owner_occ(tile.owner);
+        let opp_occ = self.occ & !my_occ;
         let mut buf = LegalMoveBuffer::new();
-        for (offset, action) in tile_side.actions().iter() {
-            if *action == TileAction::Command || *action == TileAction::Unit {
+
+        let mut jump_bits = entry.jump_mask & !my_occ;
+        while jump_bits != 0 {
+            let di = jump_bits.trailing_zeros() as usize;
+            jump_bits &= jump_bits - 1;
+            buf.push(Self::idx_coord(di), TileAction::Jump);
+        }
+
+        let mut near_move_bits = entry.near_move_mask & !my_occ;
+        while near_move_bits != 0 {
+            let di = near_move_bits.trailing_zeros() as usize;
+            near_move_bits &= near_move_bits - 1;
+            buf.push(Self::idx_coord(di), TileAction::Move);
+        }
+
+        let mut strike_bits = entry.strike_mask & opp_occ;
+        while strike_bits != 0 {
+            let di = strike_bits.trailing_zeros() as usize;
+            strike_bits &= strike_bits - 1;
+            buf.push(Self::idx_coord(di), TileAction::Strike);
+        }
+
+        for i in 0..entry.far_move_len as usize {
+            let di = entry.far_move[i] as usize;
+            if (1u64 << di) & my_occ == 0 && RAY_BETWEEN[pos][di] & self.occ == 0 {
+                buf.push(Self::idx_coord(di), TileAction::Move);
+            }
+        }
+
+        for i in 0..entry.slide_len as usize {
+            let di = entry.slide[i] as usize;
+            let dst_bit = 1u64 << di;
+            if dst_bit & my_occ != 0 {
                 continue;
             }
-            let targets = self.target_coordinates(src, *offset, *action, center_offset);
-            for c in targets.into_iter() {
-                if self.can_apply_action_fast(src, c, *action) {
-                    buf.push(c, *action);
-                }
+            let legal = if entry.slide_action[i] == 0 {
+                RAY_BETWEEN[pos][di] & self.occ == 0
+            } else {
+                Self::jump_slide_clear(pos, di, self.occ)
+            };
+            if legal {
+                let action = if entry.slide_action[i] == 0 {
+                    TileAction::Slide
+                } else {
+                    TileAction::JumpSlide
+                };
+                buf.push(Self::idx_coord(di), action);
             }
         }
         buf
@@ -1078,23 +1152,15 @@ impl GameBoard {
     #[inline]
     fn count_legal_moves_no_guard(&self, src: Coordinates) -> usize {
         let tile = self.get(src).unwrap();
-        let table = move_table();
-        let tile_idx = match tile.owner {
-            Owner::BottomPlayer => tile.tile_type.index(),
-            Owner::TopPlayer => TileType::COUNT + tile.tile_type.index(),
-        };
-        let side_idx = match tile.current_side {
-            CurrentSide::Initial => 0,
-            CurrentSide::Flipped => 1,
-        };
+        let entry = Self::move_table_entry(src, tile);
         let pos = Self::coord_idx(src);
-        let entry = table.lookup(tile_idx, side_idx, pos);
 
         let my_occ = self.owner_occ(tile.owner);
         let opp_occ = self.occ & !my_occ;
 
         // Jump + distance-1 Move: just check not friendly.
-        let mut count = (entry.jump_and_near_mask & !my_occ).count_ones() as usize;
+        let mut count = (entry.jump_mask & !my_occ).count_ones() as usize;
+        count += (entry.near_move_mask & !my_occ).count_ones() as usize;
 
         // Strike: must be occupied by enemy.
         count += (entry.strike_mask & opp_occ).count_ones() as usize;
@@ -1119,14 +1185,7 @@ impl GameBoard {
                 }
             } else {
                 // JumpSlide: skip first intermediate square.
-                let dx = (di % 6) as i32 - (pos % 6) as i32;
-                let dy = (di / 6) as i32 - (pos / 6) as i32;
-                let sx = if dx > 0 { 1 } else if dx < 0 { -1i32 } else { 0 };
-                let sy = if dy > 0 { 1 } else if dy < 0 { -1i32 } else { 0 };
-                let adj_x = (pos % 6) as i32 + sx;
-                let adj_y = (pos / 6) as i32 + sy;
-                let adj_bit = 1u64 << (adj_y * 6 + adj_x);
-                if (RAY_BETWEEN[pos][di] & !adj_bit) & self.occ == 0 {
+                if Self::jump_slide_clear(pos, di, self.occ) {
                     count += 1;
                 }
             }
@@ -1136,23 +1195,56 @@ impl GameBoard {
     }
 
     /// Like `get_legal_moves_no_guard` but also includes friendly-occupied
-    /// destinations (using `can_apply_action_ignoring_friendly`).
-    /// Used for computing "defended" features efficiently.
+    /// destinations. Used for computing "defended" features efficiently.
     #[inline]
     fn get_reachable_squares_ignoring_friendly(&self, src: Coordinates) -> LegalMoveBuffer {
         let tile = self.get(src).unwrap();
-        let tile_side = tile.get_current_side();
-        let center_offset = tile_side.center_offset();
+        let entry = Self::move_table_entry(src, tile);
+        let pos = Self::coord_idx(src);
         let mut buf = LegalMoveBuffer::new();
-        for (offset, action) in tile_side.actions().iter() {
-            if *action == TileAction::Command || *action == TileAction::Unit {
-                continue;
+
+        let mut jump_bits = entry.jump_mask;
+        while jump_bits != 0 {
+            let di = jump_bits.trailing_zeros() as usize;
+            jump_bits &= jump_bits - 1;
+            buf.push(Self::idx_coord(di), TileAction::Jump);
+        }
+
+        let mut near_move_bits = entry.near_move_mask;
+        while near_move_bits != 0 {
+            let di = near_move_bits.trailing_zeros() as usize;
+            near_move_bits &= near_move_bits - 1;
+            buf.push(Self::idx_coord(di), TileAction::Move);
+        }
+
+        let mut strike_bits = entry.strike_mask;
+        while strike_bits != 0 {
+            let di = strike_bits.trailing_zeros() as usize;
+            strike_bits &= strike_bits - 1;
+            buf.push(Self::idx_coord(di), TileAction::Strike);
+        }
+
+        for i in 0..entry.far_move_len as usize {
+            let di = entry.far_move[i] as usize;
+            if RAY_BETWEEN[pos][di] & self.occ == 0 {
+                buf.push(Self::idx_coord(di), TileAction::Move);
             }
-            let targets = self.target_coordinates(src, *offset, *action, center_offset);
-            for c in targets.into_iter() {
-                if self.can_apply_action_ignoring_friendly(src, c, *action) {
-                    buf.push(c, *action);
-                }
+        }
+
+        for i in 0..entry.slide_len as usize {
+            let di = entry.slide[i] as usize;
+            let legal = if entry.slide_action[i] == 0 {
+                RAY_BETWEEN[pos][di] & self.occ == 0
+            } else {
+                Self::jump_slide_clear(pos, di, self.occ)
+            };
+            if legal {
+                let action = if entry.slide_action[i] == 0 {
+                    TileAction::Slide
+                } else {
+                    TileAction::JumpSlide
+                };
+                buf.push(Self::idx_coord(di), action);
             }
         }
         buf
@@ -1202,35 +1294,38 @@ impl GameBoard {
             Some(t) => t,
             None => return false,
         };
-        let tile_side = tile.get_current_side();
-        let center_offset = tile_side.center_offset();
+        if !self.board.is_in_bounds(target) {
+            return false;
+        }
 
-        for (offset, action) in tile_side.actions().iter() {
-            match *action {
-                TileAction::Unit | TileAction::Command => continue,
-                TileAction::Move | TileAction::Jump | TileAction::Strike => {
-                    if let Some(dst) = self.to_absolute_coordinate(src, *offset, center_offset) {
-                        if dst == target && self.can_apply_action_fast(src, dst, *action) {
-                            return true;
-                        }
-                    }
-                }
-                TileAction::Slide => {
-                    if self.is_target_on_slide(src, *offset, target)
-                        && self.can_apply_action_fast(src, target, TileAction::Slide)
-                    {
-                        return true;
-                    }
-                }
-                TileAction::JumpSlide => {
-                    let near_offset = Offsets::new(offset.x.to_near(), offset.y.to_near());
-                    if self.is_target_on_slide(src, near_offset, target)
-                        && self.can_apply_action_fast(src, target, TileAction::JumpSlide)
-                    {
-                        return true;
-                    }
-                }
+        let entry = Self::move_table_entry(src, tile);
+        let src_idx = Self::coord_idx(src);
+        let dst_idx = Self::coord_idx(target);
+        let dst_bit = Self::coord_bit(target);
+        let my_occ = self.owner_occ(tile.owner);
+
+        if dst_bit & my_occ != 0 {
+            return false;
+        }
+        if (entry.jump_mask | entry.near_move_mask) & dst_bit != 0 {
+            return true;
+        }
+        if entry.strike_mask & dst_bit != 0 {
+            return dst_bit & self.occ != 0;
+        }
+        for i in 0..entry.far_move_len as usize {
+            if entry.far_move[i] as usize == dst_idx {
+                return RAY_BETWEEN[src_idx][dst_idx] & self.occ == 0;
             }
+        }
+        for i in 0..entry.slide_len as usize {
+            if entry.slide[i] as usize != dst_idx {
+                continue;
+            }
+            if entry.slide_action[i] == 0 {
+                return RAY_BETWEEN[src_idx][dst_idx] & self.occ == 0;
+            }
+            return Self::jump_slide_clear(src_idx, dst_idx, self.occ);
         }
         false
     }
@@ -1244,109 +1339,33 @@ impl GameBoard {
             Some(t) => t,
             None => return false,
         };
-        let tile_side = tile.get_current_side();
-        let center_offset = tile_side.center_offset();
-
-        for (offset, action) in tile_side.actions().iter() {
-            match *action {
-                TileAction::Unit | TileAction::Command => continue,
-                TileAction::Move | TileAction::Jump | TileAction::Strike => {
-                    if let Some(dst) = self.to_absolute_coordinate(src, *offset, center_offset) {
-                        if dst == target && self.can_apply_action_ignoring_friendly(src, dst, *action) {
-                            return true;
-                        }
-                    }
-                }
-                TileAction::Slide => {
-                    if self.is_target_on_slide(src, *offset, target)
-                        && self.can_apply_action_ignoring_friendly(src, target, TileAction::Slide)
-                    {
-                        return true;
-                    }
-                }
-                TileAction::JumpSlide => {
-                    let near_offset = Offsets::new(offset.x.to_near(), offset.y.to_near());
-                    if self.is_target_on_slide(src, near_offset, target)
-                        && self.can_apply_action_ignoring_friendly(src, target, TileAction::JumpSlide)
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Like `can_apply_action` but does not reject moves to friendly-occupied
-    /// squares. Path obstruction and straight-line checks still apply.
-    fn can_apply_action_ignoring_friendly(&self, src: Coordinates, dst: Coordinates, action: TileAction) -> bool {
-        match action {
-            TileAction::Unit => panic!("Cannot apply action Unit"),
-            TileAction::Move =>
-                src.is_straight_line_to(dst) && self.unobstructed(src, dst),
-            TileAction::Jump => true,
-            TileAction::Slide =>
-                src.is_straight_line_to(dst) && self.unobstructed(src, dst),
-            TileAction::Command => panic!("Commands shouldn't have been used here"),
-            TileAction::JumpSlide => {
-                if !src.is_straight_line_to(dst) {
-                    return false;
-                }
-                let skip = std::cell::Cell::new(true);
-                !src.on_the_linear_path_to(dst, |x, y| {
-                    if skip.get() {
-                        skip.set(false);
-                        false
-                    } else {
-                        self.board.is_occupied(Coordinates { x, y })
-                    }
-                })
-            }
-            // Strike can target any occupied or empty square in range; for
-            // "reachability" purposes we treat it as reachable.
-            TileAction::Strike => true,
-        }
-    }
-
-    /// Check if `target` lies on the slide line defined by `src` + direction `offset`.
-    /// Does NOT check obstruction -- that is handled by `can_apply_action`.
-    fn is_target_on_slide(&self, src: Coordinates, offset: Offsets, target: Coordinates) -> bool {
-        if target == src || !self.board.is_in_bounds(target) {
+        if !self.board.is_in_bounds(target) {
             return false;
         }
-        // The offset encodes the direction of the slide relative to center.
-        // We need to check that target lies in the correct direction from src.
-        let dx = target.x as i32 - src.x as i32;
-        let dy = target.y as i32 - src.y as i32;
 
-        // Determine the expected direction from the offset.
-        // Slide offsets are always "near" offsets: Left/Right/Top/Bottom or
-        // near-diagonal combinations (Left+Top, Right+Bottom, etc.)
-        let (expect_dx, expect_dy) = match (offset.x, offset.y) {
-            // Straight directions (note: target_coordinates reverses Left/Right)
-            (HorizontalOffset::Right, VerticalOffset::Center) => (-1i32, 0i32), // slide left
-            (HorizontalOffset::Left, VerticalOffset::Center) => (1, 0),         // slide right
-            (HorizontalOffset::Center, VerticalOffset::Top) => (0, -1),         // slide up
-            (HorizontalOffset::Center, VerticalOffset::Bottom) => (0, 1),       // slide down
-            // Diagonals (same reversal pattern as target_coordinates)
-            (HorizontalOffset::Right, VerticalOffset::Top) => (-1, -1),
-            (HorizontalOffset::Left, VerticalOffset::Top) => (1, -1),
-            (HorizontalOffset::Right, VerticalOffset::Bottom) => (-1, 1),
-            (HorizontalOffset::Left, VerticalOffset::Bottom) => (1, 1),
-            _ => return false,
-        };
+        let entry = Self::move_table_entry(src, tile);
+        let src_idx = Self::coord_idx(src);
+        let dst_idx = Self::coord_idx(target);
+        let dst_bit = Self::coord_bit(target);
 
-        // Check that target is in the correct direction and on the line.
-        if expect_dx == 0 {
-            // Vertical slide
-            dx == 0 && (dy.signum() == expect_dy)
-        } else if expect_dy == 0 {
-            // Horizontal slide
-            dy == 0 && (dx.signum() == expect_dx)
-        } else {
-            // Diagonal slide: |dx| == |dy| and correct direction
-            dx.abs() == dy.abs() && dx.signum() == expect_dx && dy.signum() == expect_dy
+        if (entry.jump_mask | entry.near_move_mask | entry.strike_mask) & dst_bit != 0 {
+            return true;
         }
+        for i in 0..entry.far_move_len as usize {
+            if entry.far_move[i] as usize == dst_idx {
+                return RAY_BETWEEN[src_idx][dst_idx] & self.occ == 0;
+            }
+        }
+        for i in 0..entry.slide_len as usize {
+            if entry.slide[i] as usize != dst_idx {
+                continue;
+            }
+            if entry.slide_action[i] == 0 {
+                return RAY_BETWEEN[src_idx][dst_idx] & self.occ == 0;
+            }
+            return Self::jump_slide_clear(src_idx, dst_idx, self.occ);
+        }
+        false
     }
 
     // Returns the tile that was removed, if such a tile exists, e.g., when placing a new tile,

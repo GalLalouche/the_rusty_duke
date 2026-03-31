@@ -219,7 +219,8 @@ change between calls for the same configuration.
 
 **Fix:** Added a `MoveTable` (lazy-initialized `OnceLock`) that precomputes,
 for every (tile_type × 2 owners × 2 sides × 36 positions = 1872 entries):
-- `jump_and_near_mask: u64` — Jump targets + distance-1 Move targets (count via popcount after masking out friendly)
+- `jump_mask: u64` — Jump targets
+- `near_move_mask: u64` — distance-1 Move targets
 - `strike_mask: u64` — Strike targets (count via popcount after masking with enemy occ)
 - `far_move[8]` — Move targets at distance ≥ 2 (need obstruction check)
 - `slide[20]` — Slide/JumpSlide targets (need per-target obstruction check)
@@ -230,6 +231,32 @@ At runtime, `count_legal_moves_no_guard` becomes: one table lookup + two popcoun
 **Expected impact:** Moderate-high. Eliminates ~5 function calls per action.
 
 **Status:** Done — **~30% improvement** on top of Opts 10-11 (10.5 → ~3.2 us/move cumulative, **3.3x total speedup**).
+
+---
+
+## Optimization 12: Move-table driven generation and guard checks
+
+**Problem:** Even with precomputed move counts, hot paths still rebuilt legal move
+targets and attack/reach checks on every call:
+- `get_legal_moves_no_guard` iterated action lists and called `target_coordinates`
+- `can_attack_square` (inside `is_guard`) iterated actions and recomputed offsets
+- `get_reachable_squares_ignoring_friendly` repeated the same target expansion
+
+These methods run frequently during greedy move scoring and guard filtering.
+
+**Fix:** Reused `MoveTable` directly in runtime hot paths:
+1. Rewrote `get_legal_moves_no_guard` to emit moves from precomputed masks/arrays
+   (bit iteration + obstruction checks only where needed).
+2. Rewrote `can_attack_square` to test target membership in precomputed masks and
+   only do ray/jumpslide obstruction checks for matching far targets.
+3. Rewrote `can_reach_square_ignoring_friendly` and
+   `get_reachable_squares_ignoring_friendly` similarly.
+4. Added `jump_slide_clear` helper for shared, branch-light jump-slide checking.
+
+**Expected impact:** High on guard-heavy move generation and heuristic labeling.
+
+**Status:** Done — **~28% improvement** on top of Opt 7-revisited
+(~3.2 → ~2.3 us/move), **~4.6x total speedup** vs baseline (10.5 → ~2.3 us/move).
 
 ---
 
