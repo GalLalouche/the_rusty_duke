@@ -508,18 +508,34 @@ mod tests {
 
     // ── Accumulator tests ────────────────────────────────────────────────
 
-    /// Create small random weights for testing (use a small hidden size for speed).
-    fn make_test_weights(hidden: usize) -> (Vec<f32>, Vec<f32>) {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let scale = 0.1f32;
-        let weights: Vec<f32> = (0..HALFDA_FEATURES * hidden)
-            .map(|_| rng.gen_range(-scale..scale))
-            .collect();
-        let bias: Vec<f32> = (0..hidden)
-            .map(|_| rng.gen_range(-scale..scale))
-            .collect();
-        (weights, bias)
+    use std::sync::OnceLock;
+
+    /// Shared test weights — allocated once, reused across all tests.
+    /// Avoids 5 × 552MB allocations that took 25+ seconds in debug mode.
+    static TEST_WEIGHTS: OnceLock<(Vec<f32>, Vec<f32>)> = OnceLock::new();
+
+    fn get_test_weights() -> &'static (Vec<f32>, Vec<f32>) {
+        TEST_WEIGHTS.get_or_init(|| {
+            let n = HALFDA_FEATURES * HALFDA_HIDDEN;
+            let mut weights = vec![0.0f32; n];
+            for feat in 0..HALFDA_FEATURES {
+                let base = feat * HALFDA_HIDDEN;
+                for j in 0..HALFDA_HIDDEN.min(4) {
+                    let idx = base + (feat.wrapping_mul(7) + j) % HALFDA_HIDDEN;
+                    weights[idx] = ((feat * 31 + j * 17) % 200) as f32 * 0.001 - 0.1;
+                }
+            }
+            let bias: Vec<f32> = (0..HALFDA_HIDDEN)
+                .map(|j| (j % 100) as f32 * 0.001 - 0.05)
+                .collect();
+            (weights, bias)
+        })
+    }
+
+    #[allow(unused)]
+    fn make_test_weights(_hidden: usize) -> (&'static Vec<f32>, &'static Vec<f32>) {
+        let w = get_test_weights();
+        (&w.0, &w.1)
     }
 
     #[test]
@@ -534,7 +550,8 @@ mod tests {
         ];
         let gs = make_state(tiles, Owner::TopPlayer);
 
-        let (weights, bias) = make_test_weights(HALFDA_HIDDEN);
+        let tw = get_test_weights();
+        let (weights, bias) = (&tw.0, &tw.1);
         let acc = HalfDAAccumulator::from_position(&gs, &weights, &bias);
 
         // Manually compute expected hidden state
@@ -575,7 +592,8 @@ mod tests {
         let gs1 = make_state(tiles1, Owner::TopPlayer);
         let gs2 = make_state(tiles2, Owner::TopPlayer);
 
-        let (weights, bias) = make_test_weights(HALFDA_HIDDEN);
+        let tw = get_test_weights();
+        let (weights, bias) = (&tw.0, &tw.1);
 
         // Method 1: from-scratch computation for position 2
         let acc_scratch = HalfDAAccumulator::from_position(&gs2, &weights, &bias);
@@ -614,7 +632,8 @@ mod tests {
         let gs1 = make_state(tiles1, Owner::TopPlayer);
         let gs2 = make_state(tiles2, Owner::TopPlayer);
 
-        let (weights, bias) = make_test_weights(HALFDA_HIDDEN);
+        let tw = get_test_weights();
+        let (weights, bias) = (&tw.0, &tw.1);
 
         let acc_scratch = HalfDAAccumulator::from_position(&gs2, &weights, &bias);
         let mut acc_incr = HalfDAAccumulator::from_position(&gs1, &weights, &bias);
@@ -639,7 +658,8 @@ mod tests {
         ];
         let gs = make_state(tiles, Owner::TopPlayer);
 
-        let (weights, bias) = make_test_weights(HALFDA_HIDDEN);
+        let tw = get_test_weights();
+        let (weights, bias) = (&tw.0, &tw.1);
         let acc = HalfDAAccumulator::from_position(&gs, &weights, &bias);
 
         // Output weights for evaluation
@@ -665,18 +685,13 @@ mod tests {
         ];
         let gs = make_state(tiles, Owner::TopPlayer);
 
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let l1_weights: Vec<f32> = (0..HALFDA_FEATURES * HALFDA_HIDDEN)
-            .map(|_| rng.gen_range(-0.01..0.01))
-            .collect();
-        let l1_bias = vec![0.0f32; HALFDA_HIDDEN];
+        let tw = get_test_weights();
         let output_weights: Vec<f32> = (0..HALFDA_HIDDEN)
-            .map(|_| rng.gen_range(-0.1..0.1))
+            .map(|j| (j % 100) as f32 * 0.002 - 0.1)
             .collect();
         let output_bias = 0.0f32;
 
-        let evaluator = HalfDAEvaluator::new(l1_weights, l1_bias, output_weights, output_bias);
+        let evaluator = HalfDAEvaluator::new(tw.0.clone(), tw.1.clone(), output_weights, output_bias);
         let score = evaluator.evaluate(&gs);
         // HalfDAEvaluator maps sigmoid [0,1] -> [-10, 10]
         assert!(score >= -10.0 && score <= 10.0,
@@ -692,7 +707,8 @@ mod tests {
         ];
         let gs = make_state(tiles, Owner::TopPlayer);
 
-        let (weights, bias) = make_test_weights(HALFDA_HIDDEN);
+        let tw = get_test_weights();
+        let (weights, bias) = (&tw.0, &tw.1);
         let acc = HalfDAAccumulator::from_position(&gs, &weights, &bias);
         let output = acc.output();
 
