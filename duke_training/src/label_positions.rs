@@ -12,7 +12,6 @@
 //! re-deduplicating. Default: same directory as --output with `_dedup.bin` suffix.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::io::{Write, BufWriter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -27,6 +26,7 @@ use duke_rust::game::tile::Owner;
 use duke_training::cli::parse_flag;
 use duke_training::encoding::{active_board_features, bag_features};
 use duke_training::game_setup::negamax;
+use duke_training::position_hash::position_key;
 use duke_training::learned_heuristic::{CombinedWeights, extract_combined_features, NUM_COMBINED_FEATURES};
 use duke_training::supervised_common::COMBINED_FEATURE_NAMES;
 use duke_training::trajectory_io::{load_trajectories, write_game_state};
@@ -71,59 +71,6 @@ const FLPS_VERSION: u32 = 1;
 
 const DEDUP_MAGIC: &[u8; 4] = b"DPOS";
 const DEDUP_VERSION: u32 = 1;
-
-/// Compute a 64-bit hash of the board state for deduplication.
-///
-/// Two positions with the same hash have identical board layouts (tile types,
-/// owners, sides at each cell), the same current player, and the same bag
-/// contents. This is everything that matters for position evaluation.
-fn position_key(gs: &GameState) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    let mut h = DefaultHasher::new();
-
-    // Hash board contents in canonical cell order
-    for y in 0..6u8 {
-        for x in 0..6u8 {
-            let c = duke_rust::common::coordinates::Coordinates { x, y };
-            match gs.board().get(c) {
-                Some(t) => {
-                    1u8.hash(&mut h);
-                    t.tile_type.hash(&mut h);
-                    t.owner.hash(&mut h);
-                    t.current_side.hash(&mut h);
-                }
-                None => 0u8.hash(&mut h),
-            }
-        }
-    }
-
-    // Hash current player
-    gs.current_player_turn().hash(&mut h);
-
-    // Hash bag contents (sorted tile types for each player)
-    let mut top_bag: Vec<u8> = gs.bag_for_owner(Owner::TopPlayer)
-        .remaining().iter().map(|t| *t as u8).collect();
-    top_bag.sort();
-    top_bag.hash(&mut h);
-
-    let mut bottom_bag: Vec<u8> = gs.bag_for_owner(Owner::BottomPlayer)
-        .remaining().iter().map(|t| *t as u8).collect();
-    bottom_bag.sort();
-    bottom_bag.hash(&mut h);
-
-    // Hash discard piles
-    let mut top_disc: Vec<u8> = gs.discard_bag_for(Owner::TopPlayer)
-        .existing().iter().map(|t| *t as u8).collect();
-    top_disc.sort();
-    top_disc.hash(&mut h);
-
-    let mut bottom_disc: Vec<u8> = gs.discard_bag_for(Owner::BottomPlayer)
-        .existing().iter().map(|t| *t as u8).collect();
-    bottom_disc.sort();
-    bottom_disc.hash(&mut h);
-
-    h.finish()
-}
 
 /// Label a single position using negamax at the specified depth.
 fn label_position(gs: &GameState, evaluator: &CombinedWeights, depth: u32) -> f32 {

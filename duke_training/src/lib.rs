@@ -18,6 +18,7 @@ pub mod trajectory_io;
 pub mod weight_export;
 pub mod game_setup;
 pub mod model_registry;
+pub mod position_hash;
 
 #[cfg(test)]
 mod tests;
