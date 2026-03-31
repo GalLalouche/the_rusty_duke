@@ -246,6 +246,42 @@ impl CnnModel {
         self.conv_channels.last().unwrap() * self.board_size * self.board_size + self.bag_features
     }
 
+    /// Create a `CnnScratch` with only inference buffers pre-allocated.
+    /// Backward-pass buffers are left empty. Suitable for game-playing (evaluation-only).
+    pub fn create_inference_scratch(&self) -> CnnScratch {
+        let spatial = self.board_size * self.board_size;
+        let max_ch = *self.conv_channels.iter().max().unwrap();
+        let max_conv_buf = max_ch * spatial;
+        let fc_input_size = self.fc_input_size();
+        let max_fc = self.fc_sizes.iter().copied().max().unwrap_or(0).max(fc_input_size);
+        let max_kernel_area = match self.kernel_type {
+            KernelType::Box => 9,
+            KernelType::Diamond => 25,
+            KernelType::Cross => 9,
+        };
+        let im2col_size = max_ch * max_kernel_area * spatial;
+
+        CnnScratch {
+            conv_buf_a: vec![0.0f32; max_conv_buf],
+            conv_buf_b: vec![0.0f32; max_conv_buf],
+            fc_buf_a: vec![0.0f32; max_fc],
+            fc_buf_b: vec![0.0f32; max_fc],
+            im2col_buf: vec![0.0f32; im2col_size],
+            conv_pre_relu: Vec::new(),
+            conv_post_relu: Vec::new(),
+            fc_input: Vec::new(),
+            fc_pre_relu: Vec::new(),
+            fc_post_relu: Vec::new(),
+            fc_prev_act: Vec::new(),
+            bk_d_fc_a: Vec::new(),
+            bk_d_fc_b: Vec::new(),
+            bk_d_conv: Vec::new(),
+            bk_d_input: Vec::new(),
+            bk_fc_input: Vec::new(),
+            layout: CnnLayout::new(self),
+        }
+    }
+
     /// Create a `CnnScratch` with all buffers pre-allocated for this model's architecture.
     /// Call once and reuse across the entire training loop.
     pub fn create_scratch(&self) -> CnnScratch {
@@ -3366,15 +3402,28 @@ impl CnnModel {
 // ── CnnEvaluator (for game playing) ─────────────────────────────────────
 
 /// Evaluator wrapper for CnnModel, implementing GameEvaluator.
+///
+/// Uses a thread-local `CnnScratch` to eliminate all heap allocations
+/// in the forward pass (conv ping-pong buffers, FC buffers, im2col).
 pub struct CnnEvaluator {
     pub model: CnnModel,
 }
 
 impl GameEvaluator for CnnEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
+        use std::cell::RefCell;
+        thread_local! {
+            static SCRATCH: RefCell<Option<CnnScratch>> = const { RefCell::new(None) };
+        }
         let board = active_board_features(gs);
         let bag = bag_features(gs);
-        self.model.forward_sparse(board.as_slice(), &bag)
+        SCRATCH.with(|cell| {
+            let mut opt = cell.borrow_mut();
+            if opt.is_none() {
+                *opt = Some(self.model.create_inference_scratch());
+            }
+            self.model.forward_sparse_scratch(board.as_slice(), &bag, opt.as_mut().unwrap())
+        })
     }
 }
 
