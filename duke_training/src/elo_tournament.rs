@@ -151,9 +151,11 @@ fn load_players(models: &[String], registry: &ModelRegistry, quantize: bool) -> 
             })
         } else if entry.ends_with(".gmlp") || entry.ends_with(".nnue") || entry.ends_with(".json") {
             LoadedModel::from_spec(entry, quantize)
+        } else if std::path::Path::new(entry).join("halfda_l1.bin").exists() {
+            LoadedModel::from_spec(entry, quantize)
         } else {
             eprintln!(
-                "Error: unrecognized model entry '{}'. Expected a number (DB model ID), \"base\", \"random\", or a file path (.gmlp/.nnue/.json).",
+                "Error: unrecognized model entry '{}'. Expected a number (DB model ID), \"base\", \"random\", a file path (.gmlp/.nnue/.json), or a HalfDA directory.",
                 entry
             );
             std::process::exit(1);

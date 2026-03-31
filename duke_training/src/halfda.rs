@@ -282,8 +282,37 @@ impl HalfDAEvaluator {
         Self { l1_weights, l1_bias, output_weights, output_bias }
     }
 
-    /// Load from saved checkpoint files (sparse L1 binary + dense output weights).
-    pub fn load(l1_path: &str, output_weights: Vec<f32>, output_bias: f32) -> std::io::Result<Self> {
+    /// Load from a checkpoint directory containing halfda_l1.bin + halfda_output.bin.
+    pub fn load(dir: &str) -> std::io::Result<Self> {
+        let l1_path = format!("{}/halfda_l1.bin", dir);
+        let out_path = format!("{}/halfda_output.bin", dir);
+
+        // Load output weights from plain binary
+        let out_data = std::fs::read(&out_path)?;
+        let mut cur = &out_data[..];
+        use std::io::Read as _;
+        let mut magic = [0u8; 4];
+        cur.read_exact(&mut magic)?;
+        assert_eq!(&magic, b"HDA2", "Invalid HalfDA output file magic");
+        let mut buf4 = [0u8; 4];
+        cur.read_exact(&mut buf4)?;
+        let num_weights = u32::from_le_bytes(buf4) as usize;
+        let mut output_weights = vec![0.0f32; num_weights];
+        for v in &mut output_weights {
+            cur.read_exact(&mut buf4)?;
+            *v = f32::from_le_bytes(buf4);
+        }
+        cur.read_exact(&mut buf4)?;
+        let num_biases = u32::from_le_bytes(buf4) as usize;
+        assert_eq!(num_biases, 1);
+        cur.read_exact(&mut buf4)?;
+        let output_bias = f32::from_le_bytes(buf4);
+
+        Self::load_l1(&l1_path, output_weights, output_bias)
+    }
+
+    /// Load sparse L1 from binary file, with pre-loaded output weights.
+    fn load_l1(l1_path: &str, output_weights: Vec<f32>, output_bias: f32) -> std::io::Result<Self> {
         use std::io::Read;
         let data = std::fs::read(l1_path)?;
         let mut cursor = &data[..];

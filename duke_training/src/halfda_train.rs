@@ -538,6 +538,27 @@ fn main() {
         .save_file(&model_path, &recorder)
         .expect("Failed to save dense model");
     eprintln!("Saved dense model to: {}.mpk", model_path);
+
+    // Also save output weights as plain binary for use by HalfDAEvaluator (no burn dependency)
+    let dense_bin_path = format!("{}/halfda_output.bin", checkpoint_dir);
+    {
+        use std::io::Write;
+        let weight_tensor = model.output.weight.val();
+        let bias_tensor = model.output.bias.as_ref().expect("output layer has no bias").val();
+        let weight_data: Vec<f32> = weight_tensor.into_data().to_vec().expect("weight to_vec failed");
+        let bias_data: Vec<f32> = bias_tensor.into_data().to_vec().expect("bias to_vec failed");
+        let mut f = std::fs::File::create(&dense_bin_path).expect("Failed to create output.bin");
+        f.write_all(b"HDA2").unwrap(); // magic
+        f.write_all(&(weight_data.len() as u32).to_le_bytes()).unwrap();
+        for &w in &weight_data {
+            f.write_all(&w.to_le_bytes()).unwrap();
+        }
+        f.write_all(&(bias_data.len() as u32).to_le_bytes()).unwrap();
+        for &b in &bias_data {
+            f.write_all(&b.to_le_bytes()).unwrap();
+        }
+        eprintln!("Saved plain output weights to: {}", dense_bin_path);
+    }
 }
 
 // ── Save/load sparse L1 ─────────────────────────────────────────────────

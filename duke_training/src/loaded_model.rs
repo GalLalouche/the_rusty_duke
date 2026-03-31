@@ -216,9 +216,16 @@ pub fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>
                 }
             }
         }
+        // HalfDA directory: contains halfda_l1.bin + halfda_dense.mpk
+        path if std::path::Path::new(path).join("halfda_l1.bin").exists() => {
+            let eval = crate::halfda::HalfDAEvaluator::load(path)
+                .expect("Failed to load HalfDA model");
+            let desc = format!("HalfDA ({}->2048->1)", crate::halfda::HALFDA_FEATURES);
+            (Some(Box::new(eval)), desc)
+        }
         other => {
             panic!(
-                "Unknown opponent '{}'. Use 'base', 'random', or a path ending in .gmlp / .nnue / .json",
+                "Unknown opponent '{}'. Use 'base', 'random', a path ending in .gmlp/.nnue/.json, or a HalfDA directory",
                 other
             );
         }
