@@ -4,9 +4,11 @@ pub trait Rectangular {
     fn width(&self) -> u8;
     fn height(&self) -> u8;
     fn area(&self) -> u8 { self.height() * self.width() }
+    #[inline(always)]
     fn is_in_bounds(&self, c: Coordinates) -> bool {
         c.x < self.width() && c.y < self.height()
     }
+    #[inline(always)]
     fn is_out_of_bounds(&self, c: Coordinates) -> bool {
         !self.is_in_bounds(c)
     }

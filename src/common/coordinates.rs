@@ -63,6 +63,7 @@ impl Coordinates {
         panic!("{:?} isn't linear to {:?}", self, dst);
     }
 
+    #[inline]
     pub fn is_straight_line_to(self, dst: Coordinates) -> bool {
         self.x == dst.x ||
             self.y == dst.y ||
@@ -70,6 +71,7 @@ impl Coordinates {
     }
 
     // TODO deduplicate
+    #[inline]
     pub fn on_the_linear_path_to(&self, dst: Coordinates, p: impl Fn(u8, u8) -> bool) -> bool {
         debug_assert_ne!(*self, dst, "{}", f!("Can't take linear path from {dst:?} to itself"));
         // TODO use macros to avoid this ugly ass duplication

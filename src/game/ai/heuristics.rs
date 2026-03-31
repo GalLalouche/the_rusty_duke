@@ -43,7 +43,7 @@ impl Heuristic for Heuristics {
             Heuristics::DukeMovementOptions =>
                 gs.get_legal_moves(gs.duke_coordinate(o)).len() as f64,
             Heuristics::TotalTilesOnBoard =>
-                10.0 * gs.get_tiles_for_owner(o).len() as f64,
+                10.0 * gs.count_tiles_for_owner(o) as f64,
             Heuristics::TotalMovementOptions =>
                 gs.all_valid_game_moves_for(o).count() as f64,
             Heuristics::DiscardedUnits => gs.discard_bag_for(o).len() as f64 * -15.0,
@@ -53,11 +53,11 @@ impl Heuristic for Heuristics {
     fn approx_evaluate_for_owner(&self, o: Owner, gs: &GameState) -> f64 {
         match self {
             Heuristics::DukeMovementOptions =>
-                gs.get_legal_moves_ignoring_guard(gs.duke_coordinate(o)).len() as f64,
+                gs.count_legal_moves_ignoring_guard(gs.duke_coordinate(o)) as f64,
             Heuristics::TotalTilesOnBoard =>
-                10.0 * gs.get_tiles_for_owner(o).len() as f64,
+                10.0 * gs.count_tiles_for_owner(o) as f64,
             Heuristics::TotalMovementOptions =>
-                gs.all_valid_game_moves_for_ignoring_guard(o).count() as f64,
+                gs.all_valid_game_moves_for_ignoring_guard(o).len() as f64,
             Heuristics::DiscardedUnits => gs.discard_bag_for(o).len() as f64 * -15.0,
         }
     }

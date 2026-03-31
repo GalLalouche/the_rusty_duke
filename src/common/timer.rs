@@ -7,17 +7,24 @@ thread_local!(pub static GLOBAL_TIMERS: RefCell<HashMap<&'static str, u64>> = Re
 #[macro_export]
 macro_rules! time_it_macro {
     ($name: tt, $expr: tt) => {{
-        use std::time::SystemTime;
-        let start = SystemTime::now();
-        let result = $expr;
-        let end = SystemTime::now();
-        let total = end.duration_since(start).unwrap().as_nanos() as u64;
-        crate::common::timer::GLOBAL_TIMERS.with(|map| {
-            let mmap = &mut map.borrow_mut();
-            let new_value = mmap.get($name).unwrap_or(&0) + total;
-            mmap.insert($name, new_value);
-        });
-        result
+        #[cfg(debug_assertions)]
+        {
+            use std::time::SystemTime;
+            let start = SystemTime::now();
+            let result = $expr;
+            let end = SystemTime::now();
+            let total = end.duration_since(start).unwrap().as_nanos() as u64;
+            crate::common::timer::GLOBAL_TIMERS.with(|map| {
+                let mmap = &mut map.borrow_mut();
+                let new_value = mmap.get($name).unwrap_or(&0) + total;
+                mmap.insert($name, new_value);
+            });
+            result
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            $expr
+        }
     }}
 }
 

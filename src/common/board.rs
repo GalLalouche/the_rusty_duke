@@ -48,11 +48,13 @@ impl<A: Copy> Board<A> {
     }
     #[inline(always)]
     fn to_vec_index(&self, c: Coordinates) -> usize { (self.width as usize) * (c.y as usize) + (c.x as usize) }
+    #[inline(always)]
     fn place(&mut self, c: Coordinates, a: Option<A>) -> Option<A> {
         self.verify_bounds(c);
         let index = self.to_vec_index(c);
         mem::replace(&mut self.board[index], a)
     }
+    #[inline(always)]
     pub fn put(&mut self, c: Coordinates, a: A) -> Option<A> {
         self.place(c, Some(a))
     }
@@ -61,14 +63,17 @@ impl<A: Copy> Board<A> {
         self.verify_bounds(c);
         self.board[self.to_vec_index(c)].as_ref()
     }
+    #[inline(always)]
     pub fn get_mut(&mut self, c: Coordinates) -> Option<&mut A> {
         self.verify_bounds(c);
         let index = self.to_vec_index(c);
         self.board.get_mut(index).unwrap().as_mut()
     }
+    #[inline(always)]
     pub fn remove(&mut self, c: Coordinates) -> Option<A> {
         self.place(c, None)
     }
+    #[inline(always)]
     pub fn mv(&mut self, src: Coordinates, dst: Coordinates) -> Option<A> {
         let e: Option<A> = self.remove(src);
         assert!(e.is_some(), "Cannot move unoccupied coordinates {:?} in board", src);
@@ -76,9 +81,11 @@ impl<A: Copy> Board<A> {
         self.place(dst, e);
         result
     }
+    #[inline(always)]
     pub fn is_occupied(&self, c: Coordinates) -> bool {
         self.get(c).is_some()
     }
+    #[inline(always)]
     pub fn is_empty(&self, c: Coordinates) -> bool {
         self.get(c).is_none()
     }
@@ -92,9 +99,17 @@ impl<A: Copy> Board<A> {
         self.coordinates().into_iter().map(|c| (c, self.get(c))).collect()
     }
     pub fn active_coordinates(&self) -> impl Iterator<Item=(Coordinates, &A)> + '_ {
-        self.coordinates()
-            .into_iter()
-            .filter_map(move |c| self.get(c).map(|e| (c, e)))
+        // Iterate directly over the backing array for better cache locality,
+        // avoiding the double indexing of coordinates() -> get().
+        let w = self.width as usize;
+        let h = self.height as usize;
+        self.board[..w * h].iter().enumerate().filter_map(move |(i, opt)| {
+            opt.as_ref().map(|a| {
+                let x = (i % w) as u8;
+                let y = (i / w) as u8;
+                (Coordinates { x, y }, a)
+            })
+        })
     }
 
     pub fn find<P>(&self, predicate: P) -> Option<Coordinates> where P: Fn(&A) -> bool {

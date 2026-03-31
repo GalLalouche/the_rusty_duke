@@ -169,6 +169,7 @@ impl Owner {
 }
 
 impl CurrentSide {
+    #[inline(always)]
     pub fn flip(&self) -> CurrentSide {
         match self {
             CurrentSide::Initial => CurrentSide::Flipped,
@@ -196,9 +197,11 @@ impl PlacedTile {
     }
     /// Look up the full Tile data from the static tile table.
     #[inline]
+    #[inline(always)]
     pub fn tile(&self) -> &'static Tile {
         crate::game::units::tile_table_lookup(self.tile_type, self.owner)
     }
+    #[inline(always)]
     pub fn get_current_side(&self) -> &TileSide {
         let tile = self.tile();
         match self.current_side {
@@ -206,6 +209,7 @@ impl PlacedTile {
             CurrentSide::Flipped => &tile.side_b,
         }
     }
+    #[inline(always)]
     pub fn flip(&mut self) -> () {
         self.current_side = self.current_side.flip();
     }
@@ -223,18 +227,21 @@ impl PlacedTile {
 
 pub trait Ownership: Sized {
     fn same_team(&self, other: &Self) -> bool;
+    #[inline(always)]
     fn different_team(&self, other: &Self) -> bool {
         !self.same_team(other)
     }
 }
 
 impl Ownership for Owner {
+    #[inline(always)]
     fn same_team(&self, other: &Self) -> bool {
         self == other
     }
 }
 
 impl Ownership for &PlacedTile {
+    #[inline(always)]
     fn same_team(&self, other: &Self) -> bool {
         self.owner == other.owner
     }

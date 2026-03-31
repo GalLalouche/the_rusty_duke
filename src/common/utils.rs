@@ -20,32 +20,23 @@ pub trait Distance {
 }
 
 impl Distance for usize {
+    #[inline(always)]
     fn distance_to(&self, other: Self) -> Self {
-        if self < &other {
-            other - self
-        } else {
-            self - other
-        }
+        self.abs_diff(other)
     }
 }
 
 impl Distance for u8 {
+    #[inline(always)]
     fn distance_to(&self, other: Self) -> Self {
-        if self < &other {
-            other - self
-        } else {
-            self - other
-        }
+        self.abs_diff(other)
     }
 }
 
 impl Distance for u16 {
+    #[inline(always)]
     fn distance_to(&self, other: Self) -> Self {
-        if self < &other {
-            other - self
-        } else {
-            self - other
-        }
+        self.abs_diff(other)
     }
 }
 
@@ -315,12 +306,14 @@ pub trait Folding<A> {
     // contains would have been a better name, but I'm too tired of the "unstable" compilation errors.
     fn has(&self, a: &A) -> bool where A: Eq;
     fn for_all<P>(&self, p: P) -> bool where P: Fn(&A) -> bool;
+    #[inline(always)]
     fn exists<P>(&self, p: P) -> bool where P: Fn(&A) -> bool {
         !self.for_all(|e| !p(e))
     }
 }
 
 impl<A> Folding<A> for Option<A> {
+    #[inline(always)]
     fn has(&self, a: &A) -> bool where A: Eq {
         match self {
             None => false,
@@ -328,6 +321,7 @@ impl<A> Folding<A> for Option<A> {
         }
     }
 
+    #[inline(always)]
     fn for_all<P>(&self, p: P) -> bool where P: Fn(&A) -> bool {
         match self {
             None => true,

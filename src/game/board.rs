@@ -58,6 +58,52 @@ pub(super) struct GameBoard {
 pub(super) struct WithNewTiles(pub bool);
 
 
+/// Maximum number of tiles a single player can have on the board.
+/// On a 6x6 board, the theoretical max is 18 (half the cells).
+const MAX_TILES_PER_PLAYER: usize = 18;
+
+/// Maximum number of legal moves a single tile can produce.
+/// A tile has at most ~12 actions, each producing at most 5 targets (slide on 6x6).
+/// In practice the maximum is much lower; 48 provides ample headroom.
+const MAX_LEGAL_MOVES_PER_TILE: usize = 48;
+
+/// Stack-allocated buffer for legal moves from a single tile.
+#[derive(Clone)]
+struct LegalMoveBuffer {
+    moves: [(Coordinates, TileAction); MAX_LEGAL_MOVES_PER_TILE],
+    len: u8,
+}
+
+impl LegalMoveBuffer {
+    #[inline(always)]
+    fn new() -> Self {
+        LegalMoveBuffer {
+            moves: [(Coordinates { x: 0, y: 0 }, TileAction::Unit); MAX_LEGAL_MOVES_PER_TILE],
+            len: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, c: Coordinates, a: TileAction) {
+        debug_assert!((self.len as usize) < MAX_LEGAL_MOVES_PER_TILE, "LegalMoveBuffer overflow");
+        self.moves[self.len as usize] = (c, a);
+        self.len += 1;
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize { self.len as usize }
+
+    #[inline(always)]
+    fn iter(&self) -> impl Iterator<Item = (Coordinates, TileAction)> + '_ {
+        self.moves[..self.len as usize].iter().copied()
+    }
+
+    #[inline(always)]
+    fn as_slice(&self) -> &[(Coordinates, TileAction)] {
+        &self.moves[..self.len as usize]
+    }
+}
+
 /// Stack-allocated coordinate buffer for target_coordinates results.
 /// Max slide length on a 6x6 board is 5 squares; capacity 6 provides margin.
 const MAX_TARGETS: usize = 6;
@@ -196,6 +242,7 @@ impl GameBoard {
         &self.board
     }
 
+    #[inline]
     pub fn place(&mut self, c: Coordinates, t: PlacedTile) -> () {
         assert!(self.board.is_empty(c), "Cannot insert tile into occupied space {:?}", c);
         if t.tile_type.is_duke() {
@@ -203,6 +250,7 @@ impl GameBoard {
         }
         self.board.put(c, t);
     }
+    #[inline]
     fn remove(&mut self, c: Coordinates) -> PlacedTile {
         let tile = self.board.remove(c).unwrap_or_else(|| panic!("Cannot remove tile from empty space {:?}", c));
         if tile.tile_type.is_duke() {
@@ -211,6 +259,7 @@ impl GameBoard {
         tile
     }
 
+    #[inline(always)]
     pub fn get(&self, c: Coordinates) -> Option<&PlacedTile> {
         self.board.get(c)
     }
@@ -302,6 +351,7 @@ impl GameBoard {
         }
     }
 
+    #[inline]
     fn unobstructed(&self, src: Coordinates, dst: Coordinates) -> bool {
         !src.on_the_linear_path_to(dst, |x, y| self.board.is_occupied(Coordinates { x, y }))
     }
@@ -335,6 +385,7 @@ impl GameBoard {
         self.board.get(dst).for_all(|c| src_tile.different_team(c))
     }
 
+    #[inline]
     fn can_apply_action(&self, src: Coordinates, dst: Coordinates, action: TileAction) -> bool {
         if !self.different_team_or_empty(src, dst) {
             return false;
@@ -407,6 +458,7 @@ impl GameBoard {
             .unwrap_or_else(|| panic!("Could not find the duke for {:?}", o))
     }
 
+    #[inline(always)]
     fn flip(&mut self, c: Coordinates) -> () {
         self.board.get_mut(c).unwrap().flip()
     }
@@ -429,6 +481,57 @@ impl GameBoard {
         let in_guard = self.is_guard(owner);
         self.remove(c);
         !in_guard
+    }
+
+    /// Apply-check-undo guard check for a tile action, given the already-validated action type.
+    /// Avoids re-validating the move through `can_apply`.
+    fn tile_action_does_not_put_in_guard(
+        &mut self, src: Coordinates, dst: Coordinates, action: TileAction, owner: Owner,
+    ) -> bool {
+        let is_strike = action == TileAction::Strike;
+        if is_strike {
+            let old_duke_cache = self.duke_cache;
+            if let Some(target) = self.board.get(dst) {
+                if target.tile_type.is_duke() {
+                    self.duke_cache[Self::owner_index(target.owner)] = None;
+                }
+            }
+            self.flip(src);
+            let captured = self.board.remove(dst);
+            let in_guard = self.is_guard(owner);
+            // Undo.
+            self.flip(src);
+            if let Some(cap) = captured {
+                self.place(dst, cap);
+            }
+            self.duke_cache = old_duke_cache;
+            !in_guard
+        } else {
+            // Movement (Move, Jump, Slide, JumpSlide)
+            let old_duke_cache = self.duke_cache;
+            if let Some(tile) = self.board.get(src) {
+                if tile.tile_type.is_duke() {
+                    self.duke_cache[Self::owner_index(tile.owner)] = Some(dst);
+                }
+            }
+            if let Some(captured) = self.board.get(dst) {
+                if captured.tile_type.is_duke() {
+                    self.duke_cache[Self::owner_index(captured.owner)] = None;
+                }
+            }
+            self.flip(src);
+            let captured = self.board.mv(src, dst);
+            let in_guard = self.is_guard(owner);
+            // Undo.
+            let mut mover = self.remove(dst);
+            mover.flip();
+            self.place(src, mover);
+            if let Some(cap) = captured {
+                self.place(dst, cap);
+            }
+            self.duke_cache = old_duke_cache;
+            !in_guard
+        }
     }
 
     /// Apply-check-undo guard check for a move. Takes `&mut self`.
@@ -576,29 +679,39 @@ impl GameBoard {
     }
 
     pub fn get_legal_moves_ignoring_guard(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
-        self.get_legal_moves_no_guard(src).collect()
+        let buf = self.get_legal_moves_no_guard(src);
+        buf.as_slice().to_vec()
+    }
+
+    /// Count legal moves without guard checking, without heap allocation.
+    #[inline]
+    pub fn count_legal_moves_ignoring_guard(&self, src: Coordinates) -> usize {
+        self.get_legal_moves_no_guard(src).len()
     }
 
     /// Returns candidate moves for the tile at `src` without guard checking.
-    fn get_legal_moves_no_guard(
-        &self, src: Coordinates) -> Box<dyn Iterator<Item=(Coordinates, TileAction)> + '_> {
+    /// Uses a stack-allocated buffer to avoid heap allocation.
+    #[inline]
+    fn get_legal_moves_no_guard(&self, src: Coordinates) -> LegalMoveBuffer {
         let tile = self.get(src).unwrap();
         let tile_side = tile.get_current_side();
         let center_offset = tile_side.center_offset();
-        Box::new(
-            tile_side.actions()
-                .iter()
-                .filter(|e| e.1 != TileAction::Command && e.1 != TileAction::Unit)
-                .flat_map(move |o| self
-                    .target_coordinates(src, o.0, o.1, center_offset)
-                    .into_iter()
-                    .map(move |c| (c, o.1))
-                )
-                .filter(move |o| self.can_apply_action(src, o.0, o.1))
-                .into_iter()
-        )
+        let mut buf = LegalMoveBuffer::new();
+        for (offset, action) in tile_side.actions().iter() {
+            if *action == TileAction::Command || *action == TileAction::Unit {
+                continue;
+            }
+            let targets = self.target_coordinates(src, *offset, *action, center_offset);
+            for c in targets.into_iter() {
+                if self.can_apply_action(src, c, *action) {
+                    buf.push(c, *action);
+                }
+            }
+        }
+        buf
     }
 
+    #[inline]
     pub fn is_guard(&self, owner: Owner) -> bool {
         time_it_macro!("is_guard", {
             let duke_pos = self.duke_coordinates(owner);
@@ -613,6 +726,7 @@ impl GameBoard {
     /// (ignoring guard constraints). This is equivalent to checking whether
     /// `target` appears in `get_legal_moves_aux(src, CheckForGuard(false))`,
     /// but avoids generating all moves -- we only probe one target square.
+    #[inline]
     fn can_attack_square(&self, src: Coordinates, target: Coordinates) -> bool {
         let tile = match self.get(src) {
             Some(t) => t,
@@ -813,35 +927,27 @@ impl GameBoard {
         result
     }
 
-    pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Box<dyn Iterator<Item=PossibleMove> + '_> {
-        let result = self
-            .get_tiles_for(owner)
-            .into_iter()
-            .map(|e| e.0)
-            .flat_map(move |src| self
-                .get_legal_moves_no_guard(src)
-                .map(move |e| e.0)
-                .map(move |dst| PossibleMove::ApplyNonCommandTileAction {
+    pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+        let mut result = Vec::new();
+        for (src, _) in self.get_tiles_for(owner) {
+            let buf = self.get_legal_moves_no_guard(src);
+            for &(dst, _) in buf.as_slice() {
+                result.push(PossibleMove::ApplyNonCommandTileAction {
                     src,
                     dst,
                     capturing: self.board.get(dst).cloned(),
-                })
-                .collect::<Vec<_>>()
-            );
+                });
+            }
+        }
 
         if let WithNewTiles(true) = new_tiles {
-            Box::new(result.chain(
-                DukeOffset::iter().filter_map(move |offset|
-                    if self.is_valid_placement_space(owner, offset).is_some() {
-                        Some(PossibleMove::PlaceNewTile(offset, owner))
-                    } else {
-                        None
-                    })
-            )
-            )
-        } else {
-            Box::new(result)
+            for offset in DukeOffset::iter() {
+                if self.is_valid_placement_space(owner, offset).is_some() {
+                    result.push(PossibleMove::PlaceNewTile(offset, owner));
+                }
+            }
         }
+        result
     }
 
     #[allow(dead_code)]
@@ -888,13 +994,14 @@ impl GameBoard {
         #[cfg(debug_assertions)]
         let snapshot = self.clone();
         let owner = self.get(src).unwrap().owner;
-        let candidates: Vec<_> = self.get_legal_moves_no_guard(src).collect();
-        let result = candidates.into_iter()
-            .filter(|o| self.move_does_not_put_in_guard(
-                BoardMove::ApplyNonCommandTileAction { src, dst: o.0 },
-                owner,
-            ))
-            .collect();
+        let candidates = self.get_legal_moves_no_guard(src);
+        let mut result = Vec::new();
+        for &(dst, action) in candidates.as_slice() {
+            if self.tile_action_does_not_put_in_guard(src, dst, action, owner) {
+                result.push((dst, action));
+            }
+        }
+        let result = result;
         #[cfg(debug_assertions)]
         debug_assert_eq!(self, &snapshot, "get_legal_moves: board not restored after apply/undo");
         result
@@ -903,22 +1010,22 @@ impl GameBoard {
     pub fn all_valid_moves(&mut self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
         #[cfg(debug_assertions)]
         let snapshot = self.clone();
-        // Collect tile coordinates first to avoid holding references into the board
-        // while mutating it during guard checks.
-        let tile_coords: Vec<Coordinates> = self.get_tiles_for(owner)
-            .map(|e| e.0)
-            .collect();
+        // Collect tile coordinates into stack buffer to avoid holding references
+        // into the board while mutating it during guard checks.
+        let mut tile_coords = [Coordinates { x: 0, y: 0 }; MAX_TILES_PER_PLAYER];
+        let mut n_tiles = 0usize;
+        for (c, _) in self.get_tiles_for(owner) {
+            tile_coords[n_tiles] = c;
+            n_tiles += 1;
+        }
 
         let mut result = Vec::new();
 
         // Tile action moves: collect candidates per tile and filter inline.
-        for src in tile_coords {
-            let candidates: Vec<(Coordinates, TileAction)> = self.get_legal_moves_no_guard(src).collect();
-            for (dst, _action) in candidates {
-                if self.move_does_not_put_in_guard(
-                    BoardMove::ApplyNonCommandTileAction { src, dst },
-                    owner,
-                ) {
+        for &src in &tile_coords[..n_tiles] {
+            let candidates = self.get_legal_moves_no_guard(src);
+            for &(dst, action) in candidates.as_slice() {
+                if self.tile_action_does_not_put_in_guard(src, dst, action, owner) {
                     result.push(PossibleMove::ApplyNonCommandTileAction {
                         src,
                         dst,
@@ -948,17 +1055,17 @@ impl GameBoard {
     pub fn has_valid_moves(&mut self, owner: Owner, new_tiles: WithNewTiles) -> bool {
         #[cfg(debug_assertions)]
         let snapshot = self.clone();
-        let tile_coords: Vec<Coordinates> = self.get_tiles_for(owner)
-            .map(|e| e.0)
-            .collect();
+        let mut tile_coords = [Coordinates { x: 0, y: 0 }; MAX_TILES_PER_PLAYER];
+        let mut n_tiles = 0usize;
+        for (c, _) in self.get_tiles_for(owner) {
+            tile_coords[n_tiles] = c;
+            n_tiles += 1;
+        }
 
-        for src in tile_coords {
-            let candidates: Vec<(Coordinates, TileAction)> = self.get_legal_moves_no_guard(src).collect();
-            for (dst, _) in candidates {
-                if self.move_does_not_put_in_guard(
-                    BoardMove::ApplyNonCommandTileAction { src, dst },
-                    owner,
-                ) {
+        for &src in &tile_coords[..n_tiles] {
+            let candidates = self.get_legal_moves_no_guard(src);
+            for &(dst, action) in candidates.as_slice() {
+                if self.tile_action_does_not_put_in_guard(src, dst, action, owner) {
                     #[cfg(debug_assertions)]
                     debug_assert_eq!(self, &snapshot, "has_valid_moves: board not restored after apply/undo");
                     return true;

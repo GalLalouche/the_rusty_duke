@@ -311,6 +311,12 @@ impl GameState {
         self.board.get_tiles_for(o).collect()
     }
 
+    /// Count tiles for a given owner without heap allocation.
+    #[inline]
+    pub fn count_tiles_for_owner(&self, o: Owner) -> usize {
+        self.board.get_tiles_for(o).count()
+    }
+
     // Except commands
     pub fn get_legal_moves(&mut self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         self.board.get_legal_moves(src)
@@ -319,6 +325,12 @@ impl GameState {
     // Except commands
     pub fn get_legal_moves_ignoring_guard(&self, src: Coordinates) -> Vec<(Coordinates, TileAction)> {
         self.board.get_legal_moves_ignoring_guard(src)
+    }
+
+    /// Count legal moves for a tile without guard checking and without heap allocation.
+    #[inline]
+    pub fn count_legal_moves_ignoring_guard(&self, src: Coordinates) -> usize {
+        self.board.count_legal_moves_ignoring_guard(src)
     }
 
     /// Check if the piece at `src` can reach `target` ignoring friendly
@@ -388,7 +400,7 @@ impl GameState {
         let mut moves: Vec<PossibleMove> = self.board.all_valid_moves_ignoring_guard(
             self.current_player_turn,
             WithNewTiles(self.bag_for_current_player().non_empty()),
-        ).collect();
+        );
         moves.shuffle(rng);
         let moves = moves;
         assert_not!(moves.is_empty());
@@ -432,7 +444,7 @@ impl GameState {
         ).into_iter()
     }
 
-    pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> impl Iterator<Item=PossibleMove> + '_ {
+    pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> Vec<PossibleMove> {
         self.board.all_valid_moves_ignoring_guard(
             o,
             WithNewTiles(self.bag_for_owner(o).non_empty()),
