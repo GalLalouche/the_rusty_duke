@@ -562,6 +562,10 @@ impl Hash for GameState {
         bottom_bag.hash(state);
         self.top_player_discard.existing().hash(state);
         self.bottom_player_discard.existing().hash(state);
+        // Hash the idle-move counter stack to stay consistent with derived PartialEq,
+        // which compares this field.  Without this, two states differing only in how
+        // close they are to a tie draw would collide in any hash-based data structure.
+        self.moves_without_capture_or_placement_stack.hash(state);
     }
 }
 
@@ -1283,5 +1287,52 @@ mod tests {
         assert_ne!(hash(&gs1), hash(&gs2));
         // And they're not equal via PartialEq either
         assert_ne!(gs1, gs2);
+    }
+
+    /// Two states that differ only in their idle-move counter should have
+    /// different hashes, since the derived PartialEq considers them unequal.
+    /// Regression test: the Hash impl previously omitted the
+    /// `moves_without_capture_or_placement_stack` field, causing states near
+    /// and far from a tie draw to collide in hash-based data structures.
+    #[test]
+    fn hash_differs_when_idle_move_count_differs() {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        let tiles = vec![
+            (Coordinates { x: 0, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (Coordinates { x: 5, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+        ];
+        let gs_idle0 = GameState::from_snapshot(GameSnapshot {
+            tiles: tiles.clone(),
+            current_turn: Owner::TopPlayer,
+            top_bag: TileBag::new(vec![]),
+            bottom_bag: TileBag::new(vec![]),
+            top_discard: DiscardBag::empty(),
+            bottom_discard: DiscardBag::empty(),
+            idle_move_count: 0,
+        });
+        let gs_idle5 = GameState::from_snapshot(GameSnapshot {
+            tiles: tiles.clone(),
+            current_turn: Owner::TopPlayer,
+            top_bag: TileBag::new(vec![]),
+            bottom_bag: TileBag::new(vec![]),
+            top_discard: DiscardBag::empty(),
+            bottom_discard: DiscardBag::empty(),
+            idle_move_count: 5,
+        });
+
+        // They should be unequal via PartialEq
+        assert_ne!(gs_idle0, gs_idle5,
+            "States with different idle_move_count should be PartialEq::ne");
+
+        // And they should hash differently (regression: previously they collided)
+        let hash = |gs: &GameState| {
+            let mut h = DefaultHasher::new();
+            gs.hash(&mut h);
+            h.finish()
+        };
+        assert_ne!(hash(&gs_idle0), hash(&gs_idle5),
+            "States with different idle_move_count should produce different hashes");
     }
 }

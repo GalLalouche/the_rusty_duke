@@ -38,9 +38,12 @@ impl TileBag {
 
     /// Remove one instance of a specific tile type from the bag.
     /// Returns `true` if the tile was found and removed, `false` otherwise.
+    ///
+    /// Uses `swap_remove` for O(1) removal (bag order doesn't matter since
+    /// draws are random), consistent with [`pull`].
     pub fn remove_specific(&mut self, tile: TileType) -> bool {
         if let Some(idx) = self.bag.iter().position(|t| *t == tile) {
-            self.bag.remove(idx);
+            self.bag.swap_remove(idx);
             true
         } else {
             false
@@ -242,5 +245,30 @@ mod tests {
     fn discard_bag_remove_nonexistent_panics() {
         let mut bag = DiscardBag::from_tiles(vec![TileType::Footman]);
         bag.remove(TileType::Knight);
+    }
+
+    /// Regression test: `remove_specific` previously used `Vec::remove` (O(n))
+    /// which shifted remaining elements. Now uses `swap_remove` (O(1)) consistent
+    /// with `pull`. Verify that the removed tile is gone and the remaining tile
+    /// count is correct, regardless of internal ordering.
+    #[test]
+    fn remove_specific_swap_remove_preserves_other_tiles() {
+        // Set up bag with distinct tile types where removal of the first would
+        // shift elements under the old `Vec::remove`, but swap_remove moves the
+        // last element to the removed index.
+        let mut bag = TileBag::new(vec![
+            TileType::Footman, TileType::Knight, TileType::Pikeman, TileType::Champion,
+        ]);
+        assert!(bag.remove_specific(TileType::Footman));
+        assert_eq!(bag.remaining().len(), 3);
+        // Footman should be gone
+        assert!(!bag.remaining().contains(&TileType::Footman));
+        // All other tiles should still be present (as a multiset)
+        let mut remaining_sorted: Vec<TileType> = bag.remaining().clone();
+        remaining_sorted.sort_by_key(|t| t.index());
+        let mut expected = vec![TileType::Knight, TileType::Pikeman, TileType::Champion];
+        expected.sort_by_key(|t| t.index());
+        assert_eq!(remaining_sorted, expected,
+            "remove_specific should preserve all other tiles");
     }
 }
