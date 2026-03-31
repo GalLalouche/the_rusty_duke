@@ -113,8 +113,9 @@ fn main() {
         std::process::exit(1);
     }
     let evaluator_path: Option<String> = parse_flag(&args, "--evaluator");
-    if !synthetic_mode && !all_features_mode && evaluator_path.is_none() {
-        eprintln!("Missing --evaluator flag (required unless --synthetic or --all-features)");
+    let scores_path: Option<String> = parse_flag(&args, "--scores");
+    if !synthetic_mode && !all_features_mode && scores_path.is_none() && evaluator_path.is_none() {
+        eprintln!("Missing --evaluator or --scores flag");
         std::process::exit(1);
     }
     let depth: u32 = parse_flag(&args, "--depth").unwrap_or(2);
@@ -140,6 +141,65 @@ fn main() {
     let total_states: usize = games.iter().map(|g| g.states.len()).sum();
     eprintln!("Loaded {} games, {} states in {:.1}s",
         games.len(), total_states, t0.elapsed().as_secs_f64());
+
+    // --- Precomputed scores mode: skip dedup, use scores directly ---
+    if let Some(ref sp) = scores_path {
+        eprintln!("Loading precomputed scores from {} ...", sp);
+        let score_data = std::fs::read(sp).expect("Failed to read scores file");
+        let scores: Vec<f32> = score_data.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(scores.len(), total_states,
+            "Scores file has {} entries but trajectories have {} states", scores.len(), total_states);
+        eprintln!("  Loaded {} scores", scores.len());
+
+        // Collect non-terminal, non-NaN positions with their scores
+        let mut labeled: Vec<(GameState, f32, u32)> = Vec::new();
+        let mut score_idx = 0usize;
+        for game in &games {
+            for gs in &game.states {
+                let score = scores[score_idx];
+                score_idx += 1;
+                if score.is_nan() { continue; }
+                if gs.clone().game_result() != GameResult::Ongoing { continue; }
+                labeled.push((gs.clone(), score, 1));
+            }
+        }
+        eprintln!("  {} labeled positions (skipped NaN/terminal)", labeled.len());
+
+        // Save as LPOS
+        eprintln!("Saving {} labeled positions to {} ...", labeled.len(), output_path);
+        let f = std::fs::File::create(&output_path).expect("Failed to create output file");
+        let mut w = BufWriter::new(f);
+        w.write_all(OUTPUT_MAGIC).unwrap();
+        w.write_all(&OUTPUT_VERSION.to_le_bytes()).unwrap();
+        w.write_all(&(labeled.len() as u32).to_le_bytes()).unwrap();
+        for (gs, label, count) in &labeled {
+            let board_feats = active_board_features(gs);
+            let bag_feats = bag_features(gs);
+            let num_active = board_feats.len() as u16;
+            w.write_all(&num_active.to_le_bytes()).unwrap();
+            for &idx in board_feats.as_slice() {
+                w.write_all(&(idx as u16).to_le_bytes()).unwrap();
+            }
+            for &val in &bag_feats {
+                w.write_all(&val.to_le_bytes()).unwrap();
+            }
+            w.write_all(&label.to_le_bytes()).unwrap();
+            w.write_all(&count.to_le_bytes()).unwrap();
+        }
+        w.flush().unwrap();
+        let file_size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+        eprintln!("Saved {} positions to {} ({:.1} MB)",
+            labeled.len(), output_path, file_size as f64 / (1024.0 * 1024.0));
+
+        let labels: Vec<f32> = labeled.iter().map(|(_, l, _)| *l).collect();
+        let min = labels.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = labels.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mean = labels.iter().map(|l| *l as f64).sum::<f64>() / labels.len() as f64;
+        eprintln!("Label stats: min={:.4}, max={:.4}, mean={:.4}", min, max, mean);
+        return;
+    }
 
     // --- Step 2: Deduplicate positions ---
     eprintln!("Deduplicating positions ...");

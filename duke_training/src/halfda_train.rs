@@ -325,6 +325,27 @@ fn main() {
         let total_states: usize = trajectories.iter().map(|g| g.states.len()).sum();
         assert_eq!(n, total_states,
             "Scores file has {} entries but trajectories have {} states", n, total_states);
+
+        // Quantile normalization: map each score to its rank percentile, then to [-10, +10].
+        // This guarantees uniform spread across the target range regardless of the
+        // original score distribution. Without this, 90% of depth-3 scores cluster
+        // near zero and map to targets ~0.5, making positions indistinguishable.
+        let mut indexed: Vec<(usize, f32)> = scores.iter().enumerate()
+            .filter(|(_, s)| !s.is_nan() && s.abs() < 29.9)
+            .map(|(i, &s)| (i, s))
+            .collect();
+        indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        let nn = indexed.len();
+        let mut scores = scores;
+        if nn > 0 {
+            for (rank, &(orig_idx, _)) in indexed.iter().enumerate() {
+                // Map rank to [-10, +10]: rank 0 -> -10, rank nn-1 -> +10
+                let normalized = (rank as f32 / (nn - 1).max(1) as f32) * 20.0 - 10.0;
+                scores[orig_idx] = normalized;
+            }
+            eprintln!("  Quantile-normalized {} non-terminal scores to [-10, +10]", nn);
+            // Terminals stay as +-30 — label_to_target maps them to 0/1
+        }
         Some(scores)
     } else {
         None
