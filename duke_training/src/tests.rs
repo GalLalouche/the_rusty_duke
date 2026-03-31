@@ -3977,17 +3977,22 @@ fn negamax_apply_undo_matches_clone() {
     }
 
     let evaluator = StaticHeuristicEvaluator::new();
-    let bag = create_bag();
-    let gs = create_initial_state(&bag);
 
-    // Play a few random moves to get an interesting mid-game position.
-    let ai = StupidSyncAi {};
-    let mut rng = StdRng::seed_from_u64(99);
-    let mut game = gs.clone();
-    for _ in 0..6 {
-        if game.game_result() != GameResult::Ongoing { break; }
-        ai.play_next_move(&mut rng, &mut game);
-    }
+    // Minimal board with tiny bags for fast test (~<1s instead of ~25s).
+    let game = GameState::from_snapshot(duke_rust::game::state::GameSnapshot {
+        tiles: vec![
+            (Coordinates { x: 2, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Duke)),
+            (Coordinates { x: 3, y: 0 }, PlacedTile::new(Owner::TopPlayer, TileType::Footman)),
+            (Coordinates { x: 3, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Duke)),
+            (Coordinates { x: 2, y: 5 }, PlacedTile::new(Owner::BottomPlayer, TileType::Footman)),
+        ],
+        top_bag: duke_rust::game::bag::TileBag::new(vec![TileType::Pikeman]),
+        bottom_bag: duke_rust::game::bag::TileBag::new(vec![TileType::Knight]),
+        top_discard: duke_rust::game::bag::DiscardBag::empty(),
+        bottom_discard: duke_rust::game::bag::DiscardBag::empty(),
+        current_turn: Owner::TopPlayer,
+        idle_move_count: 0,
+    });
 
     // Compare at depth 1 and depth 2.
     for depth in 1..=2 {
