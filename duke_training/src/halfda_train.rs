@@ -276,6 +276,7 @@ fn main() {
     let lr: f32 = parse_flag(&args, "--lr").unwrap_or(0.001);
     let hidden: usize = parse_flag(&args, "--hidden").unwrap_or(2048);
     let lambda: f32 = parse_flag(&args, "--lambda").unwrap_or(0.5);
+    let scores_path: Option<String> = parse_flag(&args, "--scores");
     let seed: u64 = parse_flag(&args, "--seed").unwrap_or(42);
     let checkpoint_dir: String = parse_flag(&args, "--checkpoint-dir")
         .unwrap_or_else(|| "D:/temp/halfda".to_string());
@@ -311,31 +312,57 @@ fn main() {
     let trajectories = load_trajectories(&traj_path).expect("Failed to load trajectories");
     eprintln!("  Loaded {} games in {:.1}s", trajectories.len(), t0.elapsed().as_secs_f64());
 
+    // Load precomputed depth-N scores if provided, otherwise fall back to static eval
+    let precomputed_scores: Option<Vec<f32>> = if let Some(ref sp) = scores_path {
+        eprintln!("Loading precomputed scores from {} ...", sp);
+        let data = std::fs::read(sp).expect("Failed to read scores file");
+        let n = data.len() / 4;
+        let scores: Vec<f32> = data.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        eprintln!("  Loaded {} scores", n);
+        // Verify count matches total states
+        let total_states: usize = trajectories.iter().map(|g| g.states.len()).sum();
+        assert_eq!(n, total_states,
+            "Scores file has {} entries but trajectories have {} states", n, total_states);
+        Some(scores)
+    } else {
+        None
+    };
     let evaluator = StaticHeuristicEvaluator::new();
 
     eprintln!("Extracting positions (max {}) ...", max_positions);
     let t1 = Instant::now();
     let mut positions: Vec<TrainingPosition> = Vec::with_capacity(max_positions);
 
+    let mut score_idx = 0usize;
     'outer: for game in &trajectories {
-        // Get game outcome for lambda mixing
         let game_result = game.result;
 
         for gs in &game.states {
-            // game_result() requires &mut self, so clone to check
+            let current_score_idx = score_idx;
+            score_idx += 1;
+
+            // Skip terminal states
             if gs.clone().game_result() != GameResult::Ongoing {
                 continue;
             }
 
             let halfda = encode_halfda(gs);
-            let raw_label = evaluator.evaluate(gs);
+
+            // Use precomputed depth-N score if available, otherwise static eval
+            let raw_label = if let Some(ref scores) = precomputed_scores {
+                let s = scores[current_score_idx];
+                if s.is_nan() { continue; } // skip NaN (terminal/epsilon-random)
+                s
+            } else {
+                evaluator.evaluate(gs)
+            };
             let eval_target = label_to_target(raw_label);
 
-            // Compute game outcome from current player's perspective
             let current_player = gs.current_player_turn();
             let outcome = game_outcome_target(game_result, current_player);
 
-            // Lambda mixing: target = lambda * eval + (1 - lambda) * outcome
             let target = lambda * eval_target + (1.0 - lambda) * outcome;
 
             positions.push(TrainingPosition {
