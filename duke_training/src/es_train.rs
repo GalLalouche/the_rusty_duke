@@ -444,13 +444,21 @@ fn run_es_training_loop(
                 let pert_seed = perturbation_seeds[pert_idx];
 
                 let mut pert_rng = SmallRng::seed_from_u64(pert_seed);
-                let epsilon = randn_vec(dim, &mut pert_rng);
-
-                let perturbed: Vec<f32> = if is_positive {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi + sigma_snap * ei).collect()
-                } else {
-                    w.iter().zip(epsilon.iter()).map(|(&wi, &ei)| wi - sigma_snap * ei).collect()
-                };
+                let sign = if is_positive { sigma_snap } else { -sigma_snap };
+                let mut perturbed = w.clone();
+                let mut i = 0;
+                while i < dim {
+                    let u1: f64 = pert_rng.gen::<f64>().max(1e-30);
+                    let u2: f64 = pert_rng.gen::<f64>();
+                    let r = (-2.0 * u1.ln()).sqrt();
+                    let theta = 2.0 * std::f64::consts::PI * u2;
+                    perturbed[i] += sign * (r * theta.cos()) as f32;
+                    i += 1;
+                    if i < dim {
+                        perturbed[i] += sign * (r * theta.sin()) as f32;
+                        i += 1;
+                    }
+                }
 
                 let evaluator = make_evaluator(&perturbed);
                 let game_seed = game_seed_base.wrapping_add(idx as u64 * 10000);

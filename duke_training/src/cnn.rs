@@ -625,8 +625,6 @@ impl CnnModel {
 
         {
             let conv_out = if cur_buf { &mut scratch.conv_buf_a } else { &mut scratch.conv_buf_b };
-            // Zero and init with bias
-            for v in conv_out[..size0].iter_mut() { *v = 0.0; }
             for oc in 0..out_ch0 {
                 let b = bias0[oc];
                 for s in 0..spatial {
@@ -667,8 +665,6 @@ impl CnnModel {
                 (&a[..in_size], &mut b[..out_size])
             };
 
-            // Zero and init with bias
-            for v in next_slice.iter_mut() { *v = 0.0; }
             for oc in 0..out_ch {
                 let b = bias[oc];
                 for s in 0..spatial {
