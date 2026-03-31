@@ -23,7 +23,7 @@ use crate::nnue::NnueEvaluator;
 
 /// Safety limit: if a game exceeds this many turns, force a draw.
 /// In practice the built-in idle-move draw rule should trigger well before this.
-const MAX_TURNS: u32 = 500;
+pub const MAX_TURNS: u32 = 500;
 
 /// Terminal game scores for minimax / labeling.
 /// Using ±30 keeps terminal values in the same ballpark as heuristic evaluations

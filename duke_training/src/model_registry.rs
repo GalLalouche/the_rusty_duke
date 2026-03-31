@@ -241,6 +241,28 @@ impl ModelRegistry {
         )
     }
 
+    /// Register a HalfDA NNUE model (sparse L1 + dense output). Returns the new model ID.
+    ///
+    /// `hidden_size` is the L1 hidden dimension (e.g. 2048).
+    /// The sparse L1 binary file and dense burn model are stored separately;
+    /// `path` should point to the sparse L1 file (`.bin`).
+    pub fn register_halfda(
+        &self,
+        path: &str,
+        input_features: usize,
+        hidden_size: usize,
+        description: Option<&str>,
+        training: Option<&TrainingInfo>,
+    ) -> Result<i64, rusqlite::Error> {
+        let architecture = format!("HalfDA-{}->{}->1", input_features, hidden_size);
+        let param_count = input_features * hidden_size + hidden_size + hidden_size + 1;
+        self.register_model(
+            path, "halfda", &architecture,
+            input_features, param_count,
+            description, training,
+        )
+    }
+
     /// Record a benchmark result for a model. Returns the new benchmark ID.
     pub fn record_benchmark(
         &self,

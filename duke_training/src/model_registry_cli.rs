@@ -9,6 +9,7 @@
 //! Default DB path: D:/temp/duke_models.db
 
 use duke_training::generic_mlp::GenericMlp;
+use duke_training::halfda::HALFDA_FEATURES;
 use duke_training::learned_heuristic::{
     load_lr_weights_raw,
     NUM_FEATURES as LR_NUM_FEATURES,
@@ -166,9 +167,26 @@ fn cmd_register(db_path: &str, args: &[String]) {
         println!("Loaded {}: {} weights", label, n);
         reg.register_lr(model_path, n, description.as_deref(), None)
             .expect("Failed to register model")
+    } else if model_path.ends_with(".bin") {
+        // Try to load as HalfDA sparse L1 binary (magic "HDA1")
+        let data = std::fs::read(model_path).expect("Failed to read .bin file");
+        if data.len() >= 16 && &data[0..4] == b"HDA1" {
+            let num_features = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+            let hidden = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
+            let param_count = num_features * hidden + hidden + hidden + 1;
+            println!(
+                "Loaded HalfDA: {}->{}->1 ({} params)",
+                num_features, hidden, param_count
+            );
+            reg.register_halfda(model_path, num_features, hidden, description.as_deref(), None)
+                .expect("Failed to register model")
+        } else {
+            eprintln!("Unknown .bin file format (expected HDA1 magic)");
+            std::process::exit(1);
+        }
     } else {
         eprintln!(
-            "Unknown file format: {}. Expected .gmlp, .nnue, or .json extension.",
+            "Unknown file format: {}. Expected .gmlp, .nnue, .json, or .bin extension.",
             model_path
         );
         std::process::exit(1);
