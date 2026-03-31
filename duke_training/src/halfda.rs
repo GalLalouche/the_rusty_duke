@@ -251,6 +251,7 @@ impl HalfDAAccumulator {
 
 // ── HalfDA Evaluator ─────────────────────────────────────────────────────
 
+use std::sync::Mutex;
 use crate::game_setup::GameEvaluator;
 
 /// Evaluator that uses a trained HalfDA NNUE network.
@@ -357,6 +358,114 @@ impl GameEvaluator for HalfDAEvaluator {
         let sigmoid_val = acc.evaluate(&self.output_weights, self.output_bias);
         // Map [0,1] -> [-10, 10] linearly
         (sigmoid_val - 0.5) * 20.0
+    }
+}
+
+// ── HalfDA Incremental Evaluator (for negamax search) ────────────────────
+
+/// Evaluator that wraps `HalfDAEvaluator` and maintains an accumulator stack
+/// for incremental updates during negamax search.
+///
+/// During search, sibling positions (children of the same parent) share the same
+/// current player and typically differ by only 2-3 features (the moved piece
+/// changes square and flips side). Instead of recomputing the full L1 accumulation
+/// from scratch for each sibling (~7 features × 2048 floats = 14k additions), we
+/// clone the first sibling's accumulator and patch only the changed features
+/// (~3 features × 2048 floats ≈ 6k additions), giving a ~2-3x speedup at leaf
+/// evaluation.
+///
+/// The accumulator stack tracks the search path. At each node, the top of the
+/// stack holds the accumulator for the current position. The specialized
+/// `negamax_halfda_ab` function manages push/pop around make/undo calls.
+pub struct HalfDAIncrementalEvaluator {
+    weights: HalfDAEvaluator,
+    /// Stack of accumulators for search tree traversal.
+    /// Push on make_a_move, pop on undo.
+    /// Uses Mutex for Send+Sync compatibility (search is single-threaded per game).
+    acc_stack: Mutex<Vec<HalfDAAccumulator>>,
+}
+
+impl HalfDAIncrementalEvaluator {
+    /// Create a new incremental evaluator from a base HalfDAEvaluator.
+    pub fn new(weights: HalfDAEvaluator) -> Self {
+        Self {
+            weights,
+            acc_stack: Mutex::new(Vec::with_capacity(32)),
+        }
+    }
+
+    /// Load from a checkpoint directory (delegates to HalfDAEvaluator::load).
+    pub fn load(dir: &str) -> std::io::Result<Self> {
+        let weights = HalfDAEvaluator::load(dir)?;
+        Ok(Self::new(weights))
+    }
+
+    /// Compute accumulator for the given position from scratch and push to stack.
+    pub fn push_fresh(&self, gs: &GameState) {
+        let acc = HalfDAAccumulator::from_position(gs, &self.weights.l1_weights, &self.weights.l1_bias);
+        self.acc_stack.lock().unwrap().push(acc);
+    }
+
+    /// Clone the given accumulator, update it with new features via diff, and push.
+    ///
+    /// Used for sibling optimization: the first sibling builds from scratch, then
+    /// subsequent siblings clone the first sibling's accumulator and patch the diff.
+    /// Since siblings share the same current player, typically only 2-3 features change.
+    pub fn push_incremental_from(&self, base_acc: &HalfDAAccumulator, new_gs: &GameState) {
+        let mut acc = base_acc.clone();
+        let new_features = encode_halfda(new_gs);
+        acc.update_move(&new_features, &self.weights.l1_weights);
+        self.acc_stack.lock().unwrap().push(acc);
+    }
+
+    /// Pop the top accumulator (undo a search level).
+    pub fn pop(&self) {
+        let mut stack = self.acc_stack.lock().unwrap();
+        stack.pop().expect("pop called on empty accumulator stack");
+    }
+
+    /// Evaluate using the top-of-stack accumulator (output layer only).
+    /// Returns the score in the same scale as `HalfDAEvaluator::evaluate`.
+    #[inline]
+    pub fn evaluate_from_stack(&self) -> f32 {
+        let stack = self.acc_stack.lock().unwrap();
+        let acc = stack.last().expect("evaluate_from_stack called on empty stack");
+        let sigmoid = acc.evaluate(&self.weights.output_weights, self.weights.output_bias);
+        (sigmoid - 0.5) * 20.0
+    }
+
+    /// Get a clone of the top accumulator (for sibling reuse).
+    pub fn top_accumulator(&self) -> HalfDAAccumulator {
+        let stack = self.acc_stack.lock().unwrap();
+        stack.last().expect("top_accumulator called on empty stack").clone()
+    }
+
+    /// Returns a reference to the underlying weights for direct access.
+    pub fn weights(&self) -> &HalfDAEvaluator {
+        &self.weights
+    }
+
+    /// Current stack depth (for debugging).
+    pub fn stack_depth(&self) -> usize {
+        self.acc_stack.lock().unwrap().len()
+    }
+}
+
+impl GameEvaluator for HalfDAIncrementalEvaluator {
+    fn evaluate(&self, gs: &GameState) -> f32 {
+        let stack = self.acc_stack.lock().unwrap();
+        if let Some(acc) = stack.last() {
+            // Use cached accumulator — just run the output layer (skip L1 recompute)
+            let sigmoid = acc.evaluate(&self.weights.output_weights, self.weights.output_bias);
+            (sigmoid - 0.5) * 20.0
+        } else {
+            // Fallback to full computation (no accumulator on stack)
+            self.weights.evaluate(gs)
+        }
+    }
+
+    fn as_incremental_halfda(&self) -> Option<&HalfDAIncrementalEvaluator> {
+        Some(self)
     }
 }
 
@@ -717,5 +826,131 @@ mod tests {
             assert!(v >= 0.0 && v <= 1.0,
                 "output[{}] = {} is outside [0, 1]", j, v);
         }
+    }
+
+    // ── Incremental evaluator tests ─────────────────────────────────────
+
+    #[test]
+    fn test_incremental_evaluator_matches_full_recomputation() {
+        // Play a sequence of moves, verifying that the incremental evaluator
+        // produces the same scores as the non-incremental (from-scratch) evaluator
+        // at each position.
+        use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
+        use duke_rust::game::state::GameResult;
+        use rand::SeedableRng;
+        use crate::game_setup::GameEvaluator;
+
+        let tw = get_test_weights();
+        let output_weights: Vec<f32> = (0..HALFDA_HIDDEN)
+            .map(|j| (j % 100) as f32 * 0.002 - 0.1)
+            .collect();
+        let output_bias = 0.1f32;
+
+        let base_eval = HalfDAEvaluator::new(
+            tw.0.clone(), tw.1.clone(), output_weights.clone(), output_bias,
+        );
+        let incr_eval = HalfDAIncrementalEvaluator::new(HalfDAEvaluator::new(
+            tw.0.clone(), tw.1.clone(), output_weights, output_bias,
+        ));
+
+        let bag = crate::game_setup::create_bag();
+        let mut gs = crate::game_setup::create_initial_state(&bag);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // Play 20 moves (or until game ends), comparing scores at each position.
+        for turn in 0..20 {
+            if !matches!(gs.game_result(), GameResult::Ongoing) {
+                break;
+            }
+
+            // Score with full recomputation (no accumulator on stack).
+            let full_score = base_eval.evaluate(&gs);
+
+            // Score with incremental evaluator: push fresh, evaluate, pop.
+            incr_eval.push_fresh(&gs);
+            let incr_score = incr_eval.evaluate(&gs);
+            incr_eval.pop();
+
+            assert!(
+                (full_score - incr_score).abs() < 1e-4,
+                "Turn {}: full_score={} != incr_score={} (diff={})",
+                turn, full_score, incr_score, (full_score - incr_score).abs()
+            );
+
+            // Play a random move to advance the game.
+            let ai = duke_rust::game::ai::stupid_sync_ai::StupidSyncAi {};
+            use duke_rust::game::ai::player::ArtificialPlayer;
+            ai.play_next_move(&mut rng, &mut gs);
+        }
+    }
+
+    #[test]
+    fn test_incremental_sibling_update_matches_fresh() {
+        // Verify that push_incremental_from (sibling optimization) produces
+        // the same accumulator output as push_fresh for the same position.
+        use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
+        use duke_rust::game::state::GameResult;
+        use duke_rust::game::ai::player::AiMove;
+        use rand::SeedableRng;
+
+        let tw = get_test_weights();
+        let output_weights: Vec<f32> = (0..HALFDA_HIDDEN)
+            .map(|j| (j % 100) as f32 * 0.002 - 0.1)
+            .collect();
+        let output_bias = 0.1f32;
+
+        let incr_eval = HalfDAIncrementalEvaluator::new(HalfDAEvaluator::new(
+            tw.0.clone(), tw.1.clone(), output_weights, output_bias,
+        ));
+
+        let bag = crate::game_setup::create_bag();
+        let mut gs = crate::game_setup::create_initial_state(&bag);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(99);
+
+        // Advance a few moves to get a more interesting position.
+        for _ in 0..4 {
+            if !matches!(gs.game_result(), GameResult::Ongoing) { return; }
+            let ai = duke_rust::game::ai::stupid_sync_ai::StupidSyncAi {};
+            use duke_rust::game::ai::player::ArtificialPlayer;
+            ai.play_next_move(&mut rng, &mut gs);
+        }
+
+        if !matches!(gs.game_result(), GameResult::Ongoing) { return; }
+
+        // Get all legal moves from this position.
+        let moves: Vec<AiMove> = AiMove::all_moves(&mut gs).collect();
+        if moves.len() < 2 { return; }
+
+        // Play first move: build fresh accumulator (the "first sibling").
+        let base_rng = rand::rngs::SmallRng::seed_from_u64(0);
+        let undo0 = moves[0].to_undo_move().unwrap();
+        moves[0].play(&mut gs, &mut base_rng.clone());
+        incr_eval.push_fresh(&gs);
+        let first_sibling_acc = incr_eval.top_accumulator();
+        let score0_fresh = incr_eval.evaluate_from_stack();
+        incr_eval.pop();
+        gs.undo(undo0);
+
+        // Play second move using both fresh and incremental-from-sibling.
+        let undo1 = moves[1].to_undo_move().unwrap();
+        moves[1].play(&mut gs, &mut base_rng.clone());
+
+        // Fresh score.
+        incr_eval.push_fresh(&gs);
+        let score1_fresh = incr_eval.evaluate_from_stack();
+        incr_eval.pop();
+
+        // Incremental-from-sibling score.
+        incr_eval.push_incremental_from(&first_sibling_acc, &gs);
+        let score1_incr = incr_eval.evaluate_from_stack();
+        incr_eval.pop();
+
+        gs.undo(undo1);
+
+        assert!(
+            (score1_fresh - score1_incr).abs() < 1e-3,
+            "Sibling scores differ: fresh={} incr={} (diff={})",
+            score1_fresh, score1_incr, (score1_fresh - score1_incr).abs()
+        );
     }
 }

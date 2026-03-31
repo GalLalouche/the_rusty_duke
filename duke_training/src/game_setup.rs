@@ -101,6 +101,10 @@ pub trait GameEvaluator {
 
     /// Whether this evaluator supports incremental heuristic evaluation.
     fn is_static_heuristic(&self) -> bool { false }
+
+    /// If this evaluator supports incremental HalfDA accumulator updates,
+    /// return a reference to the `HalfDAIncrementalEvaluator`.
+    fn as_incremental_halfda(&self) -> Option<&crate::halfda::HalfDAIncrementalEvaluator> { None }
 }
 
 impl GameEvaluator for NnueEvaluator {
@@ -438,6 +442,185 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
     best
 }
 
+/// Negamax with alpha-beta pruning specialized for `HalfDAIncrementalEvaluator`.
+///
+/// Maintains an accumulator stack for incremental L1 updates. At each node,
+/// the first child position builds its accumulator from scratch, and subsequent
+/// sibling positions clone the first child's accumulator and patch only the
+/// changed features (typically 2-3 features out of ~7, saving ~60% of L1 work).
+///
+/// At leaf nodes (depth 0), `evaluate()` finds the accumulator on the stack
+/// and runs only the output layer (2048 multiplies), skipping the full L1
+/// accumulation (7 × 2048 additions + encode_halfda).
+fn negamax_halfda_ab(
+    gs: &mut GameState,
+    evaluator: &crate::halfda::HalfDAIncrementalEvaluator,
+    depth: u32,
+    mut alpha: f64,
+    beta: f64,
+    rng: &mut impl Rng,
+) -> f64 {
+    // Check tie first (O(1)) before doing any move generation.
+    if gs.is_tie() {
+        return 0.0;
+    }
+
+    if depth == 0 {
+        // Terminal check at leaf (evaluator may panic on positions with missing duke).
+        match gs.game_result() {
+            GameResult::Won(winner) => {
+                return if winner == gs.current_player_turn() {
+                    TERMINAL_WIN_SCORE
+                } else {
+                    TERMINAL_LOSS_SCORE
+                };
+            }
+            GameResult::Tie => return 0.0,
+            GameResult::Ongoing => {}
+        }
+        // Use the accumulator on the stack (pushed by caller) for fast evaluation.
+        return evaluator.evaluate_from_stack() as f64;
+    }
+
+    // Generate moves with guard checking.
+    let mut moves: Vec<PossibleMove> = gs.all_valid_game_moves_for_current_player().collect();
+    if moves.is_empty() {
+        return TERMINAL_LOSS_SCORE;
+    }
+
+    // Move ordering: captures first for better alpha-beta pruning.
+    let mut capture_end = 0;
+    for i in 0..moves.len() {
+        if matches!(&moves[i], PossibleMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
+            moves.swap(i, capture_end);
+            capture_end += 1;
+        }
+    }
+
+    let owner = gs.current_player_turn();
+
+    // Separate piece moves from placement offsets.
+    let mut placement_offsets: [Option<DukeOffset>; 4] = [None; 4];
+    let mut n_placements = 0usize;
+
+    let mut best = f64::NEG_INFINITY;
+    let base_rng = SmallRng::seed_from_u64(0);
+
+    // First sibling's accumulator (for incremental updates to subsequent siblings).
+    let mut first_sibling_acc: Option<crate::halfda::HalfDAAccumulator> = None;
+
+    for pm in &moves {
+        match pm {
+            PossibleMove::PlaceNewTile(offset, _) => {
+                let already = placement_offsets[..n_placements].iter().any(|o| *o == Some(*offset));
+                if !already {
+                    placement_offsets[n_placements] = Some(*offset);
+                    n_placements += 1;
+                }
+            }
+            PossibleMove::ApplyNonCommandTileAction { src, dst, .. } => {
+                let game_move = GameMove::ApplyNonCommandTileAction { src: *src, dst: *dst };
+                let undo = pm.clone();
+                gs.make_a_move(game_move, &mut base_rng.clone());
+
+                // Push accumulator for the child position.
+                match &first_sibling_acc {
+                    None => {
+                        // First sibling: build from scratch, save for reuse.
+                        evaluator.push_fresh(gs);
+                        first_sibling_acc = Some(evaluator.top_accumulator());
+                    }
+                    Some(base_acc) => {
+                        // Subsequent siblings: incrementally update from first sibling.
+                        // Siblings share the same current player, so only 2-3 features differ.
+                        evaluator.push_incremental_from(base_acc, gs);
+                    }
+                }
+
+                let score = -negamax_halfda_ab(gs, evaluator, depth - 1, -beta, -alpha, rng);
+
+                evaluator.pop();
+                gs.undo(undo);
+
+                if score > best {
+                    best = score;
+                }
+                if best > alpha {
+                    alpha = best;
+                }
+                if alpha >= beta {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Expectimax for the "draw from bag" option.
+    if n_placements > 0 && best < beta {
+        let bag = gs.bag_for_current_player().remaining();
+        let total_tiles = bag.len() as f64;
+        debug_assert!(total_tiles > 0.0);
+
+        let mut tile_counts = [0usize; 13];
+        for &tile in bag {
+            tile_counts[tile.index()] += 1;
+        }
+
+        let tile_types = [
+            TileType::Duke, TileType::Footman, TileType::Pikeman, TileType::Knight,
+            TileType::Champion, TileType::Dragoon, TileType::Wizard, TileType::General,
+            TileType::Marshall, TileType::Assassin, TileType::Priest, TileType::Bowman,
+            TileType::Longbowman,
+        ];
+
+        let mut draw_value = 0.0;
+        for &tile_type in &tile_types {
+            let count = tile_counts[tile_type.index()];
+            if count == 0 { continue; }
+            let prob = count as f64 / total_tiles;
+
+            let mut best_for_tile = f64::NEG_INFINITY;
+            // Reset sibling accumulator for each tile type's placement options.
+            let mut tile_first_sibling_acc: Option<crate::halfda::HalfDAAccumulator> = None;
+
+            for &offset_opt in &placement_offsets[..n_placements] {
+                let offset = offset_opt.unwrap();
+                gs.pull_specific_tile_from_bag(tile_type);
+                let undo = PossibleMove::PlaceNewTile(offset, owner);
+                gs.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
+
+                // Push accumulator for placement child.
+                match &tile_first_sibling_acc {
+                    None => {
+                        evaluator.push_fresh(gs);
+                        tile_first_sibling_acc = Some(evaluator.top_accumulator());
+                    }
+                    Some(base_acc) => {
+                        evaluator.push_incremental_from(base_acc, gs);
+                    }
+                }
+
+                let score = -negamax_halfda_ab(gs, evaluator, depth - 1, -beta, -alpha, rng);
+
+                evaluator.pop();
+                gs.undo(undo);
+
+                if score > best_for_tile {
+                    best_for_tile = score;
+                }
+            }
+
+            draw_value += prob * best_for_tile;
+        }
+
+        if draw_value > best {
+            best = draw_value;
+        }
+    }
+
+    best
+}
+
 /// Arbitrary-depth minimax move selection using negamax.
 ///
 /// Enumerates all legal moves, scores each via `negamax` at `depth - 1`,
@@ -457,10 +640,18 @@ pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
 /// Same as greedy_move_deep but also returns the best score (from current player's perspective).
 ///
 /// Uses make/undo in-place instead of cloning GameState per candidate move.
+/// When the evaluator supports incremental HalfDA accumulator updates,
+/// automatically dispatches to the specialized `negamax_halfda_ab` path.
 pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> (AiMove, f64) {
     assert!(depth >= 1, "greedy_move_deep_with_score requires depth >= 1");
+
+    // Dispatch to incremental HalfDA path if available.
+    if let Some(halfda_eval) = evaluator.as_incremental_halfda() {
+        return greedy_move_deep_halfda(gs, halfda_eval, depth, rng);
+    }
+
     GREEDY_CANDIDATES.with(|cell| {
         let mut moves = cell.borrow_mut();
         gs.all_valid_game_moves_for_current_player_into(&mut moves);
@@ -495,6 +686,66 @@ pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
         let best_move: AiMove = (&moves[best_idx]).into();
         (best_move, best_score)
     })
+}
+
+/// Specialized root-level move selection for `HalfDAIncrementalEvaluator`.
+///
+/// At the root, plays each candidate move and uses `negamax_halfda_ab` with
+/// incremental accumulator updates for the subtree search.
+fn greedy_move_deep_halfda(
+    gs: &mut GameState,
+    evaluator: &crate::halfda::HalfDAIncrementalEvaluator,
+    depth: u32,
+    rng: &mut impl Rng,
+) -> (AiMove, f64) {
+    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
+    assert!(!moves.is_empty(), "greedy_move_deep_halfda called with no legal moves");
+    moves.shuffle(rng);
+
+    // Move ordering at root: captures first.
+    let mut capture_end = 0;
+    for i in 0..moves.len() {
+        if matches!(&moves[i], AiMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
+            moves.swap(i, capture_end);
+            capture_end += 1;
+        }
+    }
+
+    let base_eval_rng = SmallRng::seed_from_u64(0);
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_move = moves[0].clone();
+
+    // First child's accumulator for sibling reuse at the root level.
+    let mut first_child_acc: Option<crate::halfda::HalfDAAccumulator> = None;
+
+    for mv in &moves {
+        let undo = mv.to_undo_move().expect("Legal move should be undoable");
+        let mut eval_rng = base_eval_rng.clone();
+        mv.play(gs, &mut eval_rng);
+
+        // Push accumulator for this child position.
+        match &first_child_acc {
+            None => {
+                evaluator.push_fresh(gs);
+                first_child_acc = Some(evaluator.top_accumulator());
+            }
+            Some(base_acc) => {
+                evaluator.push_incremental_from(base_acc, gs);
+            }
+        }
+
+        let score = -negamax_halfda_ab(gs, evaluator, depth - 1, f64::NEG_INFINITY, -best_score, rng);
+
+        evaluator.pop();
+        gs.undo(undo);
+
+        if score > best_score {
+            best_score = score;
+            best_move = mv.clone();
+        }
+    }
+
+    (best_move, best_score)
 }
 
 /// Pick the move that minimizes the opponent's value (= maximizes our value).

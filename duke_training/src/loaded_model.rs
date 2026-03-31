@@ -216,9 +216,10 @@ pub fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>
                 }
             }
         }
-        // HalfDA directory: contains halfda_l1.bin + halfda_dense.mpk
+        // HalfDA directory: contains halfda_l1.bin + halfda_output.bin
+        // Uses incremental evaluator for faster negamax search (accumulator reuse).
         path if std::path::Path::new(path).join("halfda_l1.bin").exists() => {
-            let eval = crate::halfda::HalfDAEvaluator::load(path)
+            let eval = crate::halfda::HalfDAIncrementalEvaluator::load(path)
                 .expect("Failed to load HalfDA model");
             let desc = format!("HalfDA ({}->2048->1)", crate::halfda::HALFDA_FEATURES);
             (Some(Box::new(eval)), desc)
