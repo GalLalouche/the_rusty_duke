@@ -1159,8 +1159,7 @@ impl GameBoard {
         let opp_occ = self.occ & !my_occ;
 
         // Jump + distance-1 Move: just check not friendly.
-        let mut count = (entry.jump_mask & !my_occ).count_ones() as usize;
-        count += (entry.near_move_mask & !my_occ).count_ones() as usize;
+        let mut count = ((entry.jump_mask | entry.near_move_mask) & !my_occ).count_ones() as usize;
 
         // Strike: must be occupied by enemy.
         count += (entry.strike_mask & opp_occ).count_ones() as usize;
@@ -1413,8 +1412,12 @@ impl GameBoard {
         result
     }
 
-    pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
-        let mut result = Vec::new();
+    /// Append all tile moves (and optionally placements) ignoring guard into `out`.
+    /// Clears `out` first.
+    pub fn all_valid_moves_ignoring_guard_into(
+        &self, owner: Owner, new_tiles: WithNewTiles, out: &mut Vec<PossibleMove>,
+    ) {
+        out.clear();
         let mut bits = self.owner_occ(owner);
         while bits != 0 {
             let idx = bits.trailing_zeros() as usize;
@@ -1422,7 +1425,7 @@ impl GameBoard {
             let src = Coordinates { x: (idx % 6) as u8, y: (idx / 6) as u8 };
             let buf = self.get_legal_moves_no_guard(src);
             for &(dst, _) in buf.as_slice() {
-                result.push(PossibleMove::ApplyNonCommandTileAction {
+                out.push(PossibleMove::ApplyNonCommandTileAction {
                     src,
                     dst,
                     capturing: self.board.get(dst).cloned(),
@@ -1433,10 +1436,15 @@ impl GameBoard {
         if let WithNewTiles(true) = new_tiles {
             for offset in DukeOffset::iter() {
                 if self.is_valid_placement_space(owner, offset).is_some() {
-                    result.push(PossibleMove::PlaceNewTile(offset, owner));
+                    out.push(PossibleMove::PlaceNewTile(offset, owner));
                 }
             }
         }
+    }
+
+    pub fn all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+        let mut result = Vec::new();
+        self.all_valid_moves_ignoring_guard_into(owner, new_tiles, &mut result);
         result
     }
 
@@ -1603,11 +1611,10 @@ impl GameBoard {
         result
     }
 
-    pub fn all_valid_moves(&mut self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+    /// Legal moves with guard checking; clears `out` first.
+    pub fn all_valid_moves_into(&mut self, owner: Owner, new_tiles: WithNewTiles, out: &mut Vec<PossibleMove>) {
         #[cfg(debug_assertions)]
         let snapshot = self.clone();
-        // Collect tile coordinates into stack buffer to avoid holding references
-        // into the board while mutating it during guard checks.
         let mut tile_coords = [Coordinates { x: 0, y: 0 }; MAX_TILES_PER_PLAYER];
         let mut n_tiles = 0usize;
         for (c, _) in self.get_tiles_for(owner) {
@@ -1615,14 +1622,13 @@ impl GameBoard {
             n_tiles += 1;
         }
 
-        let mut result = Vec::new();
+        out.clear();
 
-        // Tile action moves: collect candidates per tile and filter inline.
         for &src in &tile_coords[..n_tiles] {
             let candidates = self.get_legal_moves_no_guard(src);
             for &(dst, action) in candidates.as_slice() {
                 if self.tile_action_does_not_put_in_guard(src, dst, action, owner) {
-                    result.push(PossibleMove::ApplyNonCommandTileAction {
+                    out.push(PossibleMove::ApplyNonCommandTileAction {
                         src,
                         dst,
                         capturing: self.board.get(dst).cloned(),
@@ -1631,12 +1637,11 @@ impl GameBoard {
             }
         }
 
-        // Placement moves.
         if let WithNewTiles(true) = new_tiles {
             for offset in DukeOffset::iter() {
                 if let Some(c) = self.is_valid_placement_space(owner, offset) {
                     if self.placement_does_not_put_in_guard(c, owner) {
-                        result.push(PossibleMove::PlaceNewTile(offset, owner));
+                        out.push(PossibleMove::PlaceNewTile(offset, owner));
                     }
                 }
             }
@@ -1644,6 +1649,11 @@ impl GameBoard {
 
         #[cfg(debug_assertions)]
         debug_assert_eq!(self, &snapshot, "all_valid_moves: board not restored after apply/undo");
+    }
+
+    pub fn all_valid_moves(&mut self, owner: Owner, new_tiles: WithNewTiles) -> Vec<PossibleMove> {
+        let mut result = Vec::new();
+        self.all_valid_moves_into(owner, new_tiles, &mut result);
         result
     }
 

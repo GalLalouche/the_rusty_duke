@@ -511,11 +511,42 @@ impl GameState {
         ).into_iter()
     }
 
-    pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> Vec<PossibleMove> {
-        self.board.all_valid_moves_ignoring_guard(
+    /// Tile moves only (no placements), ignoring guard; clears `out` first.
+    pub fn all_valid_tile_moves_ignoring_guard_into(&self, owner: Owner, out: &mut Vec<PossibleMove>) {
+        self.board
+            .all_valid_moves_ignoring_guard_into(owner, WithNewTiles(false), out);
+    }
+
+    /// Ignoring-guard tile moves and optionally placements into `out` (clears `out` first).
+    pub(crate) fn all_valid_moves_ignoring_guard_into(
+        &self, o: Owner, new_tiles: WithNewTiles, out: &mut Vec<PossibleMove>,
+    ) {
+        self.board.all_valid_moves_ignoring_guard_into(o, new_tiles, out);
+    }
+
+    /// Same as [`Self::all_valid_moves_ignoring_guard_into`] with bag-driven placements.
+    pub fn all_valid_game_moves_for_ignoring_guard_into(&self, o: Owner, out: &mut Vec<PossibleMove>) {
+        self.all_valid_moves_ignoring_guard_into(
             o,
             WithNewTiles(self.bag_for_owner(o).non_empty()),
-        )
+            out,
+        );
+    }
+
+    pub fn all_valid_game_moves_for_ignoring_guard(&self, o: Owner) -> Vec<PossibleMove> {
+        let mut v = Vec::new();
+        self.all_valid_game_moves_for_ignoring_guard_into(o, &mut v);
+        v
+    }
+
+    /// Legal moves for the current player with guard checking; clears `out` first.
+    pub fn all_valid_game_moves_for_current_player_into(&mut self, out: &mut Vec<PossibleMove>) {
+        let o = self.current_player_turn;
+        self.board.all_valid_moves_into(
+            o,
+            WithNewTiles(self.bag_for_owner(o).non_empty()),
+            out,
+        );
     }
 
     /// Count all valid moves for `owner` without guard checking and without

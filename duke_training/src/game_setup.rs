@@ -1,5 +1,7 @@
 //! Shared game setup used by training, benchmarking, and tests.
 
+use std::cell::RefCell;
+
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand::rngs::{SmallRng, StdRng};
@@ -20,6 +22,27 @@ use crate::encoding::{active_board_features, bag_features};
 use crate::generic_mlp::{GenericMlp, L1Accumulator};
 use crate::learned_heuristic::{extract_combined_features, NUM_COMBINED_FEATURES};
 use crate::nnue::NnueEvaluator;
+
+thread_local! {
+    /// Reused candidate list for greedy paths (single-thread sequential use per call).
+    static GREEDY_CANDIDATES: RefCell<Vec<PossibleMove>> = RefCell::new(Vec::new());
+    /// One move list per search ply so nested `negamax_ab` does not clobber parent buffers.
+    static NEGAMAX_MOVE_POOL: RefCell<[Vec<PossibleMove>; 64]> =
+        RefCell::new(std::array::from_fn(|_| Vec::new()));
+}
+
+/// Piece moves without guard, then up to four guard-checked placements (matches `greedy_move` semantics).
+fn collect_greedy_candidate_moves(gs: &mut GameState, owner: Owner, out: &mut Vec<PossibleMove>) {
+    out.clear();
+    gs.all_valid_tile_moves_ignoring_guard_into(owner, out);
+    if gs.bag_for_current_player().non_empty() {
+        for &offset in &[DukeOffset::Top, DukeOffset::Bottom, DukeOffset::Left, DukeOffset::Right] {
+            if gs.is_valid_placement(offset) {
+                out.push(PossibleMove::PlaceNewTile(offset, owner));
+            }
+        }
+    }
+}
 
 /// Safety limit: if a game exceeds this many turns, force a draw.
 /// In practice the built-in idle-move draw rule should trigger well before this.
@@ -249,7 +272,7 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
 pub fn negamax<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> f64 {
-    negamax_ab(gs, evaluator, depth, f64::NEG_INFINITY, f64::INFINITY, rng)
+    negamax_ab(gs, evaluator, depth, f64::NEG_INFINITY, f64::INFINITY, rng, 0)
 }
 
 /// Negamax with alpha-beta pruning.
@@ -261,7 +284,13 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32,
     mut alpha: f64, beta: f64,
     rng: &mut impl Rng,
+    rec_depth: usize,
 ) -> f64 {
+    const MAX_NEGAMAX_REC_DEPTH: usize = 64;
+    debug_assert!(rec_depth < MAX_NEGAMAX_REC_DEPTH, "negamax_ab exceeded move pool depth");
+    if rec_depth >= MAX_NEGAMAX_REC_DEPTH {
+        return evaluator.evaluate(gs) as f64;
+    }
     // Check tie first (O(1)) before doing any move generation.
     if gs.is_tie() {
         return 0.0;
@@ -287,37 +316,39 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
         return evaluator.evaluate(gs) as f64;
     }
 
-    // Generate moves with guard checking.
-    let mut moves: Vec<PossibleMove> = gs.all_valid_game_moves_for_current_player().collect();
-    if moves.is_empty() {
-        // No legal moves means current player loses.
-        return TERMINAL_LOSS_SCORE;
-    }
-
-    // Move ordering: captures first for better alpha-beta pruning.
-    // Benchmarked: 25% faster at depth 4 (13.5s -> 10.2s for 100 games).
-    let mut capture_end = 0;
-    for i in 0..moves.len() {
-        if matches!(&moves[i], PossibleMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
-            moves.swap(i, capture_end);
-            capture_end += 1;
+    // Generate moves with guard checking (pooled vec per search ply).
+    NEGAMAX_MOVE_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let moves = &mut pool[rec_depth];
+        moves.clear();
+        gs.all_valid_game_moves_for_current_player_into(moves);
+        if !moves.is_empty() {
+            let mut capture_end = 0usize;
+            for i in 0..moves.len() {
+                if matches!(&moves[i], PossibleMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
+                    moves.swap(i, capture_end);
+                    capture_end += 1;
+                }
+            }
         }
+    });
+
+    if NEGAMAX_MOVE_POOL.with(|pool| pool.borrow()[rec_depth].is_empty()) {
+        return TERMINAL_LOSS_SCORE;
     }
 
     let owner = gs.current_player_turn();
 
-    // Separate piece moves from placement offsets (bitmask, max 4 offsets).
     let mut placement_offsets: [Option<DukeOffset>; 4] = [None; 4];
     let mut n_placements = 0usize;
 
-    // Best score among deterministic piece moves.
-    // Uses make/undo in-place instead of cloning GameState.
     let mut best = f64::NEG_INFINITY;
     let base_rng = SmallRng::seed_from_u64(0);
-    for pm in &moves {
-        match pm {
+    let moves_len = NEGAMAX_MOVE_POOL.with(|pool| pool.borrow()[rec_depth].len());
+    for i in 0..moves_len {
+        let pm = NEGAMAX_MOVE_POOL.with(|pool| pool.borrow()[rec_depth][i].clone());
+        match &pm {
             PossibleMove::PlaceNewTile(offset, _) => {
-                // Deduplicate placement offsets.
                 let already = placement_offsets[..n_placements].iter().any(|o| *o == Some(*offset));
                 if !already {
                     placement_offsets[n_placements] = Some(*offset);
@@ -328,7 +359,7 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
                 let game_move = GameMove::ApplyNonCommandTileAction { src: *src, dst: *dst };
                 let undo = pm.clone();
                 gs.make_a_move(game_move, &mut base_rng.clone());
-                let score = -negamax_ab(gs, evaluator, depth - 1, -beta, -alpha, rng);
+                let score = -negamax_ab(gs, evaluator, depth - 1, -beta, -alpha, rng, rec_depth + 1);
                 gs.undo(undo);
                 if score > best {
                     best = score;
@@ -337,7 +368,6 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
                     alpha = best;
                 }
                 if alpha >= beta {
-                    // Beta cutoff: opponent already has a better option.
                     break;
                 }
             }
@@ -380,7 +410,7 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
                 gs.pull_specific_tile_from_bag(tile_type);
                 let undo = PossibleMove::PlaceNewTile(offset, owner);
                 gs.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
-                let score = -negamax_ab(gs, evaluator, depth - 1, -beta, -alpha, rng);
+                let score = -negamax_ab(gs, evaluator, depth - 1, -beta, -alpha, rng, rec_depth + 1);
                 gs.undo(undo);
                 if score > best_for_tile {
                     best_for_tile = score;
@@ -421,38 +451,40 @@ pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> (AiMove, f64) {
     assert!(depth >= 1, "greedy_move_deep_with_score requires depth >= 1");
-    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
-    assert!(!moves.is_empty(), "greedy_move_deep_with_score called with no legal moves");
-    moves.shuffle(rng);
+    GREEDY_CANDIDATES.with(|cell| {
+        let mut moves = cell.borrow_mut();
+        gs.all_valid_game_moves_for_current_player_into(&mut moves);
+        assert!(!moves.is_empty(), "greedy_move_deep_with_score called with no legal moves");
+        moves.shuffle(rng);
 
-    // Move ordering at root: captures first for better alpha-beta pruning.
-    // Stable partition preserves the random shuffle order within each group.
-    let mut capture_end = 0;
-    for i in 0..moves.len() {
-        if matches!(&moves[i], AiMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
-            moves.swap(i, capture_end);
-            capture_end += 1;
+        let mut capture_end = 0;
+        for i in 0..moves.len() {
+            if matches!(&moves[i], PossibleMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
+                moves.swap(i, capture_end);
+                capture_end += 1;
+            }
         }
-    }
 
-    let base_eval_rng = SmallRng::seed_from_u64(0);
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_move = moves[0].clone();
+        let base_eval_rng = SmallRng::seed_from_u64(0);
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_idx = 0usize;
 
-    for mv in &moves {
-        let undo = mv.to_undo_move().expect("Legal move should be undoable");
-        let mut eval_rng = base_eval_rng.clone();
-        mv.play(gs, &mut eval_rng);
-        // Use alpha-beta: alpha = best_score so far, beta = +inf (root never pruned).
-        let score = -negamax_ab(gs, evaluator, depth - 1, f64::NEG_INFINITY, -best_score, rng);
-        gs.undo(undo);
-        if score > best_score {
-            best_score = score;
-            best_move = mv.clone();
+        for (i, pm) in moves.iter().enumerate() {
+            let mv: AiMove = pm.into();
+            let undo = mv.to_undo_move().expect("Legal move should be undoable");
+            let mut eval_rng = base_eval_rng.clone();
+            mv.play(gs, &mut eval_rng);
+            let score = -negamax_ab(gs, evaluator, depth - 1, f64::NEG_INFINITY, -best_score, rng, 0);
+            gs.undo(undo);
+            if score > best_score {
+                best_score = score;
+                best_idx = i;
+            }
         }
-    }
 
-    (best_move, best_score)
+        let best_move: AiMove = (&moves[best_idx]).into();
+        (best_move, best_score)
+    })
 }
 
 /// Pick the move that minimizes the opponent's value (= maximizes our value).
@@ -474,47 +506,34 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E,
     }
 
     let owner = gs.current_player_turn();
-    let no_guard_moves = gs.all_valid_game_moves_for_ignoring_guard(owner);
+    GREEDY_CANDIDATES.with(|cell| {
+        let mut moves = cell.borrow_mut();
+        collect_greedy_candidate_moves(gs, owner, &mut moves);
+        assert!(!moves.is_empty(), "greedy_move called with no legal moves");
+        moves.shuffle(rng);
 
-    let mut moves: Vec<PossibleMove> = Vec::with_capacity(no_guard_moves.len());
-    for pm in no_guard_moves {
-        if !matches!(pm, PossibleMove::PlaceNewTile(..)) {
-            moves.push(pm);
-        }
-    }
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_idx = 0;
 
-    if gs.bag_for_current_player().non_empty() {
-        for &offset in &[DukeOffset::Top, DukeOffset::Bottom, DukeOffset::Left, DukeOffset::Right] {
-            if gs.is_valid_placement(offset) {
-                moves.push(PossibleMove::PlaceNewTile(offset, owner));
+        let base_eval_rng = SmallRng::seed_from_u64(0);
+        for (i, pm) in moves.iter().enumerate() {
+            let mv: AiMove = pm.into();
+            let mut eval_rng = base_eval_rng.clone();
+            mv.play(gs, &mut eval_rng);
+            let is_placement = matches!(pm, PossibleMove::PlaceNewTile(..));
+            if is_placement || !gs.is_duke_in_guard(owner) {
+                let prediction = evaluator.evaluate(gs);
+                let score = -(prediction as f64);
+                if score > best_score {
+                    best_score = score;
+                    best_idx = i;
+                }
             }
+            gs.undo(pm.clone());
         }
-    }
 
-    assert!(!moves.is_empty(), "greedy_move called with no legal moves");
-    moves.shuffle(rng);
-
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_idx = 0;
-
-    let base_eval_rng = SmallRng::seed_from_u64(0);
-    for (i, pm) in moves.iter().enumerate() {
-        let mv: AiMove = pm.into();
-        let mut eval_rng = base_eval_rng.clone();
-        mv.play(gs, &mut eval_rng);
-        let is_placement = matches!(pm, PossibleMove::PlaceNewTile(..));
-        if is_placement || !gs.is_duke_in_guard(owner) {
-            let prediction = evaluator.evaluate(gs);
-            let score = -(prediction as f64);
-            if score > best_score {
-                best_score = score;
-                best_idx = i;
-            }
-        }
-        gs.undo(pm.clone());
-    }
-
-    (&moves[best_idx]).into()
+        (&moves[best_idx]).into()
+    })
 }
 
 /// Incremental heuristic evaluation: precompute per-piece move counts once,
@@ -525,23 +544,11 @@ fn greedy_move_heuristic_incremental(gs: &mut GameState, rng: &mut impl Rng) -> 
     let owner = gs.current_player_turn();
     let other = owner.next_player();
 
-    // Generate candidate moves (same as greedy_move).
-    let no_guard_moves = gs.all_valid_game_moves_for_ignoring_guard(owner);
-    let mut moves: Vec<PossibleMove> = Vec::with_capacity(no_guard_moves.len());
-    for pm in no_guard_moves {
-        if !matches!(pm, PossibleMove::PlaceNewTile(..)) {
-            moves.push(pm);
-        }
-    }
-    if gs.bag_for_current_player().non_empty() {
-        for &offset in &[DukeOffset::Top, DukeOffset::Bottom, DukeOffset::Left, DukeOffset::Right] {
-            if gs.is_valid_placement(offset) {
-                moves.push(PossibleMove::PlaceNewTile(offset, owner));
-            }
-        }
-    }
-    assert!(!moves.is_empty(), "greedy_move_heuristic_incremental called with no legal moves");
-    moves.shuffle(rng);
+    GREEDY_CANDIDATES.with(|cell| {
+        let mut moves = cell.borrow_mut();
+        collect_greedy_candidate_moves(gs, owner, &mut moves);
+        assert!(!moves.is_empty(), "greedy_move_heuristic_incremental called with no legal moves");
+        moves.shuffle(rng);
 
     // Precompute per-piece move counts and base totals.
     let mut piece_counts = [0u16; 36]; // indexed by board position (y*6+x)
@@ -656,7 +663,8 @@ fn greedy_move_heuristic_incremental(gs: &mut GameState, rng: &mut impl Rng) -> 
         gs.undo(pm.clone());
     }
 
-    (&moves[best_idx]).into()
+        (&moves[best_idx]).into()
+    })
 }
 
 /// Pick the best move using incremental L1 accumulator updates.
@@ -678,9 +686,11 @@ pub fn greedy_move_incremental(
     include_combined: bool,
     rng: &mut impl Rng,
 ) -> AiMove {
-    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
-    assert!(!moves.is_empty(), "greedy_move_incremental called with no legal moves");
-    moves.shuffle(rng);
+    let result = GREEDY_CANDIDATES.with(|cell| {
+        let mut moves = cell.borrow_mut();
+        gs.all_valid_game_moves_for_current_player_into(&mut moves);
+        assert!(!moves.is_empty(), "greedy_move_incremental called with no legal moves");
+        moves.shuffle(rng);
 
     let base_acc = L1Accumulator::from_state(net, gs, include_combined);
     let base_board = active_board_features(gs);
@@ -693,9 +703,10 @@ pub fn greedy_move_incremental(
 
     let base_eval_rng = SmallRng::seed_from_u64(0);
     let mut best_score = f64::NEG_INFINITY;
-    let mut best_move = moves[0].clone();
+    let mut best_idx = 0usize;
 
-    for mv in &moves {
+    for (i, pm) in moves.iter().enumerate() {
+        let mv: AiMove = pm.into();
         let undo = mv.to_undo_move().expect("Legal move should be undoable");
         let mut eval_rng = base_eval_rng.clone();
         mv.play(gs, &mut eval_rng);
@@ -724,9 +735,11 @@ pub fn greedy_move_incremental(
         let score = -(prediction as f64);
         if score > best_score {
             best_score = score;
-            best_move = mv.clone();
+            best_idx = i;
         }
     }
 
-    best_move
+        (&moves[best_idx]).into()
+    });
+    result
 }
