@@ -210,6 +210,29 @@ already-approximate heuristic).
 
 ---
 
+## Optimization 7 (revisited): Precomputed move bitmasks
+
+**Problem:** `count_legal_moves_no_guard` recomputes target squares every call:
+`to_absolute_coordinate` arithmetic, action-type dispatch, bounds checking.
+These are pure functions of (tile_type, owner, side, position) and don't
+change between calls for the same configuration.
+
+**Fix:** Added a `MoveTable` (lazy-initialized `OnceLock`) that precomputes,
+for every (tile_type × 2 owners × 2 sides × 36 positions = 1872 entries):
+- `jump_and_near_mask: u64` — Jump targets + distance-1 Move targets (count via popcount after masking out friendly)
+- `strike_mask: u64` — Strike targets (count via popcount after masking with enemy occ)
+- `far_move[8]` — Move targets at distance ≥ 2 (need obstruction check)
+- `slide[20]` — Slide/JumpSlide targets (need per-target obstruction check)
+
+At runtime, `count_legal_moves_no_guard` becomes: one table lookup + two popcounts
++ a few array iterations for Slide/far-Move targets.
+
+**Expected impact:** Moderate-high. Eliminates ~5 function calls per action.
+
+**Status:** Done — **~30% improvement** on top of Opts 10-11 (10.5 → ~3.2 us/move cumulative, **3.3x total speedup**).
+
+---
+
 ## Future Opportunities (not yet implemented)
 
 1. **Incremental attack map for `is_guard`**: Maintain a per-square attack
@@ -217,13 +240,9 @@ already-approximate heuristic).
    instead of O(enemy_pieces × actions). Would significantly speed up move
    generation with guard checking.
 
-2. **Precomputed action tables**: For each tile type/side/position, precompute
-   all target coordinates as lookup tables. Avoids `to_absolute_coordinate`
-   arithmetic and `target_coordinates` dispatch at runtime.
-
-3. **Transposition table for negamax**: Cache evaluations for positions seen
+2. **Transposition table for negamax**: Cache evaluations for positions seen
    during search. Requires a fast hash (already improved by Opt 4) and would
    significantly prune repeated positions in the search tree.
 
-4. **SIMD-accelerated NNUE forward pass**: Use SIMD intrinsics for the
+3. **SIMD-accelerated NNUE forward pass**: Use SIMD intrinsics for the
    matrix-vector multiplications in the neural network forward pass.

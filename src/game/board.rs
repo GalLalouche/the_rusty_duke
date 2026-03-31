@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
 
-use strum::IntoEnumIterator;
+use strum::{EnumCount, IntoEnumIterator};
 use strum_macros::EnumIter;
 
 use crate::common::board::Board;
@@ -11,9 +11,12 @@ use crate::common::geometry::Rectangular;
 use crate::common::utils::Folding;
 use crate::game::dumb_printer::{double_char_print_board, single_char_print_board};
 use crate::game::offset::{Centerable, HorizontalOffset, Offsets, VerticalOffset};
-use crate::game::tile::{Owner, Ownership, PlacedTile, TileType};
+use crate::game::tile::{CurrentSide, Owner, Ownership, PlacedTile, TileType};
 use crate::game::tile_side::TileAction;
+use crate::game::units::tile_table_lookup;
 use crate::time_it_macro;
+
+use std::sync::OnceLock;
 
 /// Precomputed ray masks for obstruction checking on a 6x6 board.
 /// `RAY_BETWEEN[src][dst]` is a bitmask of intermediate squares between src and dst
@@ -50,6 +53,179 @@ static RAY_BETWEEN: [[u64; 36]; 36] = {
     }
     table
 };
+
+/// Precomputed move data for a specific (tile_type, owner, side, position) combination.
+/// Splits targets into categories that can be counted via popcount vs per-target checking.
+#[derive(Clone)]
+struct PrecomputedMoves {
+    /// Bitmask of Jump targets + Move targets that are distance-1 (no obstruction check needed).
+    jump_and_near_mask: u64,
+    /// Bitmask of Strike targets (count = popcount of mask & opp_occ).
+    strike_mask: u64,
+    /// Move targets that are distance > 1 (need obstruction + straight-line check).
+    /// Stored as board indices (y*6+x).
+    far_move: [u8; 8],
+    far_move_len: u8,
+    /// Slide/JumpSlide targets, stored as (board_index, is_jump_slide).
+    slide: [u8; 20],
+    slide_action: [u8; 20], // 0 = Slide, 1 = JumpSlide
+    slide_len: u8,
+}
+
+impl PrecomputedMoves {
+    fn empty() -> Self {
+        PrecomputedMoves {
+            jump_and_near_mask: 0,
+            strike_mask: 0,
+            far_move: [0; 8],
+            far_move_len: 0,
+            slide: [0; 20],
+            slide_action: [0; 20],
+            slide_len: 0,
+        }
+    }
+}
+
+/// Table indexed by [tile_table_idx (26)][side (2)][position (36)].
+/// tile_table_idx = tt.index() for BottomPlayer, TileType::COUNT + tt.index() for TopPlayer.
+struct MoveTable {
+    entries: Vec<PrecomputedMoves>, // flat: idx = tile_idx * 2 * 36 + side * 36 + pos
+}
+
+impl MoveTable {
+    fn new() -> Self {
+        let n_tiles = TileType::COUNT * 2; // 26 (13 per owner)
+        let mut entries = vec![PrecomputedMoves::empty(); n_tiles * 2 * 36];
+
+        for tile_idx in 0..n_tiles {
+            let tt = TileType::try_from((tile_idx % TileType::COUNT) as u8).unwrap();
+            let owner = if tile_idx < TileType::COUNT {
+                Owner::BottomPlayer
+            } else {
+                Owner::TopPlayer
+            };
+            let tile_ref = tile_table_lookup(tt, owner);
+
+            let sides = [tile_ref.get_side_a(), tile_ref.get_side_b()];
+            for (side_idx, tile_side) in sides.iter().enumerate() {
+                let center = tile_side.center_offset();
+
+                for pos in 0..36u8 {
+                    let src_x = (pos % 6) as u8;
+                    let src_y = (pos / 6) as u8;
+                    let src = Coordinates { x: src_x, y: src_y };
+                    let flat = tile_idx * 2 * 36 + side_idx * 36 + pos as usize;
+                    let entry = &mut entries[flat];
+
+                    for (offset, action) in tile_side.actions().iter() {
+                        match *action {
+                            TileAction::Unit | TileAction::Command => continue,
+                            TileAction::Jump => {
+                                if let Some(dst) = Self::abs_coord(src, *offset, center) {
+                                    entry.jump_and_near_mask |= 1u64 << (dst.y * 6 + dst.x);
+                                }
+                            }
+                            TileAction::Move => {
+                                if let Some(dst) = Self::abs_coord(src, *offset, center) {
+                                    if !src.is_straight_line_to(dst) {
+                                        continue;
+                                    }
+                                    let si = src_y as usize * 6 + src_x as usize;
+                                    let di = dst.y as usize * 6 + dst.x as usize;
+                                    if RAY_BETWEEN[si][di] == 0 {
+                                        // Distance 1: no obstruction possible.
+                                        entry.jump_and_near_mask |= 1u64 << di;
+                                    } else {
+                                        entry.far_move[entry.far_move_len as usize] = di as u8;
+                                        entry.far_move_len += 1;
+                                    }
+                                }
+                            }
+                            TileAction::Strike => {
+                                if let Some(dst) = Self::abs_coord(src, *offset, center) {
+                                    entry.strike_mask |= 1u64 << (dst.y * 6 + dst.x);
+                                }
+                            }
+                            TileAction::Slide | TileAction::JumpSlide => {
+                                let eff_action = *action;
+                                let eff_offset = if eff_action == TileAction::JumpSlide {
+                                    Offsets::new(offset.x.to_near(), offset.y.to_near())
+                                } else {
+                                    *offset
+                                };
+                                // Generate slide targets (same logic as target_coordinates for Slide).
+                                let targets = Self::slide_targets(src, eff_offset);
+                                for dst in targets {
+                                    let di = dst.y as usize * 6 + dst.x as usize;
+                                    let idx = entry.slide_len as usize;
+                                    entry.slide[idx] = di as u8;
+                                    entry.slide_action[idx] = if eff_action == TileAction::JumpSlide { 1 } else { 0 };
+                                    entry.slide_len += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        MoveTable { entries }
+    }
+
+    fn abs_coord(src: Coordinates, offset: Offsets, center: VerticalOffset) -> Option<Coordinates> {
+        fn voff(y: VerticalOffset) -> i32 {
+            match y {
+                VerticalOffset::FarTop => -2, VerticalOffset::Top => -1,
+                VerticalOffset::Center => 0, VerticalOffset::Bottom => 1,
+                VerticalOffset::FarBottom => 2,
+            }
+        }
+        let x = src.x as i32 + match offset.x {
+            HorizontalOffset::FarLeft => -2, HorizontalOffset::Left => -1,
+            HorizontalOffset::Center => 0, HorizontalOffset::Right => 1,
+            HorizontalOffset::FarRight => 2,
+        };
+        let y = src.y as i32 + voff(offset.y) + voff(center);
+        if x < 0 || x >= 6 || y < 0 || y >= 6 { return None; }
+        Some(Coordinates { x: x as u8, y: y as u8 })
+    }
+
+    fn slide_targets(src: Coordinates, offset: Offsets) -> Vec<Coordinates> {
+        let mut res = Vec::new();
+        if offset == HorizontalOffset::Right.center() {
+            for x in 0..src.x { res.push(Coordinates { x, y: src.y }); }
+        } else if offset == HorizontalOffset::Left.center() {
+            for x in src.x + 1..6 { res.push(Coordinates { x, y: src.y }); }
+        } else if offset == VerticalOffset::Top.center() {
+            for y in 0..src.y { res.push(Coordinates { x: src.x, y }); }
+        } else if offset == VerticalOffset::Bottom.center() {
+            for y in src.y + 1..6 { res.push(Coordinates { x: src.x, y }); }
+        } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Top) {
+            let (mut x, mut y) = (src.x.wrapping_sub(1), src.y.wrapping_sub(1));
+            while x < 6 && y < 6 { res.push(Coordinates { x, y }); x = x.wrapping_sub(1); y = y.wrapping_sub(1); }
+        } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Top) {
+            let (mut x, mut y) = (src.x + 1, src.y.wrapping_sub(1));
+            while x < 6 && y < 6 { res.push(Coordinates { x, y }); x += 1; y = y.wrapping_sub(1); }
+        } else if offset == Offsets::new(HorizontalOffset::Right, VerticalOffset::Bottom) {
+            let (mut x, mut y) = (src.x.wrapping_sub(1), src.y + 1);
+            while x < 6 && y < 6 { res.push(Coordinates { x, y }); x = x.wrapping_sub(1); y += 1; }
+        } else if offset == Offsets::new(HorizontalOffset::Left, VerticalOffset::Bottom) {
+            let (mut x, mut y) = (src.x + 1, src.y + 1);
+            while x < 6 && y < 6 { res.push(Coordinates { x, y }); x += 1; y += 1; }
+        }
+        res
+    }
+
+    #[inline(always)]
+    fn lookup(&self, tile_idx: usize, side_idx: usize, pos: usize) -> &PrecomputedMoves {
+        &self.entries[tile_idx * 2 * 36 + side_idx * 36 + pos]
+    }
+}
+
+static MOVE_TABLE: OnceLock<MoveTable> = OnceLock::new();
+
+fn move_table() -> &'static MoveTable {
+    MOVE_TABLE.get_or_init(MoveTable::new)
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumIter)]
 pub enum DukeOffset { Top, Bottom, Left, Right }
@@ -902,43 +1078,60 @@ impl GameBoard {
     #[inline]
     fn count_legal_moves_no_guard(&self, src: Coordinates) -> usize {
         let tile = self.get(src).unwrap();
-        let tile_side = tile.get_current_side();
-        let center_offset = tile_side.center_offset();
+        let table = move_table();
+        let tile_idx = match tile.owner {
+            Owner::BottomPlayer => tile.tile_type.index(),
+            Owner::TopPlayer => TileType::COUNT + tile.tile_type.index(),
+        };
+        let side_idx = match tile.current_side {
+            CurrentSide::Initial => 0,
+            CurrentSide::Flipped => 1,
+        };
+        let pos = Self::coord_idx(src);
+        let entry = table.lookup(tile_idx, side_idx, pos);
+
         let my_occ = self.owner_occ(tile.owner);
-        let mut count = 0usize;
-        for (offset, action) in tile_side.actions().iter() {
-            match *action {
-                TileAction::Move | TileAction::Jump | TileAction::Strike => {
-                    if let Some(dst) = self.to_absolute_coordinate(src, *offset, center_offset) {
-                        let dst_bit = Self::coord_bit(dst);
-                        if dst_bit & my_occ != 0 { continue; }
-                        match *action {
-                            TileAction::Move => {
-                                if src.is_straight_line_to(dst)
-                                    && RAY_BETWEEN[Self::coord_idx(src)][Self::coord_idx(dst)] & self.occ == 0
-                                {
-                                    count += 1;
-                                }
-                            }
-                            TileAction::Jump => { count += 1; }
-                            TileAction::Strike => {
-                                if dst_bit & self.occ != 0 { count += 1; }
-                            }
-                            _ => unreachable!()
-                        }
-                    }
-                }
-                TileAction::Slide | TileAction::JumpSlide => {
-                    let targets = self.target_coordinates(src, *offset, *action, center_offset);
-                    for c in targets.into_iter() {
-                        if self.can_apply_action_fast(src, c, *action) {
-                            count += 1;
-                        }
-                    }
-                }
-                _ => {}
+        let opp_occ = self.occ & !my_occ;
+
+        // Jump + distance-1 Move: just check not friendly.
+        let mut count = (entry.jump_and_near_mask & !my_occ).count_ones() as usize;
+
+        // Strike: must be occupied by enemy.
+        count += (entry.strike_mask & opp_occ).count_ones() as usize;
+
+        // Far Move: need obstruction check per target.
+        for i in 0..entry.far_move_len as usize {
+            let di = entry.far_move[i] as usize;
+            if (1u64 << di) & my_occ == 0 && RAY_BETWEEN[pos][di] & self.occ == 0 {
+                count += 1;
             }
         }
+
+        // Slide/JumpSlide: need obstruction check per target.
+        for i in 0..entry.slide_len as usize {
+            let di = entry.slide[i] as usize;
+            let dst_bit = 1u64 << di;
+            if dst_bit & my_occ != 0 { continue; }
+            if entry.slide_action[i] == 0 {
+                // Slide: straight-line unobstructed.
+                if RAY_BETWEEN[pos][di] & self.occ == 0 {
+                    count += 1;
+                }
+            } else {
+                // JumpSlide: skip first intermediate square.
+                let dx = (di % 6) as i32 - (pos % 6) as i32;
+                let dy = (di / 6) as i32 - (pos / 6) as i32;
+                let sx = if dx > 0 { 1 } else if dx < 0 { -1i32 } else { 0 };
+                let sy = if dy > 0 { 1 } else if dy < 0 { -1i32 } else { 0 };
+                let adj_x = (pos % 6) as i32 + sx;
+                let adj_y = (pos / 6) as i32 + sy;
+                let adj_bit = 1u64 << (adj_y * 6 + adj_x);
+                if (RAY_BETWEEN[pos][di] & !adj_bit) & self.occ == 0 {
+                    count += 1;
+                }
+            }
+        }
+
         count
     }
 
