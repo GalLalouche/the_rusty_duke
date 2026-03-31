@@ -22,9 +22,9 @@ use duke_rust::game::state::{GameResult, GameState};
 
 use duke_training::cli::parse_flag;
 use duke_training::game_setup::{
-    create_bag, create_initial_state, greedy_move_deep_with_score, MAX_TURNS,
+    create_bag, create_initial_state, greedy_move_deep_with_score, GameEvaluator, MAX_TURNS,
 };
-use duke_training::learned_heuristic::CombinedWeights;
+use duke_training::loaded_model::LoadedModel;
 use duke_training::trajectory_io::TrajectoryWriter;
 
 /// Play a single self-play game using depth-N negamax with epsilon-greedy exploration.
@@ -44,7 +44,7 @@ struct GameData {
 
 fn play_depth_game(
     gs: &GameState,
-    evaluator: &CombinedWeights,
+    evaluator: &(dyn GameEvaluator + Sync),
     depth: u32,
     rng: &mut StdRng,
     epsilon: f64,
@@ -113,10 +113,11 @@ fn main() {
     eprintln!("  Seed:       {}", seed);
     eprintln!();
 
-    // Load evaluator
-    eprintln!("Loading LR-Cheap evaluator ...");
-    let evaluator = CombinedWeights::load(&evaluator_path).expect("Failed to load evaluator");
-    eprintln!("  Loaded {} weights", evaluator.weights.len());
+    // Load evaluator (supports .json with 24/41/65 weights, .gmlp, .gcnn, etc.)
+    eprintln!("Loading evaluator ...");
+    let loaded = LoadedModel::from_spec(&evaluator_path, false);
+    eprintln!("  Loaded: {}", loaded.label);
+    let evaluator = loaded.evaluator.as_ref().expect("Evaluator is None (random?)");
 
     // Create output directory if needed
     if let Some(parent) = std::path::Path::new(&output_path).parent() {
@@ -158,7 +159,7 @@ fn main() {
 
         for _game_idx in chunk_start..chunk_end {
             let initial = create_initial_state(&bag);
-            let game_data = play_depth_game(&initial, &evaluator, depth, &mut rng, epsilon);
+            let game_data = play_depth_game(&initial, evaluator.as_ref(), depth, &mut rng, epsilon);
             chunk_games.push(game_data);
         }
 
