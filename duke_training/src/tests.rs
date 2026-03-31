@@ -3885,3 +3885,146 @@ fn nnue_weights_roundtrip_preserves_evaluation() {
         ai.play_next_move(&mut rng, &mut game);
     }
 }
+
+// ── negamax apply/undo regression tests ─────────────────────────────
+
+/// Verify that negamax with apply/undo produces the same score as a
+/// reference implementation that clones the GameState for each child.
+/// Both use the same expectimax algorithm for tile draws.
+#[test]
+fn negamax_apply_undo_matches_clone() {
+    use crate::game_setup::{negamax, StaticHeuristicEvaluator, TERMINAL_WIN_SCORE, TERMINAL_LOSS_SCORE};
+    use rand::rngs::SmallRng;
+    use duke_rust::game::board::{DukeOffset, PossibleMove};
+    use duke_rust::game::state::GameMove;
+    use duke_rust::game::tile::TileType;
+
+    /// Clone-based negamax reference (same expectimax logic, but clones state).
+    fn negamax_clone<E: crate::game_setup::GameEvaluator + ?Sized>(
+        gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl rand::Rng,
+    ) -> f64 {
+        match gs.game_result() {
+            GameResult::Won(winner) => {
+                return if winner == gs.current_player_turn() {
+                    TERMINAL_WIN_SCORE
+                } else {
+                    TERMINAL_LOSS_SCORE
+                };
+            }
+            GameResult::Tie => return 0.0,
+            GameResult::Ongoing => {}
+        }
+        if depth == 0 {
+            return evaluator.evaluate(gs) as f64;
+        }
+        let moves: Vec<PossibleMove> = gs.all_valid_game_moves_for_current_player().collect();
+        if moves.is_empty() {
+            return TERMINAL_LOSS_SCORE;
+        }
+        let owner = gs.current_player_turn();
+        let base_rng = SmallRng::seed_from_u64(0);
+        let mut best = f64::NEG_INFINITY;
+        let mut placement_offsets: Vec<DukeOffset> = Vec::new();
+
+        for pm in &moves {
+            match pm {
+                PossibleMove::PlaceNewTile(offset, _) => {
+                    if !placement_offsets.contains(offset) {
+                        placement_offsets.push(*offset);
+                    }
+                }
+                PossibleMove::ApplyNonCommandTileAction { src, dst, .. } => {
+                    let mut child = gs.clone();
+                    child.make_a_move(
+                        GameMove::ApplyNonCommandTileAction { src: *src, dst: *dst },
+                        &mut base_rng.clone(),
+                    );
+                    let score = -negamax_clone(&mut child, evaluator, depth - 1, rng);
+                    if score > best { best = score; }
+                }
+            }
+        }
+
+        if !placement_offsets.is_empty() {
+            let bag = gs.bag_for_current_player().remaining();
+            let total_tiles = bag.len() as f64;
+            let mut tile_counts = [0usize; 13];
+            for &tile in bag { tile_counts[tile.index()] += 1; }
+            let tile_types = [
+                TileType::Duke, TileType::Footman, TileType::Pikeman, TileType::Knight,
+                TileType::Champion, TileType::Dragoon, TileType::Wizard, TileType::General,
+                TileType::Marshall, TileType::Assassin, TileType::Priest, TileType::Bowman,
+                TileType::Longbowman,
+            ];
+            let mut draw_value = 0.0;
+            for &tt in &tile_types {
+                let count = tile_counts[tt.index()];
+                if count == 0 { continue; }
+                let prob = count as f64 / total_tiles;
+                let mut best_for_tile = f64::NEG_INFINITY;
+                for &offset in &placement_offsets {
+                    let mut child = gs.clone();
+                    child.pull_specific_tile_from_bag(tt);
+                    child.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
+                    let score = -negamax_clone(&mut child, evaluator, depth - 1, rng);
+                    if score > best_for_tile { best_for_tile = score; }
+                }
+                draw_value += prob * best_for_tile;
+            }
+            if draw_value > best { best = draw_value; }
+        }
+        best
+    }
+
+    let evaluator = StaticHeuristicEvaluator::new();
+    let bag = create_bag();
+    let gs = create_initial_state(&bag);
+
+    // Play a few random moves to get an interesting mid-game position.
+    let ai = StupidSyncAi {};
+    let mut rng = StdRng::seed_from_u64(99);
+    let mut game = gs.clone();
+    for _ in 0..6 {
+        if game.game_result() != GameResult::Ongoing { break; }
+        ai.play_next_move(&mut rng, &mut game);
+    }
+
+    // Compare at depth 1 and depth 2.
+    for depth in 1..=2 {
+        let mut gs_clone_based = game.clone();
+        let mut gs_undo_based = game.clone();
+        let mut rng1 = StdRng::seed_from_u64(42);
+        let mut rng2 = StdRng::seed_from_u64(42);
+
+        let score_clone = negamax_clone(&mut gs_clone_based, &evaluator, depth, &mut rng1);
+        let score_undo = negamax(&mut gs_undo_based, &evaluator, depth, &mut rng2);
+
+        assert!(
+            (score_clone - score_undo).abs() < 1e-9,
+            "Depth {}: clone-based negamax ({}) != apply/undo negamax ({})",
+            depth, score_clone, score_undo,
+        );
+
+        // State should be unchanged after negamax returns (bag ordering may
+        // differ due to swap_remove in pull + push in undo, so compare sorted).
+        assert_eq!(game.board(), gs_undo_based.board(),
+            "Depth {}: board modified after negamax", depth);
+        assert_eq!(game.current_player_turn(), gs_undo_based.current_player_turn(),
+            "Depth {}: current_player modified after negamax", depth);
+        assert_eq!(game.player_1_discard(), gs_undo_based.player_1_discard(),
+            "Depth {}: top discard modified after negamax", depth);
+        assert_eq!(game.player_2_discard(), gs_undo_based.player_2_discard(),
+            "Depth {}: bottom discard modified after negamax", depth);
+        assert_eq!(game.idle_move_count(), gs_undo_based.idle_move_count(),
+            "Depth {}: idle_move_count modified after negamax", depth);
+        let sort_bag = |b: &duke_rust::game::bag::TileBag| -> Vec<TileType> {
+            let mut v = b.remaining().clone();
+            v.sort_by_key(|t| t.index());
+            v
+        };
+        assert_eq!(sort_bag(game.top_player_bag()), sort_bag(gs_undo_based.top_player_bag()),
+            "Depth {}: top bag contents modified after negamax", depth);
+        assert_eq!(sort_bag(game.bottom_player_bag()), sort_bag(gs_undo_based.bottom_player_bag()),
+            "Depth {}: bottom bag contents modified after negamax", depth);
+    }
+}

@@ -57,7 +57,7 @@ impl Heuristic for Heuristics {
             Heuristics::TotalTilesOnBoard =>
                 10.0 * gs.count_tiles_for_owner(o) as f64,
             Heuristics::TotalMovementOptions =>
-                gs.all_valid_game_moves_for_ignoring_guard(o).len() as f64,
+                gs.count_all_valid_moves_ignoring_guard(o) as f64,
             Heuristics::DiscardedUnits => gs.discard_bag_for(o).len() as f64 * -15.0,
         }
     }

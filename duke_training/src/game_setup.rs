@@ -9,7 +9,7 @@ use duke_rust::game::ai::player::{AiMove, EvaluatingPlayer};
 use duke_rust::game::ai::player::ArtificialPlayer;
 use duke_rust::game::ai::stupid_sync_ai::StupidSyncAi;
 use duke_rust::game::bag::TileBag;
-use duke_rust::game::board::DukeOffset;
+use duke_rust::game::board::{DukeOffset, PossibleMove};
 use duke_rust::game::board_setup::{DukeInitialLocation, FootmenSetup};
 use duke_rust::game::state::{GameMove, GameResult, GameState};
 use duke_rust::game::tile::{Owner, TileType};
@@ -239,14 +239,16 @@ pub fn play_two_player_game<E1: GameEvaluator + ?Sized, E2: GameEvaluator + ?Siz
 pub fn negamax<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> f64 {
-    // Terminal check
+    // Terminal check must happen before depth-0 evaluation, since the
+    // heuristic evaluator may panic on positions where a duke is captured
+    // (duke_coordinates() panics when the duke cache is None).
     match gs.game_result() {
         GameResult::Won(winner) => {
-            if winner == gs.current_player_turn() {
-                return TERMINAL_WIN_SCORE;
+            return if winner == gs.current_player_turn() {
+                TERMINAL_WIN_SCORE
             } else {
-                return TERMINAL_LOSS_SCORE;
-            }
+                TERMINAL_LOSS_SCORE
+            };
         }
         GameResult::Tie => return 0.0,
         GameResult::Ongoing => {}
@@ -256,72 +258,81 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
         return evaluator.evaluate(gs) as f64;
     }
 
-    let moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
+    // Generate moves with guard checking.
+    let moves: Vec<PossibleMove> = gs.all_valid_game_moves_for_current_player().collect();
     if moves.is_empty() {
-        return evaluator.evaluate(gs) as f64;
+        // No legal moves means current player loses (shouldn't happen since
+        // game_result() already returned Won, but kept as safety net).
+        return TERMINAL_LOSS_SCORE;
     }
 
-    // Separate piece moves from tile-placement moves.
-    let mut piece_moves: Vec<&AiMove> = Vec::new();
-    let mut placement_offsets: Vec<DukeOffset> = Vec::new();
-    for mv in &moves {
-        match mv {
-            AiMove::PullTileFormBagAndPlay(offset, _) => {
-                // Collect unique offsets (they should already be unique from all_moves).
-                if !placement_offsets.contains(offset) {
-                    placement_offsets.push(*offset);
-                }
-            }
-            _ => piece_moves.push(mv),
-        }
-    }
+    let owner = gs.current_player_turn();
+
+    // Separate piece moves from placement offsets (bitmask, max 4 offsets).
+    let mut placement_offsets: [Option<DukeOffset>; 4] = [None; 4];
+    let mut n_placements = 0usize;
 
     // Best score among deterministic piece moves.
+    // Uses make/undo in-place instead of cloning GameState.
     let mut best = f64::NEG_INFINITY;
     let base_rng = SmallRng::seed_from_u64(0);
-    for mv in &piece_moves {
-        let mut child = gs.clone();
-        let mut eval_rng = base_rng.clone();
-        mv.play(&mut child, &mut eval_rng);
-        let score = -negamax(&mut child, evaluator, depth - 1, rng);
-        if score > best {
-            best = score;
+    for pm in &moves {
+        match pm {
+            PossibleMove::PlaceNewTile(offset, _) => {
+                // Deduplicate placement offsets.
+                let already = placement_offsets[..n_placements].iter().any(|o| *o == Some(*offset));
+                if !already {
+                    placement_offsets[n_placements] = Some(*offset);
+                    n_placements += 1;
+                }
+            }
+            PossibleMove::ApplyNonCommandTileAction { src, dst, .. } => {
+                let game_move = GameMove::ApplyNonCommandTileAction { src: *src, dst: *dst };
+                let undo = pm.clone();
+                gs.make_a_move(game_move, &mut base_rng.clone());
+                let score = -negamax(gs, evaluator, depth - 1, rng);
+                gs.undo(undo);
+                if score > best {
+                    best = score;
+                }
+            }
         }
     }
 
     // Expectimax for the "draw from bag" option.
-    if !placement_offsets.is_empty() {
+    if n_placements > 0 {
         let bag = gs.bag_for_current_player().remaining();
         let total_tiles = bag.len() as f64;
         debug_assert!(total_tiles > 0.0);
 
-        // Count distinct tile types and their frequencies using a fixed-size array
-        // indexed by TileType discriminant, avoiding HashMap allocation.
+        // Count distinct tile types and their frequencies.
         let mut tile_counts = [0usize; 13];
         for &tile in bag {
             tile_counts[tile.index()] += 1;
         }
 
-        // Expected value = sum over tile types of P(tile) * max_offset(value(tile, offset))
-        let mut draw_value = 0.0;
         let tile_types = [
             TileType::Duke, TileType::Footman, TileType::Pikeman, TileType::Knight,
             TileType::Champion, TileType::Dragoon, TileType::Wizard, TileType::General,
             TileType::Marshall, TileType::Assassin, TileType::Priest, TileType::Bowman,
             TileType::Longbowman,
         ];
+
+        let mut draw_value = 0.0;
         for &tile_type in &tile_types {
             let count = tile_counts[tile_type.index()];
             if count == 0 { continue; }
             let prob = count as f64 / total_tiles;
 
-            // For this tile type, find the best placement offset.
             let mut best_for_tile = f64::NEG_INFINITY;
-            for &offset in &placement_offsets {
-                let mut child = gs.clone();
-                child.pull_specific_tile_from_bag(tile_type);
-                child.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
-                let score = -negamax(&mut child, evaluator, depth - 1, rng);
+            for &offset_opt in &placement_offsets[..n_placements] {
+                let offset = offset_opt.unwrap();
+                // Pull specific tile and place in-place, then undo.
+                gs.pull_specific_tile_from_bag(tile_type);
+                let undo = PossibleMove::PlaceNewTile(offset, owner);
+                gs.make_a_move(GameMove::PlaceNewTile(offset), &mut base_rng.clone());
+                let score = -negamax(gs, evaluator, depth - 1, rng);
+                gs.undo(undo);
                 if score > best_for_tile {
                     best_for_tile = score;
                 }
@@ -350,31 +361,13 @@ pub fn negamax<E: GameEvaluator + ?Sized>(
 pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> AiMove {
-    assert!(depth >= 1, "greedy_move_deep requires depth >= 1");
-    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
-    assert!(!moves.is_empty(), "greedy_move_deep called with no legal moves");
-    moves.shuffle(rng);
-
-    let base_eval_rng = SmallRng::seed_from_u64(0);
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_move = moves[0].clone();
-
-    for mv in &moves {
-        let mut child = gs.clone();
-        let mut eval_rng = base_eval_rng.clone();
-        mv.play(&mut child, &mut eval_rng);
-        // Score from opponent's perspective, negated to get ours
-        let score = -negamax(&mut child, evaluator, depth - 1, rng);
-        if score > best_score {
-            best_score = score;
-            best_move = mv.clone();
-        }
-    }
-
+    let (best_move, _) = greedy_move_deep_with_score(gs, evaluator, depth, rng);
     best_move
 }
 
 /// Same as greedy_move_deep but also returns the best score (from current player's perspective).
+///
+/// Uses make/undo in-place instead of cloning GameState per candidate move.
 pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
     gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
 ) -> (AiMove, f64) {
@@ -388,10 +381,11 @@ pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
     let mut best_move = moves[0].clone();
 
     for mv in &moves {
-        let mut child = gs.clone();
+        let undo = mv.to_undo_move().expect("Legal move should be undoable");
         let mut eval_rng = base_eval_rng.clone();
-        mv.play(&mut child, &mut eval_rng);
-        let score = -negamax(&mut child, evaluator, depth - 1, rng);
+        mv.play(gs, &mut eval_rng);
+        let score = -negamax(gs, evaluator, depth - 1, rng);
+        gs.undo(undo);
         if score > best_score {
             best_score = score;
             best_move = mv.clone();

@@ -209,6 +209,12 @@ impl GameState {
             "pull_specific_tile_from_bag: tile {:?} not found in bag", tile,
         );
         self.pulled_tile = Some(tile);
+        // Push a sentinel entry for the "pull" half.  make_a_move(PlaceNewTile)
+        // will push a second entry for the "place" half.  undo(PlaceNewTile)
+        // pops both entries, mirroring the make_a_move(PullAndPlay) path which
+        // also pushes twice (once for PullAndPlay, once for the recursive
+        // PlaceNewTile).
+        self.moves_without_capture_or_placement_stack.push(0);
     }
 
     fn is_waiting_for_tile_placement(&self) -> bool {
@@ -556,7 +562,11 @@ impl GameState {
             }
         }
         if let Some(t) = self.board.undo(mv) {
-            self.pop_moves_stack(); // TODO document why the hell this needs to happen twice o_O.
+            // Pop the second stack entry: placements push twice (once for the
+            // "pull from bag" step, once for the "place tile" step inside
+            // make_a_move).  Both PullAndPlay and pull_specific_tile_from_bag +
+            // PlaceNewTile follow this two-push convention.
+            self.pop_moves_stack();
             let bag = match self.current_player_turn {
                 Owner::TopPlayer => &mut self.top_player_bag,
                 Owner::BottomPlayer => &mut self.bottom_player_bag,
@@ -1358,5 +1368,130 @@ mod tests {
         };
         assert_ne!(hash(&gs_idle0), hash(&gs_idle5),
             "States with different idle_move_count should produce different hashes");
+    }
+
+    /// Regression test: pull_specific_tile_from_bag + make_a_move(PlaceNewTile)
+    /// must be undoable without corrupting the idle-move stack.  Previously,
+    /// pull_specific_tile_from_bag did not push to the stack, so undo's
+    /// double-pop would corrupt a previous entry.
+    #[test]
+    fn undo_pull_specific_then_place_preserves_state() {
+        let bag = TileBag::new(vec![TileType::Knight, TileType::Pikeman, TileType::Champion]);
+        let gs = GameState::new(
+            &bag,
+            (DukeInitialLocation::Left, FootmenSetup::Left),
+            (DukeInitialLocation::Right, FootmenSetup::Right),
+        );
+        let mut gs_mut = gs.clone();
+
+        // Find a valid placement offset from legal moves.
+        let moves: Vec<PossibleMove> = gs_mut.all_valid_game_moves_for_current_player().collect();
+        let offset = moves.iter().find_map(|m| match m {
+            PossibleMove::PlaceNewTile(o, _) => Some(*o),
+            _ => None,
+        }).expect("Should have at least one placement move");
+
+        // Pull a specific tile and place it (mimics negamax expectimax path).
+        let tile_type = TileType::Knight;
+        gs_mut.pull_specific_tile_from_bag(tile_type);
+        let undo = PossibleMove::PlaceNewTile(offset, gs_mut.current_player_turn());
+        gs_mut.make_a_move(GameMove::PlaceNewTile(offset), &mut test_rng());
+        gs_mut.undo(undo);
+
+        // Board, discards, player turn should match exactly.
+        assert_eq!(gs.board(), gs_mut.board(),
+            "Board not restored after undo of pull_specific + PlaceNewTile");
+        assert_eq!(gs.current_player_turn(), gs_mut.current_player_turn());
+        assert_eq!(gs.player_1_discard(), gs_mut.player_1_discard());
+        assert_eq!(gs.player_2_discard(), gs_mut.player_2_discard());
+
+        // Bag contents should match (order may differ due to swap_remove + push).
+        let mut expected: Vec<TileType> = gs.top_player_bag().remaining().clone();
+        expected.sort_by_key(|t| t.index());
+        let mut actual: Vec<TileType> = gs_mut.top_player_bag().remaining().clone();
+        actual.sort_by_key(|t| t.index());
+        assert_eq!(expected, actual,
+            "Bag contents differ after undo of pull_specific + PlaceNewTile");
+
+        // Idle-move stack must match exactly.
+        assert_eq!(gs.idle_move_count(), gs_mut.idle_move_count(),
+            "Idle move count corrupted after undo of pull_specific + PlaceNewTile");
+    }
+
+    /// 4-level nested make/undo chain mimicking depth-4 negamax.
+    /// At each level, make a move, recurse, then undo and verify the state
+    /// matches the snapshot taken before the move.
+    #[test]
+    fn deep_undo_chain_preserves_state() {
+        let bag = TileBag::new(vec![TileType::Knight, TileType::Pikeman, TileType::Champion]);
+        let gs = GameState::new(
+            &bag,
+            (DukeInitialLocation::Left, FootmenSetup::Left),
+            (DukeInitialLocation::Right, FootmenSetup::Right),
+        );
+        let mut gs_mut = gs.clone();
+
+        fn sorted_bag(bag: &TileBag) -> Vec<TileType> {
+            let mut v = bag.remaining().clone();
+            v.sort_by_key(|t| t.index());
+            v
+        }
+
+        fn assert_state_equivalent(expected: &GameState, actual: &GameState, label: &str) {
+            assert_eq!(expected.board(), actual.board(), "{}: board differs", label);
+            assert_eq!(expected.current_player_turn(), actual.current_player_turn(),
+                "{}: current_player differs", label);
+            assert_eq!(expected.player_1_discard(), actual.player_1_discard(),
+                "{}: top discard differs", label);
+            assert_eq!(expected.player_2_discard(), actual.player_2_discard(),
+                "{}: bottom discard differs", label);
+            assert_eq!(sorted_bag(expected.top_player_bag()), sorted_bag(actual.top_player_bag()),
+                "{}: top bag differs", label);
+            assert_eq!(sorted_bag(expected.bottom_player_bag()), sorted_bag(actual.bottom_player_bag()),
+                "{}: bottom bag differs", label);
+            assert_eq!(expected.idle_move_count(), actual.idle_move_count(),
+                "{}: idle_move_count differs", label);
+        }
+
+        // 4-level nested make/undo
+        let mut undo_stack: Vec<(GameState, PossibleMove)> = Vec::new();
+        for depth in 0..4 {
+            if gs_mut.game_result() != GameResult::Ongoing {
+                break;
+            }
+            let snapshot = gs_mut.clone();
+            let moves: Vec<PossibleMove> = gs_mut.all_valid_game_moves_for_current_player().collect();
+            if moves.is_empty() { break; }
+            let mv = moves[0].clone();
+            let gm: GameMove = (&mv).into();
+            let undo = gs_mut.to_undo(&gm);
+            gs_mut.make_a_move(gm, &mut test_rng());
+            undo_stack.push((snapshot, undo));
+
+            // At each inner level, test one more make/undo cycle
+            if gs_mut.game_result() == GameResult::Ongoing {
+                let inner_snapshot = gs_mut.clone();
+                let inner_moves: Vec<PossibleMove> = gs_mut.all_valid_game_moves_for_current_player().collect();
+                if !inner_moves.is_empty() {
+                    let inner_mv = inner_moves[0].clone();
+                    let inner_gm: GameMove = (&inner_mv).into();
+                    let inner_undo = gs_mut.to_undo(&inner_gm);
+                    gs_mut.make_a_move(inner_gm, &mut test_rng());
+                    gs_mut.undo(inner_undo);
+                    assert_state_equivalent(&inner_snapshot, &gs_mut,
+                        &format!("depth {} inner undo", depth));
+                }
+            }
+        }
+
+        // Undo all moves in reverse order
+        while let Some((snapshot, undo)) = undo_stack.pop() {
+            gs_mut.undo(undo);
+            assert_state_equivalent(&snapshot, &gs_mut,
+                &format!("undo at stack depth {}", undo_stack.len()));
+        }
+
+        // Final state should match the original
+        assert_state_equivalent(&gs, &gs_mut, "full chain undo");
     }
 }
