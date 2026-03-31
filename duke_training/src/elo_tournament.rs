@@ -149,7 +149,7 @@ fn load_players(models: &[String], registry: &ModelRegistry, quantize: bool) -> 
                 eprintln!("Error loading model ID {}: {}", model_id, e);
                 std::process::exit(1);
             })
-        } else if entry.ends_with(".gmlp") || entry.ends_with(".nnue") || entry.ends_with(".json") {
+        } else if entry.ends_with(".gmlp") || entry.ends_with(".nnue") || entry.ends_with(".json") || entry.ends_with(".gcnn") {
             LoadedModel::from_spec(entry, quantize)
         } else if std::path::Path::new(entry).join("halfda_l1.bin").exists() {
             LoadedModel::from_spec(entry, quantize)

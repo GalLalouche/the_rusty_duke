@@ -13,6 +13,7 @@ use crate::learned_heuristic::{
     AllFeaturesWeights, CombinedWeights, LearnedHeuristicWeights,
     NUM_ALL_FEATURES, NUM_COMBINED_FEATURES, NUM_FEATURES as LR_NUM_FEATURES,
 };
+use crate::cnn::{CnnModel, CnnEvaluator};
 use crate::model_registry::ModelRegistry;
 use crate::nnue::{NnueEvaluator, NnueWeights, NUM_FEATURES};
 
@@ -216,8 +217,14 @@ pub fn load_opponent(spec: &str) -> (Option<Box<dyn GameEvaluator + Sync + Send>
                 }
             }
         }
+        path if path.ends_with(".gcnn") => {
+            let model = CnnModel::load(path).expect("Failed to load .gcnn model");
+            let desc = format!("CNN ({:?} conv {:?} fc {:?})", model.kernel_type,
+                model.conv_channels, model.fc_sizes);
+            let eval = CnnEvaluator { model };
+            (Some(Box::new(eval)), desc)
+        }
         // HalfDA directory: contains halfda_l1.bin + halfda_output.bin
-        // Uses incremental evaluator for faster negamax search (accumulator reuse).
         path if std::path::Path::new(path).join("halfda_l1.bin").exists() => {
             let eval = crate::halfda::HalfDAIncrementalEvaluator::load(path)
                 .expect("Failed to load HalfDA model");
