@@ -25,9 +25,9 @@ use duke_training::learned_heuristic::CombinedWeights;
 use duke_training::trajectory_io::load_trajectories;
 
 fn main() {
-    // Build a rayon thread pool with 8 MB stacks to handle deep negamax recursion.
+    // Build a rayon thread pool with 64 MB stacks to handle deep negamax recursion.
     rayon::ThreadPoolBuilder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(64 * 1024 * 1024)
         .build_global()
         .expect("Failed to build rayon thread pool");
 
@@ -71,12 +71,13 @@ fn main() {
     let total = total_states as u64;
 
     // Parallel over games, sequential within each game
-    let mut games = games;
-    let all_scores: Vec<Vec<f32>> = games.par_iter_mut()
+    let all_scores: Vec<Vec<f32>> = games.par_iter()
         .map(|game| {
             let mut rng = StdRng::seed_from_u64(0);
-            let scores: Vec<f32> = game.states.iter_mut().map(|gs| {
-                let result = gs.game_result();
+            let scores: Vec<f32> = game.states.iter().map(|gs| {
+                // Clone because game_result() and negamax() take &mut GameState.
+                let mut gs_clone = gs.clone();
+                let result = gs_clone.game_result();
                 let score = match result {
                     GameResult::Won(winner) => {
                         if winner == gs.current_player_turn() {
@@ -87,11 +88,11 @@ fn main() {
                     }
                     GameResult::Tie => 0.0f32,
                     GameResult::Ongoing => {
-                        negamax(gs, &evaluator, depth, &mut rng) as f32
+                        negamax(&mut gs_clone, &evaluator, depth, &mut rng) as f32
                     }
                 };
                 let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if completed % 50000 == 0 || completed == total {
+                if completed % 10000 == 0 || completed == total {
                     let elapsed = t1.elapsed().as_secs_f64();
                     let rate = completed as f64 / elapsed;
                     eprintln!("  Scored {}/{} ({:.1}%) [{:.0} pos/sec]",
