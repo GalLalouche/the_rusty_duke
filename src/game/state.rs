@@ -451,6 +451,30 @@ impl GameState {
         )
     }
 
+    /// Count all valid moves for `owner` without guard checking and without
+    /// heap allocation. Like `all_valid_game_moves_for_ignoring_guard(..).len()`.
+    #[inline]
+    pub fn count_all_valid_moves_ignoring_guard(&self, o: Owner) -> usize {
+        self.board.count_all_valid_moves_ignoring_guard(
+            o,
+            WithNewTiles(self.bag_for_owner(o).non_empty()),
+        )
+    }
+
+    /// Iterate tile-movement moves for `owner` without guard checking,
+    /// calling `f(src, dst)` for each. No heap allocation.
+    #[inline]
+    pub fn for_each_tile_move_ignoring_guard<F: FnMut(Coordinates, Coordinates)>(&self, owner: Owner, f: F) {
+        self.board.for_each_tile_move_ignoring_guard(owner, f);
+    }
+
+    /// Iterate all squares reachable by `owner`'s tiles, including
+    /// friendly-occupied destinations. No heap allocation.
+    #[inline]
+    pub fn for_each_reach_ignoring_friendly<F: FnMut(Coordinates, Coordinates)>(&self, owner: Owner, f: F) {
+        self.board.for_each_reach_ignoring_friendly(owner, f);
+    }
+
     pub fn as_single_string(&self) -> String {
         single_char_print_state(&self)
     }

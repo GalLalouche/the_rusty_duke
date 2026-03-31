@@ -711,6 +711,42 @@ impl GameBoard {
         buf
     }
 
+    /// Like `get_legal_moves_no_guard` but also includes friendly-occupied
+    /// destinations (using `can_apply_action_ignoring_friendly`).
+    /// Used for computing "defended" features efficiently.
+    #[inline]
+    fn get_reachable_squares_ignoring_friendly(&self, src: Coordinates) -> LegalMoveBuffer {
+        let tile = self.get(src).unwrap();
+        let tile_side = tile.get_current_side();
+        let center_offset = tile_side.center_offset();
+        let mut buf = LegalMoveBuffer::new();
+        for (offset, action) in tile_side.actions().iter() {
+            if *action == TileAction::Command || *action == TileAction::Unit {
+                continue;
+            }
+            let targets = self.target_coordinates(src, *offset, *action, center_offset);
+            for c in targets.into_iter() {
+                if self.can_apply_action_ignoring_friendly(src, c, *action) {
+                    buf.push(c, *action);
+                }
+            }
+        }
+        buf
+    }
+
+    /// Iterate all squares reachable by `owner`'s tiles, including
+    /// friendly-occupied destinations, calling `f(src, dst)` for each.
+    /// No heap allocation.
+    #[inline]
+    pub fn for_each_reach_ignoring_friendly<F: FnMut(Coordinates, Coordinates)>(&self, owner: Owner, mut f: F) {
+        for (src, _) in self.get_tiles_for(owner) {
+            let buf = self.get_reachable_squares_ignoring_friendly(src);
+            for &(dst, _) in buf.as_slice() {
+                f(src, dst);
+            }
+        }
+    }
+
     #[inline]
     pub fn is_guard(&self, owner: Owner) -> bool {
         time_it_macro!("is_guard", {
@@ -948,6 +984,37 @@ impl GameBoard {
             }
         }
         result
+    }
+
+    /// Count all valid moves (tile moves + placements) for `owner` without
+    /// guard checking. Like `all_valid_moves_ignoring_guard(..).len()` but
+    /// without heap allocation.
+    #[inline]
+    pub fn count_all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> usize {
+        let mut count = 0usize;
+        for (src, _) in self.get_tiles_for(owner) {
+            count += self.get_legal_moves_no_guard(src).len();
+        }
+        if let WithNewTiles(true) = new_tiles {
+            for offset in DukeOffset::iter() {
+                if self.is_valid_placement_space(owner, offset).is_some() {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// Iterate over all tile-movement moves (no placements) for `owner` without
+    /// guard checking, calling `f(src, dst)` for each. Avoids allocating a Vec.
+    #[inline]
+    pub fn for_each_tile_move_ignoring_guard<F: FnMut(Coordinates, Coordinates)>(&self, owner: Owner, mut f: F) {
+        for (src, _) in self.get_tiles_for(owner) {
+            let buf = self.get_legal_moves_no_guard(src);
+            for &(dst, _) in buf.as_slice() {
+                f(src, dst);
+            }
+        }
     }
 
     #[allow(dead_code)]

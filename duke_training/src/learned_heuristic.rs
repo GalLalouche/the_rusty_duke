@@ -9,7 +9,6 @@
 use std::fs;
 
 use duke_rust::game::ai::heuristics::{Heuristic, Heuristics};
-use duke_rust::game::board::PossibleMove;
 use duke_rust::game::state::GameState;
 use duke_rust::game::tile::TileType;
 use strum::EnumCount;
@@ -324,33 +323,70 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
 
     // Only count tile-movement moves (not placements) so that approx_moves
     // is consistent with reachable_squares -- both measure on-board tile actions.
+    // Uses callback API to avoid Vec allocation (Finding 1).
     let mut my_approx_moves = 0u32;
     let mut my_duke_moves = 0u32;
-    for pm in gs.all_valid_game_moves_for_ignoring_guard(owner) {
-        if let PossibleMove::ApplyNonCommandTileAction { src, dst, .. } = &pm {
-            my_approx_moves += 1;
-            if *src == my_duke_coord {
-                my_duke_moves += 1;
-            }
-            let idx = dst.y as usize * BOARD_SIZE +dst.x as usize;
-            debug_assert!(idx < BOARD_SIZE * BOARD_SIZE, "move destination ({}, {}) maps to index {} outside {}x{} board", dst.x, dst.y, idx, BOARD_SIZE, BOARD_SIZE);
-            my_reach[idx] = true;
+    gs.for_each_tile_move_ignoring_guard(owner, |src, dst| {
+        my_approx_moves += 1;
+        if src == my_duke_coord {
+            my_duke_moves += 1;
         }
-    }
+        let idx = dst.y as usize * BOARD_SIZE + dst.x as usize;
+        debug_assert!(idx < BOARD_SIZE * BOARD_SIZE);
+        my_reach[idx] = true;
+    });
 
     let mut opp_approx_moves = 0u32;
     let mut opp_duke_moves = 0u32;
-    for pm in gs.all_valid_game_moves_for_ignoring_guard(opp) {
-        if let PossibleMove::ApplyNonCommandTileAction { src, dst, .. } = &pm {
-            opp_approx_moves += 1;
-            if *src == opp_duke_coord {
-                opp_duke_moves += 1;
-            }
-            let idx = dst.y as usize * BOARD_SIZE +dst.x as usize;
-            debug_assert!(idx < BOARD_SIZE * BOARD_SIZE, "move destination ({}, {}) maps to index {} outside {}x{} board", dst.x, dst.y, idx, BOARD_SIZE, BOARD_SIZE);
-            opp_reach[idx] = true;
+    gs.for_each_tile_move_ignoring_guard(opp, |src, dst| {
+        opp_approx_moves += 1;
+        if src == opp_duke_coord {
+            opp_duke_moves += 1;
         }
-    }
+        let idx = dst.y as usize * BOARD_SIZE + dst.x as usize;
+        debug_assert!(idx < BOARD_SIZE * BOARD_SIZE);
+        opp_reach[idx] = true;
+    });
+
+    // Precompute per-source reach bitsets including friendly-occupied squares
+    // for the defended computation (Finding 4). Uses a single pass per player
+    // instead of O(n^2) can_reach_square_ignoring_friendly calls.
+    const MAX_TILES: usize = 18;
+    let mut my_src_coords = [duke_rust::common::coordinates::Coordinates { x: 0, y: 0 }; MAX_TILES];
+    let mut my_src_reach = [0u64; MAX_TILES];
+    let mut my_src_count: usize = 0;
+    gs.for_each_reach_ignoring_friendly(owner, |src, dst| {
+        let idx = dst.y as usize * BOARD_SIZE + dst.x as usize;
+        let src_idx = if my_src_count > 0 && my_src_coords[my_src_count - 1] == src {
+            my_src_count - 1
+        } else {
+            let i = my_src_count;
+            if i < MAX_TILES {
+                my_src_coords[i] = src;
+                my_src_count = i + 1;
+            }
+            i.min(MAX_TILES - 1)
+        };
+        my_src_reach[src_idx] |= 1u64 << idx;
+    });
+
+    let mut opp_src_coords = [duke_rust::common::coordinates::Coordinates { x: 0, y: 0 }; MAX_TILES];
+    let mut opp_src_reach = [0u64; MAX_TILES];
+    let mut opp_src_count: usize = 0;
+    gs.for_each_reach_ignoring_friendly(opp, |src, dst| {
+        let idx = dst.y as usize * BOARD_SIZE + dst.x as usize;
+        let src_idx = if opp_src_count > 0 && opp_src_coords[opp_src_count - 1] == src {
+            opp_src_count - 1
+        } else {
+            let i = opp_src_count;
+            if i < MAX_TILES {
+                opp_src_coords[i] = src;
+                opp_src_count = i + 1;
+            }
+            i.min(MAX_TILES - 1)
+        };
+        opp_src_reach[src_idx] |= 1u64 << idx;
+    });
 
     let mut my_reachable = 0u32;
     let mut opp_reachable = 0u32;
@@ -367,62 +403,40 @@ pub fn board_control_features_with_duke_mob(gs: &GameState) -> ([f64; 9], [f64; 
         }
     }
 
-    // Defended/threatened: iterate over all tiles on the board.
+    // Defended/threatened: iterate board tiles inline (no Vec allocation, Finding 3).
     //
-    // `my_reach` only contains squares reachable by legal moves, which
-    // excludes friendly-occupied squares (you can't move onto your own
-    // piece). So `my_reach[idx]` is always false for squares where my
-    // tiles sit, making `my_defended` always zero -- a bug.
-    //
-    // For "threatened" (enemy tiles on squares I can reach), the existing
-    // `my_reach` is correct because capturing an enemy IS a legal move.
-    //
-    // For "defended" we instead check: can any OTHER friendly piece reach
-    // this tile's square, ignoring the friendly-occupancy constraint?
-    // This uses `can_reach_square_ignoring_friendly` which checks the
-    // movement pattern and path obstruction but allows the destination to
-    // be friendly-occupied.
-    let my_tiles = gs.get_tiles_for_owner(owner);
-    let opp_tiles = gs.get_tiles_for_owner(opp);
-
+    // For "threatened": enemy tiles on squares I can reach (via legal captures).
+    // For "defended": check per-source reach bitsets (including friendly-occupied
+    // destinations) to see if any OTHER friendly piece can reach this square.
     let mut my_defended = 0u32;
     let mut my_threatened = 0u32;
     let mut opp_defended = 0u32;
     let mut opp_threatened = 0u32;
 
-    // Threatened: enemy tiles on squares I can reach (via legal captures)
-    for (coords, _) in &opp_tiles {
-        let idx = coords.y as usize * BOARD_SIZE +coords.x as usize;
-        if my_reach[idx] {
-            my_threatened += 1;
-        }
-        if opp_reach[idx] {
-            // Opponent's own piece on a square the opponent can reach --
-            // this was always zero for the same reason; skip (handled below).
-        }
-    }
-    for (coords, _) in &my_tiles {
-        let idx = coords.y as usize * BOARD_SIZE +coords.x as usize;
-        if opp_reach[idx] {
-            opp_threatened += 1;
-        }
-    }
+    for (coords, tile) in gs.board().active_coordinates() {
+        let idx = coords.y as usize * BOARD_SIZE + coords.x as usize;
+        let bit = 1u64 << idx;
+        let is_mine = tile.owner == owner;
 
-    // Defended: for each of my tiles, check if any OTHER friendly piece
-    // can reach its square (ignoring friendly occupancy).
-    for (i, (coords_i, _)) in my_tiles.iter().enumerate() {
-        for (j, (coords_j, _)) in my_tiles.iter().enumerate() {
-            if i != j && gs.can_reach_square_ignoring_friendly(*coords_j, *coords_i) {
-                my_defended += 1;
-                break; // one defender is enough to count this tile
+        if is_mine {
+            if opp_reach[idx] {
+                opp_threatened += 1;
             }
-        }
-    }
-    for (i, (coords_i, _)) in opp_tiles.iter().enumerate() {
-        for (j, (coords_j, _)) in opp_tiles.iter().enumerate() {
-            if i != j && gs.can_reach_square_ignoring_friendly(*coords_j, *coords_i) {
-                opp_defended += 1;
-                break;
+            for si in 0..my_src_count {
+                if my_src_coords[si] != coords && (my_src_reach[si] & bit) != 0 {
+                    my_defended += 1;
+                    break;
+                }
+            }
+        } else {
+            if my_reach[idx] {
+                my_threatened += 1;
+            }
+            for si in 0..opp_src_count {
+                if opp_src_coords[si] != coords && (opp_src_reach[si] & bit) != 0 {
+                    opp_defended += 1;
+                    break;
+                }
             }
         }
     }
