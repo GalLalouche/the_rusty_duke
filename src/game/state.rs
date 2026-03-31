@@ -21,10 +21,11 @@ pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 10;
 
 /// Maximum depth of the idle-move stack (captures + placements reset it).
 /// Each game turn can push 1-2 entries (PullAndPlay pushes twice).
-/// A game can last up to MAX_TURNS (500) plus search depth overhead.
-/// 1536 entries is more than sufficient even for pathological cases.
-/// Uses u8 values (max idle count is 10) to keep the array compact (~1.5KB).
-const IDLE_STACK_CAP: usize = 1536;
+/// Reduced from 1536 to 512 to shrink GameState by ~1KB for better cache
+/// locality. 512 entries is still sufficient for MAX_TURNS (500) games
+/// plus search depth overhead.
+/// Uses u8 values (max idle count is 10) to keep the array compact.
+const IDLE_STACK_CAP: usize = 512;
 
 #[derive(Debug, Clone, Eq)]
 pub struct GameState {
@@ -303,9 +304,9 @@ impl GameState {
                 },
         };
         if let GameMove::PlaceNewTile(_) = game_move {
-            assert!(self.is_waiting_for_tile_placement(), "Invalid state for placing a new tile");
+            debug_assert!(self.is_waiting_for_tile_placement(), "Invalid state for placing a new tile");
         } else {
-            assert_not!(self.is_waiting_for_tile_placement(), "Waiting for a new tile placement");
+            debug_assert!(!self.is_waiting_for_tile_placement(), "Waiting for a new tile placement");
         }
         if let GameMove::PullAndPlay(o) = &game_move {
             self.pull_tile_from_bag(rng);
@@ -314,13 +315,13 @@ impl GameState {
         }
         if let GameMove::ApplyNonCommandTileAction { src, dst } = game_move {
             let tile = self.board.get(src).expect("Cannot move from an empty tile");
-            assert_eq!(
+            debug_assert_eq!(
                 tile.owner,
                 self.current_player_turn,
                 "Cannot move unowned tile in {:?}",
                 src
             );
-            assert!(self.board.can_move(src, dst), "Can't move from {} to {}", src, dst)
+            debug_assert!(self.board.can_move(src, dst), "Can't move from {} to {}", src, dst)
         }
         let board_move = self.game_move_to_board_move(&game_move);
         let captured = self.board.make_a_move(board_move);
@@ -1232,9 +1233,9 @@ mod tests {
             assert_eq!(gs.player_2_discard(), gs_mut.player_2_discard());
             assert_eq!(gs.current_player_turn(), gs_mut.current_player_turn());
             // Bag contents should be the same (order may differ)
-            let mut expected_bag: Vec<TileType> = gs.top_player_bag().remaining().clone();
+            let mut expected_bag: Vec<TileType> = gs.top_player_bag().remaining().to_vec();
             expected_bag.sort_by_key(|t| t.index());
-            let mut actual_bag: Vec<TileType> = gs_mut.top_player_bag().remaining().clone();
+            let mut actual_bag: Vec<TileType> = gs_mut.top_player_bag().remaining().to_vec();
             actual_bag.sort_by_key(|t| t.index());
             assert_eq!(expected_bag, actual_bag, "Bag contents differ after undo of {:?}", mv);
             // Reset for next iteration
@@ -1470,9 +1471,9 @@ mod tests {
         assert_eq!(gs.player_2_discard(), gs_mut.player_2_discard());
 
         // Bag contents should match (order may differ due to swap_remove + push).
-        let mut expected: Vec<TileType> = gs.top_player_bag().remaining().clone();
+        let mut expected: Vec<TileType> = gs.top_player_bag().remaining().to_vec();
         expected.sort_by_key(|t| t.index());
-        let mut actual: Vec<TileType> = gs_mut.top_player_bag().remaining().clone();
+        let mut actual: Vec<TileType> = gs_mut.top_player_bag().remaining().to_vec();
         actual.sort_by_key(|t| t.index());
         assert_eq!(expected, actual,
             "Bag contents differ after undo of pull_specific + PlaceNewTile");
@@ -1496,7 +1497,7 @@ mod tests {
         let mut gs_mut = gs.clone();
 
         fn sorted_bag(bag: &TileBag) -> Vec<TileType> {
-            let mut v = bag.remaining().clone();
+            let mut v = bag.remaining().to_vec();
             v.sort_by_key(|t| t.index());
             v
         }

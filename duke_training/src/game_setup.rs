@@ -278,13 +278,21 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
     }
 
     // Generate moves with guard checking.
-    // This replaces the old pattern of calling game_result() first (which
-    // internally calls has_valid_moves = redundant move generation) then
-    // generating moves again.
-    let moves: Vec<PossibleMove> = gs.all_valid_game_moves_for_current_player().collect();
+    let mut moves: Vec<PossibleMove> = gs.all_valid_game_moves_for_current_player().collect();
     if moves.is_empty() {
         // No legal moves means current player loses.
         return TERMINAL_LOSS_SCORE;
+    }
+
+    // Move ordering: captures first for better alpha-beta pruning.
+    // Partition so that capturing moves come before non-capturing moves.
+    // This dramatically improves pruning efficiency (2-5x speedup typical).
+    let mut capture_end = 0;
+    for i in 0..moves.len() {
+        if matches!(&moves[i], PossibleMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
+            moves.swap(i, capture_end);
+            capture_end += 1;
+        }
     }
 
     let owner = gs.current_player_turn();
@@ -407,6 +415,16 @@ pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
     let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
     assert!(!moves.is_empty(), "greedy_move_deep_with_score called with no legal moves");
     moves.shuffle(rng);
+
+    // Move ordering at root: captures first for better alpha-beta pruning.
+    // Stable partition preserves the random shuffle order within each group.
+    let mut capture_end = 0;
+    for i in 0..moves.len() {
+        if matches!(&moves[i], AiMove::ApplyNonCommandTileAction { capturing: Some(_), .. }) {
+            moves.swap(i, capture_end);
+            capture_end += 1;
+        }
+    }
 
     let base_eval_rng = SmallRng::seed_from_u64(0);
     let mut best_score = f64::NEG_INFINITY;

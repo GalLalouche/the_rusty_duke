@@ -16,7 +16,7 @@ pub fn render_bag(owner: &Owner, bag: &TileBag, area: Rect, buf: &mut Buffer) ->
     let inner_area = b.inner(area);
     b.render(area, buf);
     let max_tiles_per_row = inner_area.width / TILE_WIDTH;
-    for (row, tile_types) in bag.remaining().grouped(max_tiles_per_row as usize).into_iter().enumerate() {
+    for (row, tile_types) in bag.remaining().chunks(max_tiles_per_row as usize).enumerate() {
         for (column, tile_type) in tile_types.into_iter().enumerate() {
             let tile = tile_table_lookup(*tile_type, *owner);
             let mut render_tile_aux = |current_side, y_offset| render_tile(

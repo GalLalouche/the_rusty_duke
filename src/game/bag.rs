@@ -2,52 +2,76 @@ use rand::Rng;
 
 use crate::game::tile::TileType;
 
+/// Maximum number of tiles in a single player's tile bag.
+/// The standard game has 12 tile types (excluding Duke which starts on board).
+const MAX_BAG_SIZE: usize = 12;
+
+/// Maximum number of tiles in a single player's discard pile.
+/// A player starts with Duke + 2 footmen on board + up to 12 in bag = 15 total.
+/// All except the duke can be captured (duke capture ends the game), so max 14.
+/// Use 16 for safety.
+const MAX_DISCARD_SIZE: usize = 16;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileBag {
-    bag: Vec<TileType>,
+    tiles: [TileType; MAX_BAG_SIZE],
+    len: u8,
 }
 
 impl TileBag {
     #[cfg(test)]
     pub fn empty() -> TileBag {
-        TileBag { bag: Vec::new() }
+        TileBag {
+            tiles: [TileType::Footman; MAX_BAG_SIZE], // placeholder values, len=0 means unused
+            len: 0,
+        }
     }
     pub fn new(bag: Vec<TileType>) -> TileBag {
-        TileBag { bag }
+        debug_assert!(bag.len() <= MAX_BAG_SIZE,
+            "TileBag::new called with {} tiles, max is {}", bag.len(), MAX_BAG_SIZE);
+        let mut tiles = [TileType::Footman; MAX_BAG_SIZE];
+        for (i, &t) in bag.iter().enumerate() {
+            tiles[i] = t;
+        }
+        TileBag { tiles, len: bag.len() as u8 }
     }
 
     #[inline]
     pub fn pull<R: Rng>(&mut self, rng: &mut R) -> Option<TileType> {
-        if self.bag.is_empty() {
+        if self.len == 0 {
             None
         } else {
-            let index = rng.gen_range(0..self.bag.len());
-            // swap_remove is O(1) vs O(n) shift; bag order doesn't matter since draws are random.
-            Some(self.bag.swap_remove(index))
+            let index = rng.gen_range(0..self.len as usize);
+            let tile = self.tiles[index];
+            // swap_remove: move last element to the removed index
+            self.len -= 1;
+            self.tiles[index] = self.tiles[self.len as usize];
+            Some(tile)
         }
     }
 
     #[inline]
-    pub fn remaining(&self) -> &Vec<TileType> {
-        &self.bag
+    pub fn remaining(&self) -> &[TileType] {
+        &self.tiles[..self.len as usize]
     }
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.bag.is_empty()
+        self.len == 0
     }
     #[inline]
     pub fn non_empty(&self) -> bool {
-        !self.is_empty()
+        self.len > 0
     }
 
     /// Remove one instance of a specific tile type from the bag.
     /// Returns `true` if the tile was found and removed, `false` otherwise.
     ///
-    /// Uses `swap_remove` for O(1) removal (bag order doesn't matter since
+    /// Uses swap_remove for O(1) removal (bag order doesn't matter since
     /// draws are random), consistent with [`pull`].
     pub fn remove_specific(&mut self, tile: TileType) -> bool {
-        if let Some(idx) = self.bag.iter().position(|t| *t == tile) {
-            self.bag.swap_remove(idx);
+        if let Some(idx) = self.remaining().iter().position(|t| *t == tile) {
+            self.len -= 1;
+            self.tiles[idx] = self.tiles[self.len as usize];
             true
         } else {
             false
@@ -56,43 +80,60 @@ impl TileBag {
 
     // For undoing
     #[inline]
-    pub fn push(&mut self, t: TileType) -> () {
-        self.bag.push(t);
+    pub fn push(&mut self, t: TileType) {
+        debug_assert!((self.len as usize) < MAX_BAG_SIZE,
+            "TileBag::push overflow: already at max capacity {}", MAX_BAG_SIZE);
+        self.tiles[self.len as usize] = t;
+        self.len += 1;
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscardBag {
-    bag: Vec<TileType>,
+    tiles: [TileType; MAX_DISCARD_SIZE],
+    len: u8,
 }
 
 impl DiscardBag {
     pub fn empty() -> DiscardBag {
-        DiscardBag { bag: Vec::new() }
+        DiscardBag {
+            tiles: [TileType::Footman; MAX_DISCARD_SIZE],
+            len: 0,
+        }
     }
     pub fn from_tiles(bag: Vec<TileType>) -> DiscardBag {
-        DiscardBag { bag }
+        debug_assert!(bag.len() <= MAX_DISCARD_SIZE,
+            "DiscardBag::from_tiles called with {} tiles, max is {}", bag.len(), MAX_DISCARD_SIZE);
+        let mut tiles = [TileType::Footman; MAX_DISCARD_SIZE];
+        for (i, &t) in bag.iter().enumerate() {
+            tiles[i] = t;
+        }
+        DiscardBag { tiles, len: bag.len() as u8 }
     }
 
     #[inline]
-    pub fn add(&mut self, t: TileType) -> () {
-        self.bag.push(t);
+    pub fn add(&mut self, t: TileType) {
+        debug_assert!((self.len as usize) < MAX_DISCARD_SIZE,
+            "DiscardBag::add overflow: already at max capacity {}", MAX_DISCARD_SIZE);
+        self.tiles[self.len as usize] = t;
+        self.len += 1;
     }
 
     /// Remove one instance of `t` from the discard pile (used when undoing a capture).
     /// Panics if `t` is not present.
     #[inline]
     pub fn remove(&mut self, t: TileType) {
-        let idx = self.bag.iter().rposition(|x| *x == t)
+        let idx = self.existing().iter().rposition(|x| *x == t)
             .expect("Tried to remove a tile from discard that isn't there");
-        self.bag.swap_remove(idx);
+        self.len -= 1;
+        self.tiles[idx] = self.tiles[self.len as usize];
     }
 
-    pub fn existing(&self) -> &Vec<TileType> {
-        &self.bag
+    pub fn existing(&self) -> &[TileType] {
+        &self.tiles[..self.len as usize]
     }
 
-    pub fn len(&self) -> usize { self.bag.len() }
+    pub fn len(&self) -> usize { self.len as usize }
 }
 
 #[cfg(test)]
@@ -166,7 +207,7 @@ mod tests {
     fn remaining_returns_all_tiles() {
         let tiles = vec![TileType::Footman, TileType::Knight, TileType::Pikeman];
         let bag = TileBag::new(tiles.clone());
-        assert_eq!(*bag.remaining(), tiles);
+        assert_eq!(bag.remaining(), &tiles[..]);
     }
 
     // ── DiscardBag tests ──────────────────────────────────────────────
@@ -182,7 +223,7 @@ mod tests {
         let tiles = vec![TileType::Footman, TileType::Knight];
         let bag = DiscardBag::from_tiles(tiles.clone());
         assert_eq!(bag.len(), 2);
-        assert_eq!(*bag.existing(), tiles);
+        assert_eq!(bag.existing(), &tiles[..]);
     }
 
     #[test]
@@ -201,8 +242,8 @@ mod tests {
         bag.add(TileType::Knight);
         bag.add(TileType::Pikeman);
         assert_eq!(
-            *bag.existing(),
-            vec![TileType::Footman, TileType::Knight, TileType::Pikeman],
+            bag.existing(),
+            &[TileType::Footman, TileType::Knight, TileType::Pikeman],
         );
     }
 
@@ -244,7 +285,8 @@ mod tests {
         let mut bag = DiscardBag::from_tiles(vec![TileType::Footman, TileType::Knight]);
         bag.remove(TileType::Footman);
         assert_eq!(bag.len(), 1);
-        assert_eq!(bag.existing(), &vec![TileType::Knight]);
+        // After swap_remove, the remaining tile is Knight
+        assert_eq!(bag.existing(), &[TileType::Knight]);
     }
 
     #[test]
@@ -260,9 +302,6 @@ mod tests {
     /// count is correct, regardless of internal ordering.
     #[test]
     fn remove_specific_swap_remove_preserves_other_tiles() {
-        // Set up bag with distinct tile types where removal of the first would
-        // shift elements under the old `Vec::remove`, but swap_remove moves the
-        // last element to the removed index.
         let mut bag = TileBag::new(vec![
             TileType::Footman, TileType::Knight, TileType::Pikeman, TileType::Champion,
         ]);
@@ -271,7 +310,7 @@ mod tests {
         // Footman should be gone
         assert!(!bag.remaining().contains(&TileType::Footman));
         // All other tiles should still be present (as a multiset)
-        let mut remaining_sorted: Vec<TileType> = bag.remaining().clone();
+        let mut remaining_sorted: Vec<TileType> = bag.remaining().to_vec();
         remaining_sorted.sort_by_key(|t| t.index());
         let mut expected = vec![TileType::Knight, TileType::Pikeman, TileType::Champion];
         expected.sort_by_key(|t| t.index());

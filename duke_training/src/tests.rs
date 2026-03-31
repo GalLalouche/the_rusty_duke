@@ -4023,7 +4023,7 @@ fn negamax_apply_undo_matches_clone() {
         assert_eq!(game.idle_move_count(), gs_undo_based.idle_move_count(),
             "Depth {}: idle_move_count modified after negamax", depth);
         let sort_bag = |b: &duke_rust::game::bag::TileBag| -> Vec<TileType> {
-            let mut v = b.remaining().clone();
+            let mut v = b.remaining().to_vec();
             v.sort_by_key(|t| t.index());
             v
         };
