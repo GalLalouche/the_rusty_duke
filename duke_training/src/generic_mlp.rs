@@ -930,6 +930,107 @@ impl L1Accumulator {
     }
 }
 
+/// Maximum candidate batch size for batched forward passes.
+/// Greedy move search typically has 20-40 candidates.
+pub const MAX_BATCH: usize = 128;
+
+impl GenericMlp {
+    /// Batched forward pass from multiple L1 accumulators.
+    ///
+    /// Takes a slice of pre-ReLU L1 hidden values (one per candidate),
+    /// applies ReLU, then propagates through all remaining hidden layers
+    /// using sgemm (one call per layer for the entire batch), and returns
+    /// sigmoid outputs for each candidate.
+    ///
+    /// Much faster than calling `L1Accumulator::forward` N times because
+    /// sgemm with m=N exploits cache tiling and SIMD across the batch.
+    pub fn batched_forward_from_l1(
+        &self,
+        accumulators: &[L1Accumulator],
+        outputs: &mut [f32],
+    ) {
+        use matrixmultiply::sgemm;
+
+        let n = accumulators.len();
+        assert!(n <= MAX_BATCH);
+        assert!(outputs.len() >= n);
+        let h1 = self.hidden_layers[0];
+        let off_start = self.input_size * h1 + h1;
+
+        // Build the batch activation matrix: [n × h1], row-major.
+        // Apply ReLU to each accumulator's hidden values.
+        let mut act_a = vec![0.0f32; n * MAX_HIDDEN];
+        for (i, acc) in accumulators.iter().enumerate() {
+            let row = &mut act_a[i * MAX_HIDDEN..(i * MAX_HIDDEN + h1)];
+            for j in 0..h1 {
+                row[j] = acc.hidden[j].max(0.0);
+            }
+        }
+        let mut act_b = vec![0.0f32; n * MAX_HIDDEN];
+
+        let mut use_a = true;
+        let mut off = off_start;
+
+        for layer_idx in 1..self.hidden_layers.len() {
+            let prev_size = self.hidden_layers[layer_idx - 1];
+            let cur_size = self.hidden_layers[layer_idx];
+            let lw = &self.weights[off..off + prev_size * cur_size];
+            off += prev_size * cur_size;
+            let lb = &self.weights[off..off + cur_size];
+            off += cur_size;
+
+            let (src, dst) = if use_a {
+                (&act_a, &mut act_b)
+            } else {
+                (&act_b, &mut act_a)
+            };
+
+            // Initialize dst rows with bias
+            for i in 0..n {
+                dst[i * MAX_HIDDEN..(i * MAX_HIDDEN + cur_size)].copy_from_slice(lb);
+            }
+
+            // dst[n×cur] += src[n×prev] × W[prev×cur]
+            // src is row-major with stride MAX_HIDDEN, W is row-major with stride cur_size
+            unsafe {
+                sgemm(
+                    n, prev_size, cur_size,
+                    1.0,
+                    src.as_ptr(), MAX_HIDDEN as isize, 1,
+                    lw.as_ptr(), cur_size as isize, 1,
+                    1.0,
+                    dst.as_mut_ptr(), MAX_HIDDEN as isize, 1,
+                );
+            }
+
+            // ReLU
+            for i in 0..n {
+                let row = &mut dst[i * MAX_HIDDEN..(i * MAX_HIDDEN + cur_size)];
+                for j in 0..cur_size {
+                    row[j] = row[j].max(0.0);
+                }
+            }
+            use_a = !use_a;
+        }
+
+        // Output layer: dot product per candidate
+        let last_h = *self.hidden_layers.last().unwrap();
+        let out_w = &self.weights[off..off + last_h];
+        off += last_h;
+        let out_b = self.weights[off];
+
+        let prev = if use_a { &act_a } else { &act_b };
+        for i in 0..n {
+            let row = &prev[i * MAX_HIDDEN..(i * MAX_HIDDEN + last_h)];
+            let mut logit = out_b;
+            for j in 0..last_h {
+                logit += out_w[j] * row[j];
+            }
+            outputs[i] = 1.0 / (1.0 + (-logit).exp());
+        }
+    }
+}
+
 /// Total input size for the "appended" mode:
 /// NNUE features + combined features (e.g. 1106 + 41 = 1147).
 pub const APPENDED_INPUT_SIZE: usize = TOTAL_FEATURES + NUM_COMBINED_FEATURES;

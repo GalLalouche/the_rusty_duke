@@ -928,17 +928,14 @@ fn greedy_move_heuristic_incremental(gs: &mut GameState, rng: &mut impl Rng) -> 
     })
 }
 
-/// Pick the best move using incremental L1 accumulator updates.
+/// Pick the best move using incremental L1 accumulator updates + batched forward.
 ///
-/// Like `greedy_move`, but exploits the fact that most candidate moves only
-/// change 2-4 features in the L1 input.  Builds the base L1 accumulator once
-/// from the current position, then for each candidate:
-///   1. Make the move in-place (no clone).
-///   2. Clone the base accumulator.
-///   3. Compute the feature diff (old vs new board/bag/combined features).
-///   4. Patch the accumulator with the diff.
-///   5. Complete the forward pass (ReLU + remaining layers).
-///   6. Undo the move to restore the original state.
+/// Builds the base L1 accumulator once, then for each candidate move:
+///   1. Make/undo the move to compute the feature diff.
+///   2. Clone the base accumulator and patch with the diff.
+/// After all accumulators are ready, runs a single batched sgemm forward
+/// pass through the remaining hidden layers (much faster than N individual
+/// forward passes for deep networks like 256x6).
 ///
 /// `include_combined` should be `true` for 1147-input models, `false` for 1106.
 pub fn greedy_move_incremental(
@@ -947,58 +944,70 @@ pub fn greedy_move_incremental(
     include_combined: bool,
     rng: &mut impl Rng,
 ) -> AiMove {
+    use crate::generic_mlp::MAX_BATCH;
+
     let result = GREEDY_CANDIDATES.with(|cell| {
         let mut moves = cell.borrow_mut();
         gs.all_valid_game_moves_for_current_player_into(&mut moves);
         assert!(!moves.is_empty(), "greedy_move_incremental called with no legal moves");
         moves.shuffle(rng);
 
-    let base_acc = L1Accumulator::from_state(net, gs, include_combined);
-    let base_board = active_board_features(gs);
-    let base_bag = bag_features(gs);
-    let base_combined: Option<[f64; NUM_COMBINED_FEATURES]> = if include_combined {
-        Some(extract_combined_features(gs))
-    } else {
-        None
-    };
-
-    let base_eval_rng = SmallRng::seed_from_u64(0);
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_idx = 0usize;
-
-    for (i, pm) in moves.iter().enumerate() {
-        let mv: AiMove = pm.into();
-        let undo = mv.to_undo_move().expect("Legal move should be undoable");
-        let mut eval_rng = base_eval_rng.clone();
-        mv.play(gs, &mut eval_rng);
-
-        let new_board = active_board_features(gs);
-        let new_bag = bag_features(gs);
-        let new_combined: Option<[f64; NUM_COMBINED_FEATURES]> = if include_combined {
+        let base_acc = L1Accumulator::from_state(net, gs, include_combined);
+        let base_board = active_board_features(gs);
+        let base_bag = bag_features(gs);
+        let base_combined: Option<[f64; NUM_COMBINED_FEATURES]> = if include_combined {
             Some(extract_combined_features(gs))
         } else {
             None
         };
 
-        let mut acc = base_acc.clone();
-        acc.update_features(
-            net,
-            &base_board,
-            &new_board,
-            &base_bag,
-            &new_bag,
-            base_combined.as_ref(),
-            new_combined.as_ref(),
-        );
+        let base_eval_rng = SmallRng::seed_from_u64(0);
+        let n = moves.len().min(MAX_BATCH);
 
-        let prediction = acc.forward(net);
-        gs.undo(undo);
-        let score = -(prediction as f64);
-        if score > best_score {
-            best_score = score;
-            best_idx = i;
+        // Phase 1: build all accumulators
+        let mut accumulators: Vec<L1Accumulator> = Vec::with_capacity(n);
+        for pm in moves.iter().take(n) {
+            let mv: AiMove = pm.into();
+            let undo = mv.to_undo_move().expect("Legal move should be undoable");
+            let mut eval_rng = base_eval_rng.clone();
+            mv.play(gs, &mut eval_rng);
+
+            let new_board = active_board_features(gs);
+            let new_bag = bag_features(gs);
+            let new_combined: Option<[f64; NUM_COMBINED_FEATURES]> = if include_combined {
+                Some(extract_combined_features(gs))
+            } else {
+                None
+            };
+
+            let mut acc = base_acc.clone();
+            acc.update_features(
+                net,
+                &base_board,
+                &new_board,
+                &base_bag,
+                &new_bag,
+                base_combined.as_ref(),
+                new_combined.as_ref(),
+            );
+            accumulators.push(acc);
+            gs.undo(undo);
         }
-    }
+
+        // Phase 2: batched forward pass (one sgemm per layer for all candidates)
+        let mut outputs = [0.0f32; MAX_BATCH];
+        net.batched_forward_from_l1(&accumulators, &mut outputs);
+
+        // Phase 3: pick best
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_idx = 0usize;
+        for i in 0..n {
+            let score = -(outputs[i] as f64);
+            if score > best_score {
+                best_score = score;
+                best_idx = i;
+            }
+        }
 
         (&moves[best_idx]).into()
     });
