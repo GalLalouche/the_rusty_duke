@@ -23,6 +23,23 @@ use crate::generic_mlp::{GenericMlp, L1Accumulator};
 use crate::learned_heuristic::{extract_combined_features, NUM_COMBINED_FEATURES};
 use crate::nnue::NnueEvaluator;
 
+/// Tile universe for expectimax over bag draws (same order as previous inline array).
+const EXPECTIMAX_TILE_TYPES: [TileType; 13] = [
+    TileType::Duke,
+    TileType::Footman,
+    TileType::Pikeman,
+    TileType::Knight,
+    TileType::Champion,
+    TileType::Dragoon,
+    TileType::Wizard,
+    TileType::General,
+    TileType::Marshall,
+    TileType::Assassin,
+    TileType::Priest,
+    TileType::Bowman,
+    TileType::Longbowman,
+];
+
 thread_local! {
     /// Reused candidate list for greedy paths (single-thread sequential use per call).
     static GREEDY_CANDIDATES: RefCell<Vec<PossibleMove>> = RefCell::new(Vec::new());
@@ -390,15 +407,8 @@ fn negamax_ab<E: GameEvaluator + ?Sized>(
             tile_counts[tile.index()] += 1;
         }
 
-        let tile_types = [
-            TileType::Duke, TileType::Footman, TileType::Pikeman, TileType::Knight,
-            TileType::Champion, TileType::Dragoon, TileType::Wizard, TileType::General,
-            TileType::Marshall, TileType::Assassin, TileType::Priest, TileType::Bowman,
-            TileType::Longbowman,
-        ];
-
         let mut draw_value = 0.0;
-        for &tile_type in &tile_types {
+        for &tile_type in &EXPECTIMAX_TILE_TYPES {
             let count = tile_counts[tile_type.index()];
             if count == 0 { continue; }
             let prob = count as f64 / total_tiles;
