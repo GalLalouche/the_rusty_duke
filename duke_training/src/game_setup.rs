@@ -374,6 +374,33 @@ pub fn greedy_move_deep<E: GameEvaluator + ?Sized>(
     best_move
 }
 
+/// Same as greedy_move_deep but also returns the best score (from current player's perspective).
+pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
+    gs: &mut GameState, evaluator: &E, depth: u32, rng: &mut impl Rng,
+) -> (AiMove, f64) {
+    assert!(depth >= 1, "greedy_move_deep_with_score requires depth >= 1");
+    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
+    assert!(!moves.is_empty(), "greedy_move_deep_with_score called with no legal moves");
+    moves.shuffle(rng);
+
+    let base_eval_rng = SmallRng::seed_from_u64(0);
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_move = moves[0].clone();
+
+    for mv in &moves {
+        let mut child = gs.clone();
+        let mut eval_rng = base_eval_rng.clone();
+        mv.play(&mut child, &mut eval_rng);
+        let score = -negamax(&mut child, evaluator, depth - 1, rng);
+        if score > best_score {
+            best_score = score;
+            best_move = mv.clone();
+        }
+    }
+
+    (best_move, best_score)
+}
+
 /// Pick the move that minimizes the opponent's value (= maximizes our value).
 ///
 /// Works with any `GameEvaluator` implementation (NNUE, heuristic, etc.).
