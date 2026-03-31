@@ -1,9 +1,4 @@
-#![feature(backtrace)]
 extern crate fstrings;
-
-use std::panic;
-
-use backtrace::Backtrace;
 
 pub use duke_rust::common;
 pub use duke_rust::game;

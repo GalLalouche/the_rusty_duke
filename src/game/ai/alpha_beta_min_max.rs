@@ -168,53 +168,5 @@ mod tests {
     }
 }
 
-impl minimax::Move for AiMove {
-    type G = GameState;
-
-    fn apply(&self, state: &mut <Self::G as minimax::Game>::S) {
-        time_it_macro!("minimax: apply", {
-            self.play(state, &mut thread_rng());
-        });
-    }
-
-    fn undo(&self, state: &mut <Self::G as minimax::Game>::S) {
-        time_it_macro!("undo", {
-            state.undo(self.to_undo_move().unwrap());
-        })
-    }
-}
-
-impl minimax::Game for GameState {
-    type S = GameState;
-    type M = AiMove;
-
-    fn generate_moves(state: &Self::S, moves: &mut Vec<Self::M>) {
-        time_it_macro!("generate_moves", {
-            moves.append(&mut AiMove::all_moves(&mut state.clone()).collect());
-        })
-    }
-
-    fn get_winner(state: &Self::S) -> Option<minimax::Winner> {
-        time_it_macro!("get_winner", {
-            match state.clone().game_result() {
-                GameResult::Won(o) => Some(
-                    if o == state.current_player_turn() {
-                        minimax::Winner::PlayerToMove
-                    } else {
-                        minimax::Winner::PlayerJustMoved
-                    }),
-                _ => None
-            }
-        })
-    }
-}
-
-impl minimax::Evaluator for HeuristicAlphaBetaPlayerStrategy<'_> {
-    type G = GameState;
-
-    fn evaluate(&self, s: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
-        time_it_macro!("evaluate", {
-            self.player.evaluator.evaluate(&mut s.clone()) as i32
-        })
-    }
-}
+// minimax crate impls disabled: API incompatible with current crate version.
+// The custom negamax in duke_training::game_setup is the active search implementation.

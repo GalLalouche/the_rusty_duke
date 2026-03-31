@@ -106,9 +106,14 @@ impl StaticHeuristicEvaluator {
 impl GameEvaluator for StaticHeuristicEvaluator {
     fn evaluate(&self, gs: &GameState) -> f32 {
         let owner = gs.current_player_turn();
-        self.heuristics.iter()
-            .map(|h| h.approx_difference(owner, gs))
-            .sum::<f64>() as f32
+        let (own_total, own_duke, own_tiles, opp_total, opp_duke, opp_tiles) =
+            gs.heuristic_counts_both_players(owner);
+        let duke_diff = own_duke as f64 - opp_duke as f64;
+        let tiles_diff = 10.0 * (own_tiles as f64 - opp_tiles as f64);
+        let moves_diff = own_total as f64 - opp_total as f64;
+        let discard_diff = -15.0 * (gs.discard_bag_for(owner).len() as f64
+            - gs.discard_bag_for(owner.next_player()).len() as f64);
+        (duke_diff + tiles_diff + moves_diff + discard_diff) as f32
     }
 }
 
@@ -452,6 +457,8 @@ pub fn greedy_move_deep_with_score<E: GameEvaluator + ?Sized>(
 /// automatically uses the incremental L1 accumulator path for faster
 /// candidate evaluation.
 ///
+/// Uses make/undo in-place instead of cloning GameState per candidate.
+///
 /// Panics if the game state has no legal moves.
 pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E, rng: &mut impl Rng) -> AiMove {
     // Check if the evaluator supports the incremental accumulator path.
@@ -459,29 +466,53 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E,
         return greedy_move_incremental(gs, net, include_combined, rng);
     }
 
-    let mut moves: Vec<AiMove> = AiMove::all_moves(gs).collect();
+    // Tile action moves: generated WITHOUT guard checking (the expensive part).
+    // Guard is checked inline after make_a_move in the evaluation loop,
+    // combining two make/undo cycles into one.
+    let owner = gs.current_player_turn();
+    let no_guard_moves = gs.all_valid_game_moves_for_ignoring_guard(owner);
+
+    let mut moves: Vec<PossibleMove> = Vec::with_capacity(no_guard_moves.len());
+    for pm in no_guard_moves {
+        if !matches!(pm, PossibleMove::PlaceNewTile(..)) {
+            moves.push(pm);
+        }
+    }
+
+    // Placement moves: generated WITH guard checking (at most 4 offsets, cheap).
+    // make_a_move(PullAndPlay) hard-asserts placement validity.
+    if gs.bag_for_current_player().non_empty() {
+        for &offset in &[DukeOffset::Top, DukeOffset::Bottom, DukeOffset::Left, DukeOffset::Right] {
+            if gs.is_valid_placement(offset) {
+                moves.push(PossibleMove::PlaceNewTile(offset, owner));
+            }
+        }
+    }
+
     assert!(!moves.is_empty(), "greedy_move called with no legal moves");
     moves.shuffle(rng);
 
     let mut best_score = f64::NEG_INFINITY;
-    let mut best_move = None;
+    let mut best_idx = 0;
 
-    // Use SmallRng (cheaper to seed/clone than StdRng) for deterministic tile-draw outcomes.
     let base_eval_rng = SmallRng::seed_from_u64(0);
-    for mv in &moves {
-        let mut clone = gs.clone();
+    for (i, pm) in moves.iter().enumerate() {
+        let mv: AiMove = pm.into();
         let mut eval_rng = base_eval_rng.clone();
-        mv.play(&mut clone, &mut eval_rng);
-        let prediction = evaluator.evaluate(&clone);
-        // Negate: opponent's score is negative of ours.
-        let score = -(prediction as f64);
-        if score > best_score {
-            best_score = score;
-            best_move = Some(mv.clone());
+        mv.play(gs, &mut eval_rng);
+        let is_placement = matches!(pm, PossibleMove::PlaceNewTile(..));
+        if is_placement || !gs.is_duke_in_guard(owner) {
+            let prediction = evaluator.evaluate(gs);
+            let score = -(prediction as f64);
+            if score > best_score {
+                best_score = score;
+                best_idx = i;
+            }
         }
+        gs.undo(pm.clone());
     }
 
-    best_move.unwrap()
+    (&moves[best_idx]).into()
 }
 
 /// Pick the best move using incremental L1 accumulator updates.
@@ -489,11 +520,12 @@ pub fn greedy_move<E: GameEvaluator + ?Sized>(gs: &mut GameState, evaluator: &E,
 /// Like `greedy_move`, but exploits the fact that most candidate moves only
 /// change 2-4 features in the L1 input.  Builds the base L1 accumulator once
 /// from the current position, then for each candidate:
-///   1. Clone the state and play the move.
+///   1. Make the move in-place (no clone).
 ///   2. Clone the base accumulator.
 ///   3. Compute the feature diff (old vs new board/bag/combined features).
 ///   4. Patch the accumulator with the diff.
 ///   5. Complete the forward pass (ReLU + remaining layers).
+///   6. Undo the move to restore the original state.
 ///
 /// `include_combined` should be `true` for 1147-input models, `false` for 1106.
 pub fn greedy_move_incremental(
@@ -506,7 +538,6 @@ pub fn greedy_move_incremental(
     assert!(!moves.is_empty(), "greedy_move_incremental called with no legal moves");
     moves.shuffle(rng);
 
-    // Build base accumulator and extract base features from the current position.
     let base_acc = L1Accumulator::from_state(net, gs, include_combined);
     let base_board = active_board_features(gs);
     let base_bag = bag_features(gs);
@@ -516,26 +547,23 @@ pub fn greedy_move_incremental(
         None
     };
 
-    // Evaluate each candidate move individually using incremental accumulator updates.
     let base_eval_rng = SmallRng::seed_from_u64(0);
     let mut best_score = f64::NEG_INFINITY;
-    let mut best_move = None;
+    let mut best_move = moves[0].clone();
 
     for mv in &moves {
-        let mut clone = gs.clone();
+        let undo = mv.to_undo_move().expect("Legal move should be undoable");
         let mut eval_rng = base_eval_rng.clone();
-        mv.play(&mut clone, &mut eval_rng);
+        mv.play(gs, &mut eval_rng);
 
-        // Extract features from the post-move state.
-        let new_board = active_board_features(&clone);
-        let new_bag = bag_features(&clone);
+        let new_board = active_board_features(gs);
+        let new_bag = bag_features(gs);
         let new_combined: Option<[f64; NUM_COMBINED_FEATURES]> = if include_combined {
-            Some(extract_combined_features(&clone))
+            Some(extract_combined_features(gs))
         } else {
             None
         };
 
-        // Clone the base accumulator and patch it with the diff.
         let mut acc = base_acc.clone();
         acc.update_features(
             net,
@@ -548,13 +576,13 @@ pub fn greedy_move_incremental(
         );
 
         let prediction = acc.forward(net);
-        // Negate: opponent's score is negative of ours.
+        gs.undo(undo);
         let score = -(prediction as f64);
         if score > best_score {
             best_score = score;
-            best_move = Some(mv.clone());
+            best_move = mv.clone();
         }
     }
 
-    best_move.unwrap()
+    best_move
 }

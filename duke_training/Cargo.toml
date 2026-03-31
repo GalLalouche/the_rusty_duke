@@ -88,3 +88,7 @@ path = "src/generate_games.rs"
 [[bin]]
 name = "score_trajectories"
 path = "src/score_trajectories.rs"
+
+[[bin]]
+name = "bench_greedy"
+path = "src/bench_greedy.rs"

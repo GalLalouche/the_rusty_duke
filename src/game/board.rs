@@ -686,7 +686,7 @@ impl GameBoard {
     /// Count legal moves without guard checking, without heap allocation.
     #[inline]
     pub fn count_legal_moves_ignoring_guard(&self, src: Coordinates) -> usize {
-        self.get_legal_moves_no_guard(src).len()
+        self.count_legal_moves_no_guard(src)
     }
 
     /// Returns candidate moves for the tile at `src` without guard checking.
@@ -709,6 +709,26 @@ impl GameBoard {
             }
         }
         buf
+    }
+
+    #[inline]
+    fn count_legal_moves_no_guard(&self, src: Coordinates) -> usize {
+        let tile = self.get(src).unwrap();
+        let tile_side = tile.get_current_side();
+        let center_offset = tile_side.center_offset();
+        let mut count = 0usize;
+        for (offset, action) in tile_side.actions().iter() {
+            if *action == TileAction::Command || *action == TileAction::Unit {
+                continue;
+            }
+            let targets = self.target_coordinates(src, *offset, *action, center_offset);
+            for c in targets.into_iter() {
+                if self.can_apply_action(src, c, *action) {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 
     /// Like `get_legal_moves_no_guard` but also includes friendly-occupied
@@ -991,18 +1011,83 @@ impl GameBoard {
     /// without heap allocation.
     #[inline]
     pub fn count_all_valid_moves_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> usize {
-        let mut count = 0usize;
+        self.count_moves_with_duke_ignoring_guard(owner, new_tiles).0
+    }
+
+    /// Count all valid moves AND duke-specific moves in a single pass.
+    /// Returns `(total_moves, duke_moves)`.
+    #[inline]
+    pub fn count_moves_with_duke_ignoring_guard(&self, owner: Owner, new_tiles: WithNewTiles) -> (usize, usize) {
+        let duke_pos = self.duke_coordinates(owner);
+        let mut total = 0usize;
+        let mut duke_moves = 0usize;
         for (src, _) in self.get_tiles_for(owner) {
-            count += self.get_legal_moves_no_guard(src).len();
+            let n = self.count_legal_moves_no_guard(src);
+            total += n;
+            if src == duke_pos {
+                duke_moves = n;
+            }
         }
         if let WithNewTiles(true) = new_tiles {
             for offset in DukeOffset::iter() {
                 if self.is_valid_placement_space(owner, offset).is_some() {
-                    count += 1;
+                    total += 1;
                 }
             }
         }
-        count
+        (total, duke_moves)
+    }
+
+    /// Compute heuristic data for BOTH players in a single pass over the board.
+    /// Returns `(own_total_moves, own_duke_moves, own_tiles, opp_total_moves, opp_duke_moves, opp_tiles)`.
+    #[inline]
+    pub fn heuristic_counts_both_players(
+        &self, owner: Owner,
+        own_has_bag: bool, opp_has_bag: bool,
+    ) -> (usize, usize, usize, usize, usize, usize) {
+        let own_duke = self.duke_coordinates(owner);
+        let other = match owner {
+            Owner::TopPlayer => Owner::BottomPlayer,
+            Owner::BottomPlayer => Owner::TopPlayer,
+        };
+        let opp_duke = self.duke_coordinates(other);
+
+        let mut own_total = 0usize;
+        let mut own_duke_moves = 0usize;
+        let mut own_tiles = 0usize;
+        let mut opp_total = 0usize;
+        let mut opp_duke_moves = 0usize;
+        let mut opp_tiles = 0usize;
+
+        for (src, tile) in self.board.active_coordinates() {
+            let n = self.count_legal_moves_no_guard(src);
+            if tile.owner == owner {
+                own_total += n;
+                own_tiles += 1;
+                if src == own_duke { own_duke_moves = n; }
+            } else {
+                opp_total += n;
+                opp_tiles += 1;
+                if src == opp_duke { opp_duke_moves = n; }
+            }
+        }
+
+        if own_has_bag {
+            for offset in DukeOffset::iter() {
+                if self.is_valid_placement_space(owner, offset).is_some() {
+                    own_total += 1;
+                }
+            }
+        }
+        if opp_has_bag {
+            for offset in DukeOffset::iter() {
+                if self.is_valid_placement_space(other, offset).is_some() {
+                    opp_total += 1;
+                }
+            }
+        }
+
+        (own_total, own_duke_moves, own_tiles, opp_total, opp_duke_moves, opp_tiles)
     }
 
     /// Iterate over all tile-movement moves (no placements) for `owner` without

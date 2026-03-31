@@ -25,7 +25,7 @@ pub const MAX_MOVES_WITHOUT_CAPTURE_OR_PLACEMENT: usize = 10;
 /// locality. 512 entries is still sufficient for MAX_TURNS (500) games
 /// plus search depth overhead.
 /// Uses u8 values (max idle count is 10) to keep the array compact.
-const IDLE_STACK_CAP: usize = 512;
+const IDLE_STACK_CAP: usize = 128;
 
 #[derive(Debug, Clone, Eq)]
 pub struct GameState {
@@ -528,6 +528,28 @@ impl GameState {
         )
     }
 
+    /// Count all valid moves AND duke-specific moves in a single pass.
+    /// Returns `(total_moves, duke_moves)`. No heap allocation.
+    #[inline]
+    pub fn count_moves_with_duke_ignoring_guard(&self, o: Owner) -> (usize, usize) {
+        self.board.count_moves_with_duke_ignoring_guard(
+            o,
+            WithNewTiles(self.bag_for_owner(o).non_empty()),
+        )
+    }
+
+    /// Compute heuristic data for BOTH players in a single pass over the board.
+    /// Returns `(own_total_moves, own_duke_moves, own_tiles, opp_total_moves, opp_duke_moves, opp_tiles)`.
+    #[inline]
+    pub fn heuristic_counts_both_players(&self, owner: Owner) -> (usize, usize, usize, usize, usize, usize) {
+        let other = owner.next_player();
+        self.board.heuristic_counts_both_players(
+            owner,
+            self.bag_for_owner(owner).non_empty(),
+            self.bag_for_owner(other).non_empty(),
+        )
+    }
+
     /// Iterate tile-movement moves for `owner` without guard checking,
     /// calling `f(src, dst)` for each. No heap allocation.
     #[inline]
@@ -652,18 +674,22 @@ impl Hash for GameState {
         self.board.get_board().hash(state);
         self.pulled_tile.hash(state);
         self.current_player_turn.hash(state);
-        // Bags: hash sorted contents since swap_remove may change ordering
-        let mut top_bag: Vec<u8> = self.top_player_bag.remaining().iter().map(|t| *t as u8).collect();
-        top_bag.sort();
-        top_bag.hash(state);
-        let mut bottom_bag: Vec<u8> = self.bottom_player_bag.remaining().iter().map(|t| *t as u8).collect();
-        bottom_bag.sort();
-        bottom_bag.hash(state);
+        // Bags: hash sorted contents since swap_remove may change ordering.
+        // Use stack-allocated arrays (max 12 tiles) to avoid heap allocation.
+        fn hash_bag_sorted<H2: Hasher>(bag: &TileBag, state: &mut H2) {
+            let remaining = bag.remaining();
+            let mut buf = [0u8; 12];
+            let len = remaining.len();
+            for (i, t) in remaining.iter().enumerate() {
+                buf[i] = *t as u8;
+            }
+            buf[..len].sort_unstable();
+            buf[..len].hash(state);
+        }
+        hash_bag_sorted(&self.top_player_bag, state);
+        hash_bag_sorted(&self.bottom_player_bag, state);
         self.top_player_discard.existing().hash(state);
         self.bottom_player_discard.existing().hash(state);
-        // Hash the idle-move counter stack to stay consistent with derived PartialEq,
-        // which compares this field.  Without this, two states differing only in how
-        // close they are to a tie draw would collide in any hash-based data structure.
         self.idle_stack[..self.idle_stack_len as usize].hash(state);
     }
 }
